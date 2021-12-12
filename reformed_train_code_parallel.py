@@ -8,17 +8,15 @@ import torch.nn.functional
 import os
 import torch.utils.data
 import gc
-from transformers import AutoTokenizer, AutoConfig, BertForSequenceClassification, BertForMaskedLM, TrainingArguments, \
-	Trainer, DataCollatorForLanguageModeling, TrainingArguments, Trainer, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, AutoConfig, BertForMaskedLM, \
+	DataCollatorForLanguageModeling, get_linear_schedule_with_warmup
 import numpy as np
 import sys
 from tqdm import tqdm
 
-from reformed_model_lib import OneSupremeMemory, OneSupremeMemoryConfig, PureMemory, PureMemoryConfig, \
-	VaeAttentionPlus, VaeAttentionConfig, VaeAttention, BasicConfig, BasicModel, InputMemorySelfAttConfig, \
+from reformed_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt
-from reformed_dataset import Test_TBA_word_bag_classify_dataset, TBAClassifyDataset, MLMDataset
-from class_lib import VAEQuestion, VaeDataset, calculate_vae_loss
+from reformed_dataset import TBAClassifyDataset, MLMDataset
 
 
 class TrainWholeModel:
@@ -102,6 +100,10 @@ class TrainWholeModel:
 		else:
 			self.config = config
 
+		# instance attribute
+		self.model = None
+		self.teacher_model = None
+
 	def train(self, model_save_path, train_two_stage_flag):
 		# 用来判断是哪一阶段的训练
 		final_stage_flag = not train_two_stage_flag
@@ -111,12 +113,12 @@ class TrainWholeModel:
 
 		while True:
 			# 创建模型
-			self.__create_model()
+			self.model = self.__create_model()
 			torch.cuda.empty_cache()
 
 			# 如果要进行第二阶段训练，那需要先读取上一阶段最好的model
 			if final_stage_flag and train_two_stage_flag:
-				self.load_models(model_save_path + "_middle")
+				self.model = self.load_models(self.model, model_save_path + "_middle")
 
 			# 读取数据
 			self.__model_to_device()
@@ -126,7 +128,6 @@ class TrainWholeModel:
 
 			# 优化器
 			optimizer, scheduler = self.__get_model_optimizer(final_stage_flag=final_stage_flag)
-			self.scheduler = scheduler
 
 			# 准备训练
 			previous_best_r_1 = -1
@@ -142,7 +143,7 @@ class TrainWholeModel:
 			early_stop_count = 0
 
 			for epoch in range(self.num_train_epochs):
-				# whether this epoch get a best model
+				# whether this epoch get the best model
 				this_epoch_best = False
 
 				# 打印一下
@@ -191,9 +192,9 @@ class TrainWholeModel:
 					if epoch == 0 and split_index == 0:
 						t_total = (
 										  len(train_block_dataloader) // self.gradient_accumulation_steps) * self.num_train_epochs
-						self.scheduler = get_linear_schedule_with_warmup(optimizer,
-																		 num_warmup_steps=int(t_total * 0.02),
-																		 num_training_steps=t_total)
+						scheduler = get_linear_schedule_with_warmup(optimizer,
+																	num_warmup_steps=int(t_total * 0.02),
+																	num_training_steps=t_total)
 
 					# 开始训练这一块
 					train_loss, shoot_num, hit_num, \
@@ -204,7 +205,7 @@ class TrainWholeModel:
 						hit_num,
 						now_batch_num, final_stage_flag, model_save_path,
 						previous_best_r_1,
-						this_epoch_best, next_val_num)
+						this_epoch_best, next_val_num, scheduler)
 
 				# 是否早停
 				if this_epoch_best:
@@ -226,7 +227,7 @@ class TrainWholeModel:
 
 	def __train_one_data_block(self, train_block_dataloader, epoch, optimizer, train_loss, shoot_num, hit_num,
 							   now_batch_num, final_stage_flag, model_save_path, previous_best_r_1,
-							   this_epoch_best, next_val_num):
+							   this_epoch_best, next_val_num, scheduler):
 		torch.cuda.empty_cache()
 
 		# 进度条
@@ -234,15 +235,17 @@ class TrainWholeModel:
 
 		# 开始训练
 		for batch in bar:
+			# add model
 			if self.model_class == "CrossEncoder":
 				step_loss, step_shoot_num, step_hit_num = self.__train_step_for_cross(batch=batch,
 																					  optimizer=optimizer)
 			elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
 				step_loss, step_shoot_num, step_hit_num = \
-					self.__train_step_for_bi_no_vae(batch=batch, optimizer=optimizer, now_batch_num=now_batch_num)
+					self.__train_step_for_bi(batch=batch, optimizer=optimizer, now_batch_num=now_batch_num,
+													scheduler=scheduler)
 			else:
-				step_loss, step_shoot_num, step_hit_num = \
-					self.__train_step_for_bi(batch=batch, optimizer=optimizer)
+				raise Exception("Train step have not supported this model class")
+
 
 			# 更新一下信息
 			train_loss += step_loss.item()
@@ -306,170 +309,9 @@ class TrainWholeModel:
 			   now_batch_num, previous_best_r_1, \
 			   this_epoch_best, next_val_num
 
-	def train_with_teacher(self, model_save_path, train_two_stage_flag):
-		# 加载教师模型
-		self.teacher_model = BertForSequenceClassification.from_pretrained('prajjwal1/bert-small',
-																		   num_labels=4)
-		self.teacher_model.load_state_dict(torch.load(self.teacher_path))
-		self.teacher_model.eval()
-
-		# 用来判断是哪一阶段的训练
-		final_stage_flag = not train_two_stage_flag
-		# 如果读取了中间模型，也就说明直接训第二阶段
-		if self.args.load_middle:
-			final_stage_flag = True
-
-		while True:
-			# 创建模型
-			self.__create_model()
-			torch.cuda.empty_cache()
-
-			# 如果要进行第二阶段训练，那需要先读取上一阶段最好的model
-			if final_stage_flag and train_two_stage_flag:
-				self.load_models(model_save_path + "_middle")
-
-			# 读取数据
-			self.__model_to_device()
-
-			# 这不不会出问题吧
-			self.__model_parallel()
-
-			# 优化器
-			optimizer, scheduler = self.__get_model_optimizer(final_stage_flag=final_stage_flag)
-
-			# 准备训练
-			epochs = 100
-			previous_best_r_1 = -1
-
-			print("---------------------- begin train ----------------------")
-
-			# 设置早停变量
-			if final_stage_flag:
-				early_stop_threshold = 10
-			else:
-				early_stop_threshold = 5
-
-			early_stop_count = 0
-
-			for epoch in range(epochs):
-				# get dataset from file
-				train_data = datasets.load_from_disk("./" + self.dataset_name + "/string_train.dataset")
-				train_data = train_data.shuffle(seed=None)
-
-				test_data = datasets.load_from_disk("./" + self.dataset_name + "/string_val.dataset")
-				test_data = test_data.shuffle(seed=None)
-
-				# whether this epoch get a best model
-				this_epoch_best = False
-
-				# 打印一下
-				print("*" * 20 + f" {epoch} " + "*" * 20)
-
-				# 训练之前先看初始情况
-				if epoch == -1:
-					print("-" * 30 + "initial_test" + "-" * 30)
-					val_dataloader = self.__get_dataloader(data=test_data, batch_size=self.val_batch_size,
-														   split_index=0, split_num=1)
-					val_loss, val_acc = self.classify_validate_model(val_dataloader)
-					print(val_loss, val_acc)
-					self.ranking()
-					print("-" * 30 + "initial_test_end" + "-" * 30, end="\n\n")
-
-				# 开始训练
-				train_loss = 0.0
-				# 计算训练集的R@1
-				shoot_num = 0
-				hit_num = 0
-
-				now_batch_num = 0
-
-				# 逐块训练
-				for split_index in range(self.dataset_split_num):
-					train_dataloader = self.__get_dataloader(data=train_data, batch_size=self.train_batch_size,
-															 split_index=split_index, split_num=self.dataset_split_num)
-
-					if self.data_distribute:
-						train_dataloader.sampler.set_epoch(epoch)
-
-					# 训练数据
-					for index, batch in enumerate(train_dataloader):
-						# add model
-						# 迈出一步
-						if self.model_class == "CrossEncoder":
-							step_loss, step_shoot_num, step_hit_num = self.__train_step_for_cross(batch=batch,
-																								  optimizer=optimizer)
-						elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
-							step_loss, step_shoot_num, step_hit_num = \
-								self.__train_step_for_bi_no_vae(batch=batch, optimizer=optimizer,
-																now_batch_num=now_batch_num)
-						else:
-							step_loss, step_shoot_num, step_hit_num = \
-								self.__train_step_for_bi(batch=batch, optimizer=optimizer)
-
-						# 更新一下信息
-						train_loss += step_loss.item()
-
-						shoot_num += step_shoot_num
-						hit_num += step_hit_num
-						now_batch_num += 1
-
-						# 要不要打印一下呢
-						print_interval = (len(train_dataloader) * self.dataset_split_num) // self.print_num_each_epoch
-						if (now_batch_num % print_interval) == 0:
-							print(
-								f"epoch:{epoch + 1}, "
-								f"average loss = {train_loss / shoot_num},"
-								f"Acc={hit_num}/{shoot_num}={hit_num * 100 / shoot_num}%\tfrom rank:{self.local_rank}")
-						sys.stdout.flush()
-
-						# 要不要是时候评测一下呢，一个epoch评测 val_num_each_epoch 次
-						epoch_val_split_num = self.val_num_each_epoch + 1
-						val_interval = (len(train_dataloader) * self.dataset_split_num) // epoch_val_split_num
-
-						if now_batch_num % val_interval == 0 and now_batch_num / val_interval < epoch_val_split_num:
-							# 获得评测结果
-							val_dataloader = self.__get_dataloader(data=test_data, batch_size=self.val_batch_size,
-																   split_index=0, split_num=1)
-
-							val_loss, val_acc = self.classify_validate_model(val_dataloader)
-							r_1 = self.ranking()
-							print(
-								f"{epoch + 1} epoch middle eval: " + "*" * 30 +
-								f"\nval_loss:{val_loss}\tval_acc{val_acc}\tR@1:{r_1}\tfrom rank:{self.local_rank}")
-
-							# 模型是否比之前优秀
-							if r_1 > previous_best_r_1:
-								previous_best_r_1 = r_1
-								this_epoch_best = True
-
-								# 保存模型
-								postfix = ""
-								if not final_stage_flag:
-									postfix = "_middle"
-
-								self.save_model(model_save_path=model_save_path, postfix=postfix)
-
-						torch.cuda.empty_cache()
-
-				# 是否早停
-				if this_epoch_best:
-					early_stop_count = 0
-				else:
-					early_stop_count += 1
-
-					if early_stop_count == early_stop_threshold:
-						print("early stop!")
-						break
-
-				sys.stdout.flush()
-
-			# 如果只是第一阶段的训练，那么还要继续训练
-			if not final_stage_flag:
-				final_stage_flag = True
-			else:
-				break
-
 	def train_memory_by_mlm(self, memory_save_name):
+		scheduler = None
+
 		# 获得之前的voc size，虽然voc size一直不会变
 		voc_size = len(self.tokenizer)
 
@@ -675,130 +517,6 @@ class TrainWholeModel:
 				print("training finished!!!")
 				break
 
-	def train_vae(self):
-
-		print("*" * 20 + "train vae begin" + "*" * 20)
-
-		vae_model = VAEQuestion(input_dim=self.voc_size, latent_dim=self.latent_dim).to(self.device)
-
-		vae_model.train()
-		optimizer = torch.optim.Adam([
-			{'params': vae_model.parameters()}
-		], lr=1e-4)
-
-		# 开始训练
-		SPLIT_NUM = 10
-		previous_loss = 999999
-		for epoch in range(10):
-			all_lose = 0.0
-
-			# 因为是无监督，所以都用上
-			train_datasets = datasets.load_from_disk("./" + self.dataset_name + "/string_train.dataset")
-			train_datasets = train_datasets.shuffle(seed=None)
-			train_data_len = len(train_datasets)
-
-			test_datasets = datasets.load_from_disk("./" + self.dataset_name + "/string_val.dataset")
-			test_datasets = test_datasets.shuffle(seed=None)
-			test_data_len = len(test_datasets)
-
-			for block_index in range(0, SPLIT_NUM):
-
-				# 先划分好
-				if block_index == SPLIT_NUM - 1:
-					temp_train_dataset = train_datasets[int(block_index * train_data_len / SPLIT_NUM):]
-				else:
-					temp_train_dataset = train_datasets[int(block_index * train_data_len / SPLIT_NUM):
-														int((block_index + 1) * train_data_len / SPLIT_NUM)]
-
-				if block_index == SPLIT_NUM - 1:
-					temp_test_dataset = test_datasets[int(block_index * test_data_len / SPLIT_NUM):]
-				else:
-					temp_test_dataset = test_datasets[int(block_index * test_data_len / SPLIT_NUM):
-													  int((block_index + 1) * test_data_len / SPLIT_NUM)]
-
-				# 计算词袋
-				word_bag = torch.zeros((len(temp_train_dataset['title']) + len(temp_test_dataset['title']),
-										self.voc_size))
-
-				for t_index, t in enumerate(temp_train_dataset['title']):
-					words = t.split()
-					for w in words:
-						w_index = self.voc.get(w)
-						if w_index is not None:
-							word_bag[t_index][w_index] = 1
-
-					words = temp_train_dataset['body'][t_index].split()
-					for w in words:
-						w_index = self.voc.get(w)
-						if w_index is not None:
-							word_bag[t_index][w_index] = 1
-
-				for t_index, t in enumerate(temp_test_dataset['title']):
-					words = t.split()
-					for w in words:
-						w_index = self.voc.get(w)
-						if w_index is not None:
-							word_bag[t_index + len(temp_train_dataset)][w_index] = 1
-
-					words = temp_test_dataset['body'][t_index].split()
-					for w in words:
-						w_index = self.voc.get(w)
-						if w_index is not None:
-							word_bag[t_index + len(temp_train_dataset)][w_index] = 1
-
-				# # 开始训练
-				my_dataset = VaeDataset(word_bag)
-
-				# 生成dataloader
-				BATCH_SIZE = 64
-
-				vae_loader = torch.utils.data.DataLoader(dataset=my_dataset, batch_size=BATCH_SIZE,
-														 shuffle=True, num_workers=5, drop_last=True)
-
-				train_loss = 0.0
-
-				# 训练数据
-				for index, batch in enumerate(vae_loader):
-					# 读取数据
-					word_bag = (batch['word_bag']).to(self.device)
-
-					# 优化器置零
-					optimizer.zero_grad()
-					# 得到模型的结果
-					reconstructed_input, mean, log_var, latent_v = vae_model(word_bag, out_latent_flag=True)
-					vae_loss = calculate_vae_loss(word_bag, reconstructed_input, mean, log_var)
-
-					# 计算损失
-					train_loss += vae_loss.item()
-
-					# 误差反向传播
-					vae_loss.backward()
-					# 更新模型参数
-					optimizer.step()
-
-				# 这个block结束后打印一次
-				all_lose += train_loss
-				print(
-					f"epoch:{epoch + 1}, block:{block_index + 1}/{SPLIT_NUM}, block loss = {train_loss}")
-				sys.stdout.flush()
-
-			# 这个epoch结束
-			print(f"epoch:{epoch + 1} all loss:{all_lose}", end="\n\n")
-
-			# 判断是否终止训练
-			if all_lose < previous_loss - previous_loss * 0.1:
-				previous_loss = all_lose
-				pass
-			else:
-				break
-
-		vae_model.eval()
-		torch.save(vae_model.state_dict(), "./model/pretrained_all_vae_" + self.dataset_name)
-		print("*" * 20 + "train vae end" + "*" * 20)
-
-	def load_vae_model(self):
-		self.model.vae_model.load_state_dict(torch.load("./model/pretrained_all_vae_" + self.dataset_name))
-
 	# classify
 	def classify_validate_model(self, dataloader):
 		self.model.eval()
@@ -823,10 +541,8 @@ class TrainWholeModel:
 			for index, batch in enumerate(classify_dataloader):
 				# 读取数据
 				# add model
-				if self.model_class in ["OneSupremeMemory", 'PureMemory', 'VaeAttention', 'VaeAttentionPlus']:
+				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
 					logits = self.__val_step_for_bi(batch)
-				elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
-					logits = self.__val_step_for_bi_no_vae(batch)
 				else:
 					raise Exception("Val step is not supported for this model class!")
 
@@ -891,13 +607,14 @@ class TrainWholeModel:
 
 		self.model.train()
 
-	def load_models(self, load_model_path):
+	@staticmethod
+	def load_models(model, load_model_path):
 		if load_model_path is None:
 			print("you should offer model paths!")
 
 		load_path = load_model_path
 
-		self.model.load_state_dict(torch.load(load_path))
+		model.load_state_dict(torch.load(load_path))
 
 		# if self.data_distribute:
 		# 	load_path += ".pt"
@@ -912,6 +629,8 @@ class TrainWholeModel:
 		# 	self.model.load_state_dict(torch.load(load_path))
 
 		print("model is loaded from", load_path)
+
+		return model
 
 	def ranking(self):
 		print("--------------------- begin ranking -----------------------")
@@ -978,26 +697,6 @@ class TrainWholeModel:
 				bodies, padding=True, verbose=False, add_special_tokens=True,
 				truncation=True, max_length=self.text_max_len - self.memory_num, return_tensors='pt')
 
-			# 获得title的词袋
-			# add model
-			if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
-				pass
-			else:
-				word_bag = torch.zeros((len(questions), self.voc_size))
-
-				for t_index, t in enumerate(questions):
-					words = t.split()
-					for w in words:
-						w_index = self.voc.get(w)
-						if w_index is not None:
-							word_bag[t_index][w_index] = 1
-
-					words = bodies[t_index].split()
-					for w in words:
-						w_index = self.voc.get(w)
-						if w_index is not None:
-							word_bag[t_index][w_index] = 1
-
 			# 检查数据数量是否正确，length是问题数
 			length = len(evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
 
@@ -1039,13 +738,6 @@ class TrainWholeModel:
 								   now_index * self.ranking_candidate_num:
 								   (now_index + step) * self.ranking_candidate_num].to(self.device)
 
-				# add model
-				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
-					pass
-				else:
-					t_word_bag = word_bag[now_index * self.ranking_candidate_num:
-										  (now_index + step) * self.ranking_candidate_num].to(self.device)
-
 				now_index += step
 
 				with torch.no_grad():
@@ -1059,15 +751,6 @@ class TrainWholeModel:
 							a_attention_mask=a_attention_mask,
 							b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
 							b_attention_mask=b_attention_mask)
-					else:
-						# shape = (q_num*candidate_answer_num, 4)
-						logits, _ = self.model(
-							q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
-							q_attention_mask=q_attention_mask,
-							a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
-							a_attention_mask=a_attention_mask,
-							b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-							b_attention_mask=b_attention_mask, word_bag=t_word_bag)
 
 					logits = logits.view(-1, self.ranking_candidate_num, 4)
 					logits = nn.functional.softmax(logits, dim=-1)
@@ -1115,20 +798,12 @@ class TrainWholeModel:
 		print("---------------------- create model ----------------------")
 		# 创建自己的model
 		# add model
-		if self.model_class == 'OneSupremeMemory':
-			self.model = OneSupremeMemory(config=self.config)
-		elif self.model_class == 'PureMemory':
-			self.model = PureMemory(config=self.config)
-		elif self.model_class == 'VaeAttention':
-			self.model = VaeAttention(config=self.config)
-		elif self.model_class == 'VaeAttentionPlus':
-			self.model = VaeAttentionPlus(config=self.config)
-		elif self.model_class == 'BasicModel':
-			self.model = BasicModel(config=self.config)
+		if self.model_class == 'BasicModel':
+			model = BasicModel(config=self.config)
 		elif self.model_class == 'InputMemorySelfAtt':
-			self.model = InputMemorySelfAtt(config=self.config)
+			model = InputMemorySelfAtt(config=self.config)
 		elif self.model_class == 'PureMemorySelfAtt':
-			self.model = PureMemorySelfAtt(config=self.config)
+			model = PureMemorySelfAtt(config=self.config)
 		else:
 			raise Exception("This model class is not supported for creating!!")
 
@@ -1138,11 +813,12 @@ class TrainWholeModel:
 							  self.args.model_class + "_" + self.args.dataset_name
 			if self.args.load_middle:
 				load_model_path += "_middle"
-			self.load_models(load_model_path)
 
-		# 训练准备
-		# self.__model_to_device()
+			model = self.load_models(model, load_model_path)
+
 		print("--------------------- model  created ---------------------")
+
+		return model
 
 	# 读取命令行传入的参数
 	def __read_args_for_train(self, args):
@@ -1188,41 +864,7 @@ class TrainWholeModel:
 			raise Exception("word_embedding_len, sentence_embedding_len is needed!")
 
 		# add model
-		if self.model_class == "OneSupremeMemory":
-			config = OneSupremeMemoryConfig(len(self.tokenizer),
-											pretrained_bert_path=args.pretrained_bert_path,
-											latent_dim=args.latent_dim,
-											num_labels=args.label_num,
-											voc_size=self.voc_size,
-											word_embedding_len=word_embedding_len,
-											sentence_embedding_len=sentence_embedding_len,
-											memory_num=args.memory_num)
-		elif self.model_class == 'PureMemory':
-			config = PureMemoryConfig(len(self.tokenizer),
-									  pretrained_bert_path=args.pretrained_bert_path,
-									  latent_dim=args.latent_dim,
-									  num_labels=args.label_num,
-									  voc_size=self.voc_size,
-									  word_embedding_len=word_embedding_len,
-									  sentence_embedding_len=sentence_embedding_len,
-									  memory_num=args.memory_num)
-		elif self.model_class == 'VaeAttentionPlus':
-			config = VaeAttentionConfig(len(self.tokenizer),
-										pretrained_bert_path=args.pretrained_bert_path,
-										latent_dim=args.latent_dim,
-										num_labels=args.label_num,
-										voc_size=self.voc_size,
-										word_embedding_len=word_embedding_len,
-										sentence_embedding_len=sentence_embedding_len)
-		elif self.model_class == 'VaeAttention':
-			config = VaeAttentionConfig(len(self.tokenizer),
-										pretrained_bert_path=args.pretrained_bert_path,
-										latent_dim=args.latent_dim,
-										num_labels=args.label_num,
-										voc_size=self.voc_size,
-										word_embedding_len=word_embedding_len,
-										sentence_embedding_len=sentence_embedding_len)
-		elif self.model_class == 'BasicModel':
+		if self.model_class == 'BasicModel':
 			config = BasicConfig(len(self.tokenizer),
 								 pretrained_bert_path=args.pretrained_bert_path,
 								 num_labels=args.label_num,
@@ -1258,59 +900,7 @@ class TrainWholeModel:
 
 		# add model
 		# 获得模型的训练参数和对应的学习率
-		if self.model_class == 'OneSupremeMemory':
-			parameters_dict_list = [
-				{'params': model.bert_model.parameters(), 'lr': 5e-5},
-				# 这几个一样
-				{'params': model.key_layer.parameters(), 'lr': 1e-4},
-				{'params': model.value_layer.parameters(), 'lr': 1e-4},
-				{'params': model.memory_for_question, 'lr': 0.3},
-				{'params': model.memory_for_answer, 'lr': 0.3},
-				# {'params': model.memory_for_question, 'lr': 5e-5},
-				# {'params': model.memory_for_answer, 'lr': 5e-5},
-				{'params': model.vae_model.parameters(), 'lr': 1e-4},
-				{'params': model.classifier.parameters(), 'lr': 1e-4},
-			]
-		elif self.model_class == 'PureMemory':
-			parameters_dict_list = [
-				# 这几个一样
-				{'params': model.bert_model.parameters(), 'lr': 5e-5},
-				{'params': model.vae_model.parameters(), 'lr': 5e-5},
-				# 这几个一样
-				{'params': model.key_layer.parameters(), 'lr': 1e-4},
-				{'params': model.value_layer.parameters(), 'lr': 1e-4},
-				{'params': model.query_for_question, 'lr': 1e-4},
-				{'params': model.memory_for_question, 'lr': 1e-4},
-				{'params': model.query_for_answer, 'lr': 1e-4},
-				{'params': model.memory_for_answer, 'lr': 1e-4},
-				# 这个不设定
-				{'params': model.classifier.parameters(), 'lr': 1e-4}
-			]
-		elif self.model_class == 'VaeAttention':
-			parameters_dict_list = [
-				# 这几个一样
-				{'params': model.bert_model.parameters(), 'lr': 5e-5},
-				{'params': model.vae_model.parameters(), 'lr': 1e-4},
-				# 这几个一样
-				{'params': model.key_layer.parameters(), 'lr': 1e-4},
-				{'params': model.value_layer.parameters(), 'lr': 1e-4},
-				# 这个不设定
-				{'params': model.classifier.parameters(), 'lr': 1e-4}
-			]
-		elif self.model_class == 'VaeAttentionPlus':
-			parameters_dict_list = [
-				# 这几个一样
-				{'params': model.bert_model.parameters(), 'lr': 5e-5},
-				{'params': model.vae_model.parameters(), 'lr': 1e-4},
-				# 这几个一样
-				{'params': model.key_layer.parameters(), 'lr': 1e-4},
-				{'params': model.value_layer.parameters(), 'lr': 1e-4},
-				{'params': model.fusion_layer.parameters(), 'lr': 1e-4},
-				{'params': model.hint_layer.parameters(), 'lr': 1e-4},
-				# 这个不设定
-				{'params': model.classifier.parameters(), 'lr': 1e-4}
-			]
-		elif self.model_class == 'BasicModel':
+		if self.model_class == 'BasicModel':
 			parameters_dict_list = [
 				# 这几个一样
 				{'params': model.bert_model.parameters(), 'lr': 5e-5},
@@ -1357,53 +947,7 @@ class TrainWholeModel:
 
 		# 对于那些有两段的,第一段训练参数不太一样
 		if not final_stage_flag:
-			if self.model_class == 'OneSupremeMemory':
-				parameters_dict_list = [
-					# 这几个一样
-					{'params': model.key_layer.parameters(), 'lr': 1e-4},
-					{'params': model.value_layer.parameters(), 'lr': 1e-4},
-					{'params': model.memory_for_question, 'lr': 0.3},
-					{'params': model.memory_for_answer, 'lr': 0.3},
-					{'params': model.vae_model.parameters(), 'lr': 1e-4},
-					{'params': model.classifier.parameters(), 'lr': 1e-4},
-				]
-			elif self.model_class == 'PureMemory':
-				parameters_dict_list = [
-					# 这几个一样
-					{'params': model.vae_model.parameters(), 'lr': 1e-4},
-					# 这几个一样
-					{'params': model.key_layer.parameters(), 'lr': 1e-4},
-					{'params': model.value_layer.parameters(), 'lr': 1e-4},
-					{'params': model.query_for_question, 'lr': 1e-4},
-					{'params': model.memory_for_question, 'lr': 1e-4},
-					{'params': model.query_for_answer, 'lr': 1e-4},
-					{'params': model.memory_for_answer, 'lr': 1e-4},
-					# 这个不设定
-					{'params': model.classifier.parameters(), 'lr': 1e-4}
-				]
-			elif self.model_class == 'VaeAttention':
-				parameters_dict_list = [
-					# 这几个一样
-					{'params': model.vae_model.parameters(), 'lr': 1e-4},
-					# 这几个一样
-					{'params': model.key_layer.parameters(), 'lr': 1e-4},
-					{'params': model.value_layer.parameters(), 'lr': 1e-4},
-					# 这个不设定
-					{'params': model.classifier.parameters(), 'lr': 1e-4}
-				]
-			elif self.model_class == 'VaeAttentionPlus':
-				parameters_dict_list = [
-					# 这几个一样
-					{'params': model.vae_model.parameters(), 'lr': 1e-4},
-					# 这几个一样
-					{'params': model.key_layer.parameters(), 'lr': 1e-4},
-					{'params': model.value_layer.parameters(), 'lr': 1e-4},
-					{'params': model.fusion_layer.parameters(), 'lr': 1e-4},
-					{'params': model.hint_layer.parameters(), 'lr': 1e-4},
-					# 这个不设定
-					{'params': model.classifier.parameters(), 'lr': 1e-4},
-				]
-			elif self.model_class == 'BasicModel':
+			if self.model_class == 'BasicModel':
 				parameters_dict_list = [
 					# 这几个一样
 					{'params': model.key_layer.parameters(), 'lr': 1e-4},
@@ -1462,61 +1006,7 @@ class TrainWholeModel:
 			self.model = nn.DataParallel(self.model, device_ids=self.device_ids)
 
 	# 双塔模型的训练步
-	def __train_step_for_bi(self, batch, optimizer):
-		cross_entropy_function = nn.CrossEntropyLoss()
-
-		# 读取数据
-		q_input_ids = (batch['title_input_ids']).to(self.device)
-		q_token_type_ids = (batch['title_token_type_ids']).to(self.device)
-		q_attention_mask = (batch['title_attention_mask']).to(self.device)
-
-		a_input_ids = (batch['a_input_ids']).to(self.device)
-		a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
-		a_attention_mask = (batch['a_attention_mask']).to(self.device)
-
-		b_input_ids = (batch['body_input_ids']).to(self.device)
-		b_token_type_ids = (batch['body_token_type_ids']).to(self.device)
-		b_attention_mask = (batch['body_attention_mask']).to(self.device)
-
-		word_bag = (batch['word_bag']).to(self.device)
-
-		qa_labels = (batch['label']).to(self.device)
-
-		# 优化器置零
-		optimizer.zero_grad()
-		# 得到模型的结果
-		logits, vae_loss = self.model(
-			q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
-			q_attention_mask=q_attention_mask,
-			a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
-			a_attention_mask=a_attention_mask,
-			b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-			b_attention_mask=b_attention_mask, word_bag=word_bag)
-
-		# 计算损失
-		vae_loss = vae_loss.mean()
-		step_loss = cross_entropy_function(logits, qa_labels) + vae_loss
-
-		# 误差反向传播
-		step_loss.backward()
-		# 更新模型参数
-		optimizer.step()
-		optimizer.zero_grad()
-
-		# 统计命中率
-		step_shoot_num = logits.shape[0]
-		with torch.no_grad():
-			_, row_max_indices = logits.topk(k=1, dim=-1)
-			step_hit_num = 0
-			for i, max_index in enumerate(row_max_indices):
-				inner_index = max_index[0]
-				if inner_index == qa_labels[i]:
-					step_hit_num += 1
-
-		return step_loss, step_shoot_num, step_hit_num
-
-	# 双塔模型的训练步
-	def __train_step_for_bi_no_vae(self, batch, optimizer, now_batch_num):
+	def __train_step_for_bi(self, batch, optimizer, now_batch_num, scheduler):
 		cross_entropy_function = nn.CrossEntropyLoss()
 
 		# 读取数据
@@ -1533,9 +1023,6 @@ class TrainWholeModel:
 		b_attention_mask = (batch['body_attention_mask']).to(self.device)
 
 		qa_labels = (batch['label']).to(self.device)
-
-		# if self.local_rank == 0:
-		# 	print(f"0.2:{format(torch.cuda.memory_allocated(0))} \tfrom rank:{self.local_rank}")
 
 		# 优化器置零
 		optimizer.zero_grad()
@@ -1558,7 +1045,7 @@ class TrainWholeModel:
 		if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
 			optimizer.step()
 			optimizer.zero_grad()
-			self.scheduler.step()
+			scheduler.step()
 
 		# 统计命中率
 		step_shoot_num = logits.shape[0]
@@ -1624,34 +1111,6 @@ class TrainWholeModel:
 		b_token_type_ids = (batch['body_token_type_ids']).to(self.device)
 		b_attention_mask = (batch['body_attention_mask']).to(self.device)
 
-		word_bag = (batch['word_bag']).to(self.device)
-
-		with torch.no_grad():
-			# 得到模型的结果
-			logits, _ = self.model(
-				q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
-				q_attention_mask=q_attention_mask,
-				a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
-				a_attention_mask=a_attention_mask,
-				b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-				b_attention_mask=b_attention_mask, word_bag=word_bag)
-
-		return logits
-
-	def __val_step_for_bi_no_vae(self, batch):
-		# 读取数据
-		q_input_ids = (batch['title_input_ids']).to(self.device)
-		q_token_type_ids = (batch['title_token_type_ids']).to(self.device)
-		q_attention_mask = (batch['title_attention_mask']).to(self.device)
-
-		a_input_ids = (batch['a_input_ids']).to(self.device)
-		a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
-		a_attention_mask = (batch['a_attention_mask']).to(self.device)
-
-		b_input_ids = (batch['body_input_ids']).to(self.device)
-		b_token_type_ids = (batch['body_token_type_ids']).to(self.device)
-		b_attention_mask = (batch['body_attention_mask']).to(self.device)
-
 		with torch.no_grad():
 			# 得到模型的结果
 			logits = self.model(
@@ -1682,12 +1141,7 @@ class TrainWholeModel:
 								  int((split_index + 1) * len(data) / split_num)]
 
 		# add model
-		if self.model_class in ["OneSupremeMemory", 'PureMemory', 'VaeAttention', 'VaeAttentionPlus']:
-			now_dataset = Test_TBA_word_bag_classify_dataset(data=now_data_block,
-															 tokenizer=self.tokenizer,
-															 text_max_len=self.text_max_len - self.memory_num,
-															 voc=self.voc)
-		elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
+		if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
 			now_dataset = TBAClassifyDataset(data=now_data_block,
 											 tokenizer=self.tokenizer,
 											 text_max_len=self.text_max_len - self.memory_num)
