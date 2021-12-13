@@ -104,17 +104,17 @@ class TrainWholeModel:
 		self.model = None
 		self.teacher_model = None
 
-	def train(self, model_save_path, train_two_stage_flag):
+	def train(self, model_save_path, train_two_stage_flag, memory_save_name):
 		# 用来判断是哪一阶段的训练
 		final_stage_flag = not train_two_stage_flag
-		# 如果读取了中间模型，也就说明直接训第二阶段
-		if self.args.load_middle:
-			final_stage_flag = True
 
 		while True:
 			# 创建模型
 			self.model = self.__create_model()
-			torch.cuda.empty_cache()
+
+			# 读取预训练好的memory
+			if self.load_memory_flag:
+				self.load_pretrained_memory(memory_save_name)
 
 			# 如果要进行第二阶段训练，那需要先读取上一阶段最好的model
 			if final_stage_flag and train_two_stage_flag:
@@ -127,12 +127,18 @@ class TrainWholeModel:
 			self.__model_parallel()
 
 			# 优化器
-			optimizer, scheduler = self.__get_model_optimizer(final_stage_flag=final_stage_flag)
+			optimizer = self.__get_model_optimizer(final_stage_flag=final_stage_flag)
 
 			# 准备训练
 			previous_best_r_1 = -1
 
-			print("---------------------- begin train ----------------------")
+			if train_two_stage_flag:
+				if final_stage_flag:
+					print("~"*60 + " begin final stage train " + "~"*60)
+				else:
+					print("~"*60 + " begin first stage train " + "~"*60)
+			else:
+				print("~"*60 + " begin one stage train " + "~"*60)
 
 			# 设置早停变量
 			if final_stage_flag:
@@ -143,6 +149,8 @@ class TrainWholeModel:
 			early_stop_count = 0
 
 			for epoch in range(self.num_train_epochs):
+				torch.cuda.empty_cache()
+
 				# whether this epoch get the best model
 				this_epoch_best = False
 
@@ -191,10 +199,13 @@ class TrainWholeModel:
 					# 获取scheduler
 					if epoch == 0 and split_index == 0:
 						t_total = (
-										  len(train_block_dataloader) // self.gradient_accumulation_steps) * self.num_train_epochs
+										  len(train_block_dataloader) // self.gradient_accumulation_steps) * self.num_train_epochs * self.dataset_split_num
 						scheduler = get_linear_schedule_with_warmup(optimizer,
 																	num_warmup_steps=int(t_total * 0.02),
 																	num_training_steps=t_total)
+						print(f"Train {self.num_train_epochs} epochs, Block num {self.dataset_split_num}, "
+							  f"Block Batch num {len(train_block_dataloader)}, "
+							  f"Acc num {self.gradient_accumulation_steps}, Total update {t_total}\n")
 
 					# 开始训练这一块
 					train_loss, shoot_num, hit_num, \
@@ -228,8 +239,6 @@ class TrainWholeModel:
 	def __train_one_data_block(self, train_block_dataloader, epoch, optimizer, train_loss, shoot_num, hit_num,
 							   now_batch_num, final_stage_flag, model_save_path, previous_best_r_1,
 							   this_epoch_best, next_val_num, scheduler):
-		torch.cuda.empty_cache()
-
 		# 进度条
 		bar = tqdm(train_block_dataloader, total=len(train_block_dataloader))
 
@@ -255,13 +264,14 @@ class TrainWholeModel:
 			now_batch_num += 1
 
 			bar.set_description(
-				"epoch {:>3d} loss {:.4f} Acc {:>10d}/{:>10d} = {.4f}".format(epoch + 1, train_loss / now_batch_num,
+				"epoch {:>3d} loss {:.4f} Acc {:>10d}/{:>10d} = {:.4f}".format(epoch + 1, train_loss / now_batch_num,
 																			  hit_num, shoot_num,
 																			  hit_num / shoot_num * 100))
 
 			# 要不要是时候评测一下呢，一个epoch评测 val_num_each_epoch 次
 			val_interval = (
-									   len(train_block_dataloader) * self.dataset_split_num - self.gradient_accumulation_steps + 1) // self.val_num_each_epoch
+								   (
+											   len(train_block_dataloader) - 1) * self.dataset_split_num - self.gradient_accumulation_steps) // self.val_num_each_epoch
 
 			if now_batch_num // val_interval >= next_val_num and next_val_num <= self.val_num_each_epoch:
 				# 还有梯度没更新的话，会占着显存，影响val batch size，所以就下步val了
@@ -282,7 +292,7 @@ class TrainWholeModel:
 				r_1 = self.ranking()
 				print(
 					f"{epoch + 1} epoch middle eval: " + "*" * 30 +
-					f"\nval_loss:{val_loss}\tval_acc{val_acc}\tR@1:{r_1}\tfrom rank:{self.local_rank}")
+					f"\nval_loss:{val_loss}\tval_acc{val_acc}\tR@1:{r_1}\tprevious best R@1:{previous_best_r_1}\tfrom rank:{self.local_rank}")
 
 				# 模型是否比之前优秀
 				if r_1 > previous_best_r_1:
@@ -300,10 +310,7 @@ class TrainWholeModel:
 				del val_dataloader, test_data
 				gc.collect()
 
-			torch.cuda.empty_cache()
-
 		gc.collect()
-		torch.cuda.empty_cache()
 
 		return train_loss, shoot_num, hit_num, \
 			   now_batch_num, previous_best_r_1, \
@@ -370,6 +377,8 @@ class TrainWholeModel:
 		optimizer = torch.optim.Adam(parameters_dict_list)
 
 		# 开始训练
+		print("~" * 60 + " begin MLM train " + "~" * 60)
+
 		previous_min_loss = np.inf
 		early_stop_threshold = 10
 		worse_epoch_count = 0
@@ -406,15 +415,15 @@ class TrainWholeModel:
 
 				# 根据参数更新的总次数获得scheduler
 				if epoch == 0 and split_index == 0:
-					t_total = (len(train_dataloader) // self.gradient_accumulation_steps) * self.num_train_epochs
+					t_total = (len(train_dataloader) // self.gradient_accumulation_steps) * self.num_train_epochs * self.dataset_split_num
 					scheduler = get_linear_schedule_with_warmup(optimizer,
 																num_warmup_steps=int(t_total * 0.02),
 																num_training_steps=t_total)
+					print(f"Train {self.num_train_epochs} epochs, Block num {self.dataset_split_num}, "
+						  f"Block Batch num {len(train_dataloader)}, "
+						  f"Acc num {self.gradient_accumulation_steps}, Total update {t_total}\n")
 
 				for batch in bar:
-					# 清理下缓存
-					torch.cuda.empty_cache()
-
 					# 进行一个mask
 					batch['input_ids'], label = data_collator.torch_mask_tokens(batch['input_ids'],
 																				batch['special_tokens_mask'])
@@ -435,7 +444,7 @@ class TrainWholeModel:
 					# 更新计数器
 					now_batch_num += 1
 					epoch_all_loss += loss.item()
-					bar.set_description("epoch {} loss {.4f}".format(epoch + 1, epoch_all_loss/now_batch_num))
+					bar.set_description("epoch {} loss {:.4f}".format(epoch + 1, epoch_all_loss/now_batch_num))
 
 					# 是否更新参数
 					if now_batch_num % self.gradient_accumulation_steps == 0:
@@ -447,7 +456,8 @@ class TrainWholeModel:
 
 					# 要不要是时候评测一下呢，一个epoch评测 val_num_each_epoch 次
 					val_interval = ((
-												len(train_dataloader) * self.dataset_split_num) - self.gradient_accumulation_steps + 1) // self.val_num_each_epoch
+											(
+														len(train_dataloader) - 1) * self.dataset_split_num) - self.gradient_accumulation_steps) // self.val_num_each_epoch
 
 					if now_batch_num // val_interval >= next_val_num and next_val_num <= self.val_num_each_epoch:
 						# 如果还有梯度存着，那就先不val，免得遇到大val_batch_size爆显存
@@ -485,7 +495,7 @@ class TrainWholeModel:
 
 						print(
 							f"{epoch + 1} epoch middle eval: " + "*" * 30 +
-							f"\nval_loss:{val_loss}\tfrom rank:{self.local_rank}")
+							f"\nval_loss:{val_loss}\tprevious min loss:{previous_min_loss}\tfrom rank:{self.local_rank}")
 
 						# 模型是否比之前优秀
 						if val_loss < previous_min_loss:
@@ -512,6 +522,8 @@ class TrainWholeModel:
 
 			if not this_epoch_best:
 				worse_epoch_count += 1
+			else:
+				worse_epoch_count = 0
 
 			if worse_epoch_count == early_stop_threshold:
 				print("training finished!!!")
@@ -573,6 +585,18 @@ class TrainWholeModel:
 			self.model.train()
 
 		return val_loss, accuracy
+
+	def load_pretrained_memory(self, memory_save_name):
+		saved_dict = torch.load("./model/pretrained_memory/" + memory_save_name)
+		memory_start_index = saved_dict['memory_start_index']
+
+		memory_weights = {'memory_for_answer':saved_dict['embedding']['weight'][memory_start_index:],
+						  'memory_for_question':saved_dict['embedding']['weight'][memory_start_index:]}
+
+		model_dict = self.model.state_dict()
+		model_dict.update(memory_weights)
+		self.model.load_state_dict(model_dict)
+		print(f"Memory is loaded from ./model/pretrained_memory/{memory_save_name} !!!")
 
 	def save_model(self, model_save_path, postfix=""):
 		self.model.eval()
@@ -847,6 +871,7 @@ class TrainWholeModel:
 		self.num_train_epochs = args.num_train_epochs
 		self.gradient_accumulation_steps = args.gradient_accumulation_steps
 		self.no_initial_test = args.no_initial_test
+		self.load_memory_flag = args.load_memory
 
 	# 读取命令行传入的有关config的参数
 	def __read_args_for_config(self, args):
@@ -917,12 +942,12 @@ class TrainWholeModel:
 				# 这几个一样
 				{'params': model.bert_model.parameters(), 'lr': 5e-5},
 				# 这几个一样
-				# {'params': model.memory_for_question, 'lr': 5e-5},
-				# {'params': model.memory_for_answer, 'lr': 5e-5},
+				{'params': model.memory_for_question, 'lr': 5e-5},
+				{'params': model.memory_for_answer, 'lr': 5e-5},
 				# {'params': model.memory_for_question, 'lr': 1e-4},
 				# {'params': model.memory_for_answer, 'lr': 1e-4},
-				{'params': model.memory_for_question, 'lr': 0.3},
-				{'params': model.memory_for_answer, 'lr': 0.3},
+				# {'params': model.memory_for_question, 'lr': 0.3},
+				# {'params': model.memory_for_answer, 'lr': 0.3},
 				{'params': model.self_attention_weight_layer.parameters(), 'lr': 1e-4},
 				{'params': model.value_layer.parameters(), 'lr': 1e-4},
 				# 这个不设定
@@ -983,9 +1008,8 @@ class TrainWholeModel:
 				raise Exception("Have Two Stage But No optimizer supported for this model class!")
 
 		optimizer = torch.optim.Adam(parameters_dict_list, lr=5e-5)
-		scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9, verbose=True)
 
-		return optimizer, scheduler
+		return optimizer
 
 	def __model_to_device(self):
 		self.model.to(self.device)
@@ -1024,8 +1048,6 @@ class TrainWholeModel:
 
 		qa_labels = (batch['label']).to(self.device)
 
-		# 优化器置零
-		optimizer.zero_grad()
 		# 得到模型的结果
 		logits = self.model(
 			q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
