@@ -334,6 +334,33 @@ class TrainWholeModel:
 		print(f"now token num:{len(self.tokenizer)}")
 		print("-" * 30 + "\n")
 
+		# 创建模型
+		print("create model ...", end=" ")
+		model = BertForMaskedLM.from_pretrained(self.config.pretrained_bert_path)
+		model.resize_token_embeddings(len(self.tokenizer))
+		model.to(self.device)
+		model.train()
+		print("end")
+		print("-" * 30)
+
+		# 获得optimizer，只训练那几个embedding
+		# 节省显存和时间
+		for n, p in model.named_parameters():
+			if 'cls' in n or 'embeddings' in n:
+				continue
+			else:
+				p.requires_grad = False
+
+		model_embeddings = model.get_input_embeddings()
+		print(f"embedding shape: {model_embeddings.weight.shape}")
+		print(f"model_embeddings is model.cls.predictions.decoder: {model_embeddings.weight is model.cls.predictions.decoder.weight}")
+
+		parameters_dict_list = [
+			{'params': model_embeddings.parameters(), 'lr': 0.3},
+			# {'params': model.cls.parameters(), 'lr': 1e-4},
+		]
+		optimizer = torch.optim.Adam(parameters_dict_list)
+
 		# 遮盖数据的api，很关键
 		data_collator = DataCollatorForLanguageModeling(
 			tokenizer=self.tokenizer, mlm=True, mlm_probability=0.15
@@ -357,24 +384,6 @@ class TrainWholeModel:
 
 		print("end")
 		print("-" * 30)
-
-		# 创建模型
-		print("create model ...", end=" ")
-		model = BertForMaskedLM.from_pretrained(self.config.pretrained_bert_path)
-		model.resize_token_embeddings(len(self.tokenizer))
-		model.to(self.device)
-		model.train()
-		print("end")
-		print("-" * 30)
-
-		# 获得optimizer，只训练那几个embedding
-		model_embeddings = model.get_input_embeddings()
-		print(f"embedding shape: {model_embeddings.weight.shape}")
-
-		parameters_dict_list = [
-			{'params': model_embeddings.parameters(), 'lr': 0.3},
-		]
-		optimizer = torch.optim.Adam(parameters_dict_list)
 
 		# 开始训练
 		print("~" * 60 + " begin MLM train " + "~" * 60)
@@ -408,7 +417,7 @@ class TrainWholeModel:
 										   memory_num=self.memory_num, memory_start_index=voc_size)
 
 				train_dataloader = DataLoader(train_dataset, batch_size=self.train_batch_size, num_workers=2,
-											  shuffle=True, drop_last=True)
+											  shuffle=True, drop_last=True, collate_fn=data_collator)
 
 				# 进度条
 				bar = tqdm(train_dataloader, total=len(train_dataloader))
@@ -424,15 +433,11 @@ class TrainWholeModel:
 						  f"Acc num {self.gradient_accumulation_steps}, Total update {t_total}\n")
 
 				for batch in bar:
-					# 进行一个mask
-					batch['input_ids'], label = data_collator.torch_mask_tokens(batch['input_ids'],
-																				batch['special_tokens_mask'])
-
 					# 读取数据
 					input_ids = (batch['input_ids']).to(self.device)
 					token_type_ids = (batch['token_type_ids']).to(self.device)
 					attention_mask = (batch['attention_mask']).to(self.device)
-					label = label.to(self.device)
+					label = (batch['labels']).to(self.device)
 
 					result = model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
 								   labels=label)
@@ -467,23 +472,18 @@ class TrainWholeModel:
 						next_val_num += 1
 						test_dataloader = DataLoader(test_dataset, batch_size=self.val_batch_size, num_workers=2,
 													 shuffle=True,
-													 drop_last=True)
+													 drop_last=True, collate_fn=data_collator)
 
 						# 获得评测结果
 						model.eval()
 						val_loss = 0.0
 
 						for val_batch in test_dataloader:
-							# 进行一个mask
-							val_batch['input_ids'], val_label = data_collator.torch_mask_tokens(val_batch['input_ids'],
-																								val_batch[
-																									'special_tokens_mask'])
-
 							# 读取数据
 							input_ids = (val_batch['input_ids']).to(self.device)
 							token_type_ids = (val_batch['token_type_ids']).to(self.device)
 							attention_mask = (val_batch['attention_mask']).to(self.device)
-							val_label = val_label.to(self.device)
+							val_label = (val_batch['labels']).to(self.device)
 
 							with torch.no_grad():
 								result = model(input_ids=input_ids, token_type_ids=token_type_ids,
@@ -506,7 +506,11 @@ class TrainWholeModel:
 										  'memory_num': self.memory_num,
 										  'memory_start_index': voc_size,
 										  'embedding_shape': model_embeddings.weight.shape,
-										  'embedding': model_embeddings.state_dict()}
+										  'embedding': model_embeddings.state_dict(),
+										  'optimizer': optimizer.state_dict(),
+										  'scheduler': scheduler.state_dict(),
+										  'min loss': previous_min_loss,
+										  'epoch': epoch + 1}
 
 							torch.save(save_state, "./model/pretrained_memory/" + memory_save_name)
 							print(f"model saved at ./model/pretrained_memory/{memory_save_name}!!!")
@@ -520,6 +524,27 @@ class TrainWholeModel:
 				del data_block, train_dataset, train_dataloader
 				gc.collect()
 
+			# epoch结束，保存最新的模型
+			if not os.path.exists("./last_model/pretrained_memory/"):
+				os.makedirs("./last_model/pretrained_memory/")
+
+			# Only save the model it-self, maybe parallel
+			# model_to_save = model.module if hasattr(model, 'module') else model
+
+			save_state = {'pretrained_bert_path': self.config.pretrained_bert_path,
+						  'memory_num': self.memory_num,
+						  'memory_start_index': voc_size,
+						  'embedding_shape': model_embeddings.weight.shape,
+						  'embedding': model_embeddings.state_dict(),
+						  'optimizer': optimizer.state_dict(),
+						  'scheduler': scheduler.state_dict(),
+						  'min loss': previous_min_loss,
+						  'epoch': epoch + 1}
+
+			torch.save(save_state, "./last_model/pretrained_memory/" + memory_save_name)
+			print(f"model saved at ./last_model/pretrained_memory/{memory_save_name}!!!")
+
+			# 进行早停操作
 			if not this_epoch_best:
 				worse_epoch_count += 1
 			else:
