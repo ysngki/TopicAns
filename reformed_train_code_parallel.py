@@ -218,6 +218,19 @@ class TrainWholeModel:
 						previous_best_r_1,
 						this_epoch_best, next_val_num, scheduler)
 
+				# 存储最新的模型
+				postfix = ""
+				if not final_stage_flag:
+					postfix = "_middle"
+
+				if not os.path.exists("./last_model/"):
+					os.makedirs("./last_model/")
+
+				self.save_model(model_save_path="./last_model/" + self.model_save_prefix +
+											 self.model_class + "_" +
+											 self.dataset_name, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
+								previous_best_performance=previous_best_r_1, postfix=postfix)
+
 				# 是否早停
 				if this_epoch_best:
 					early_stop_count = 0
@@ -304,7 +317,7 @@ class TrainWholeModel:
 					if not final_stage_flag:
 						postfix = "_middle"
 
-					self.save_model(model_save_path=model_save_path, postfix=postfix)
+					self.save_model(model_save_path=model_save_path, epoch=epoch, optimizer=optimizer, scheduler=scheduler, previous_best_performance=previous_best_r_1, postfix=postfix)
 
 				gc.collect()
 				del val_dataloader, test_data
@@ -623,15 +636,24 @@ class TrainWholeModel:
 		self.model.load_state_dict(model_dict)
 		print(f"Memory is loaded from ./model/pretrained_memory/{memory_save_name} !!!")
 
-	def save_model(self, model_save_path, postfix=""):
+	def save_model(self, model_save_path, optimizer, scheduler, epoch, previous_best_performance, postfix=""):
 		self.model.eval()
 
 		save_path = model_save_path + postfix
 
-		if self.data_distribute or self.data_parallel:
-			torch.save(self.model.module.state_dict(), save_path)
-		else:
-			torch.save(self.model.state_dict(), save_path)
+		# Only save the model it-self, maybe parallel
+		model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
+
+		# 保存模型
+		save_state = {'pretrained_bert_path': self.config.pretrained_bert_path,
+					  'memory_num': self.memory_num,
+					  'model': model_to_save.state_dict(),
+					  'optimizer': optimizer.state_dict(),
+					  'scheduler': scheduler.state_dict(),
+					  'best performance': previous_best_performance,
+					  'epoch': epoch + 1}
+
+		torch.save(save_state, save_path)
 
 		# if self.data_distribute:
 		# 	checkpoint = {
@@ -886,6 +908,7 @@ class TrainWholeModel:
 		self.train_batch_size = args.train_batch_size
 		self.ranking_candidate_num = args.ranking_candidate_num
 		self.latent_dim = args.latent_dim
+		self.model_save_prefix = args.model_save_prefix
 
 		self.local_rank = args.local_rank
 		self.data_parallel = args.data_parallel
