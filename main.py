@@ -33,6 +33,7 @@ def read_arguments():
 	parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
 	parser.add_argument("--val_num_each_epoch", default=3, type=int)
 	parser.add_argument("--save_model_dict", default="./model/", type=str)
+	parser.add_argument("--first_stage_lr", default=0.3, type=float, help="the lr of memory at first stage")
 
 	# related to model
 	parser.add_argument("--hop_num", default=1, type=int, help = 'hop num for pure memory')
@@ -48,6 +49,8 @@ def read_arguments():
 	parser.add_argument("--distill", action="store_true", default=False)
 	parser.add_argument("--teacher_path", default="./model/teacher", type=str)
 	parser.add_argument("--mlm", action="store_true", default=False)
+	parser.add_argument("--only_final", action="store_true", default=False,
+						help="using two stage setting but only train last stage")
 
 	# 设置并行需要改的
 	parser.add_argument('--local_rank', type=int, default=0, help='node rank for distributed training')
@@ -107,5 +110,5 @@ if __name__ == '__main__':
 											 my_args.model_class + "_" +
 											 my_args.dataset_name, train_two_stage_flag=my_train_two_stage_flag,
 							 memory_save_name=my_args.memory_save_prefix + "_" +
-											  my_args.dataset_name)
+											  my_args.dataset_name, only_final=my_args.only_final)
 

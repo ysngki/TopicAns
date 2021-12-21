@@ -240,6 +240,86 @@ class InputMemorySelfAtt(nn.Module):
 
         return out
 
+    # use the average embedding of last layer as sentence representation
+    def get_rep_by_avg(self, input_ids, token_type_ids, attention_mask, is_question):
+        # ----------------------通过memory来丰富信息---------------------
+        # 要确认训练时它有没有被修改
+        memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
+                                             device=input_ids.device)
+        one_tensor = torch.tensor([1], requires_grad=False, device=input_ids.device)
+
+        # 获得隐藏层输出, (batch, sequence, embedding)
+        temp_embeddings = self.embeddings(input_ids)
+
+        final_embeddings = None
+        final_attention_mask = None
+        final_token_type_ids = None
+
+        # input_ids (batch, sequence)
+        for index, batch_attention_mask in enumerate(attention_mask):
+            input_embeddings = temp_embeddings[index][batch_attention_mask == 1]
+            pad_embeddings = temp_embeddings[index][batch_attention_mask == 0]
+
+            if is_question:
+                whole_embeddings = torch.cat((input_embeddings, self.memory_for_question, pad_embeddings), dim=0)
+            else:
+                whole_embeddings = torch.cat((input_embeddings, self.memory_for_answer, pad_embeddings), dim=0)
+
+            # 处理attention_mask
+            whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
+                                              batch_attention_mask[batch_attention_mask == 0]), dim=-1)
+
+            # 处理token_type_id
+            remain_token_type_ids_len = batch_attention_mask.shape[0] + self.memory_num - input_embeddings.shape[0]
+            whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
+                                              one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
+
+            whole_embeddings = whole_embeddings.unsqueeze(0)
+            whole_attention_mask = whole_attention_mask.unsqueeze(0)
+            whole_token_type_ids = whole_token_type_ids.unsqueeze(0)
+
+            if final_embeddings is None:
+                final_embeddings = whole_embeddings
+                final_attention_mask = whole_attention_mask
+                final_token_type_ids = whole_token_type_ids
+            else:
+                final_embeddings = torch.cat((final_embeddings, whole_embeddings), dim=0)
+                final_attention_mask = torch.cat((final_attention_mask, whole_attention_mask), dim=0)
+                final_token_type_ids = torch.cat((final_token_type_ids, whole_token_type_ids), dim=0)
+
+        out = self.bert_model(inputs_embeds=final_embeddings, attention_mask=final_attention_mask,
+                              token_type_ids=final_token_type_ids)
+
+        # get the average embeddings of last layer, excluding memory and special token(?)
+        # (batch_size, sequence_length, hidden_size)
+        last_hidden_state = out['last_hidden_state']
+
+        # (batch_size, sequence_length)
+        final_token_type_ids[final_token_type_ids == 0] = 2
+        # remove memory
+        final_token_type_ids -= 1
+        # remove cls
+        final_token_type_ids[:, 0] = 0
+        # remove sep
+        sequence_len = final_token_type_ids.sum(dim=-1)
+        sequence_len = sequence_len.unsqueeze(-1)
+        final_token_type_ids.scatter_(dim=1, index=sequence_len, src=torch.zeros((final_token_type_ids.shape[0], 1), device=input_ids.device, dtype=final_token_type_ids.dtype))
+
+        # (batch_size, sequence_length, 1)
+        final_token_type_ids = final_token_type_ids.unsqueeze(-1)
+        last_hidden_state *= final_token_type_ids
+
+        # get average embedding
+        representations = last_hidden_state.sum(dim=1)
+        sequence_len = sequence_len - 1
+
+        if (sequence_len.squeeze(-1) == 0).sum() > 0:
+            raise Exception("Existing sequence with length 0!!")
+
+        representations = representations / sequence_len
+
+        return representations
+
     def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
@@ -263,21 +343,29 @@ class InputMemorySelfAtt(nn.Module):
         # a_embeddings = self.get_rep_by_self_att(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
         #                                         attention_mask=a_attention_mask, is_question=False)
 
-        q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-                                              attention_mask=q_attention_mask, is_question=True)
+        # q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+        #                                       attention_mask=q_attention_mask, is_question=True)
+        #
+        # b_embeddings = self.get_rep_by_pooler(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+        #                                       attention_mask=b_attention_mask, is_question=True)
+        #
+        # a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+        #                                       attention_mask=a_attention_mask, is_question=False)
 
-        b_embeddings = self.get_rep_by_pooler(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-                                              attention_mask=b_attention_mask, is_question=True)
+        q_embeddings = self.get_rep_by_avg(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                           attention_mask=q_attention_mask, is_question=True)
 
-        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-                                              attention_mask=a_attention_mask, is_question=False)
+        b_embeddings = self.get_rep_by_avg(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                           attention_mask=b_attention_mask, is_question=True)
+
+        a_embeddings = self.get_rep_by_avg(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                           attention_mask=a_attention_mask, is_question=False)
 
         # return torch.zeros((q_input_ids.shape[0], 4), device=q_input_ids.device, requires_grad=True)
 
         # # 根据输入，进行思考, 思考的结果要选择性遗忘
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
                                  b_embedding=b_embeddings)
-
 
         return logits
 

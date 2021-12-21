@@ -1,6 +1,5 @@
 # %%
 import datasets
-from nltk.corpus import stopwords
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch
@@ -31,7 +30,7 @@ class TrainWholeModel:
 		os.environ["TOKENIZERS_PARALLELISM"] = "false"
 		os.environ["CUDA_VISIBLE_DEVICES"] = args.nvidia_number
 
-		# for data_parallel
+		# for data_parallel-------------------------------------------------------------------
 		nvidia_number = len(args.nvidia_number.split(","))
 		self.device_ids = [i for i in range(nvidia_number)]
 
@@ -69,31 +68,6 @@ class TrainWholeModel:
 			self.tokenizer.save_pretrained("./tokenizer/" + tokenizer_path)
 			tokenizer_config.save_pretrained("./tokenizer/" + tokenizer_path)
 
-		# 获得词汇表-------------------------------------------------------------------
-		# add model
-		if self.model_class in ['InputMemorySelfAtt', 'PureMemorySelfAtt', 'BasicModel']:
-			pass
-		else:
-			STOPWORDS = set(stopwords.words('english'))
-
-			self.voc = {}
-			self.voc_size = 0
-			threshold = 20
-
-			with open("./" + self.dataset_name + "/glove/vocab.txt", "r") as f:
-				for line in f:
-					now_word = line.split()[0]
-
-					if eval(line.split()[1]) < threshold:
-						continue
-
-					if now_word in STOPWORDS:
-						continue
-
-					if self.voc.get(now_word) is None:
-						self.voc[now_word] = self.voc_size
-						self.voc_size += 1
-
 		# 获得模型配置-------------------------------------------------------------------
 		if config is None:
 			self.config = self.__read_args_for_config(args)
@@ -104,9 +78,12 @@ class TrainWholeModel:
 		self.model = None
 		self.teacher_model = None
 
-	def train(self, model_save_path, train_two_stage_flag, memory_save_name):
+	def train(self, model_save_path, train_two_stage_flag, memory_save_name, only_final=False):
 		# 用来判断是哪一阶段的训练
 		final_stage_flag = not train_two_stage_flag
+
+		if only_final:
+			final_stage_flag = True
 
 		while True:
 			# 创建模型
@@ -183,6 +160,8 @@ class TrainWholeModel:
 				# 读取训练数据
 				train_data = datasets.load_from_disk("./" + self.dataset_name + "/string_train.dataset")
 				train_data = train_data.shuffle(seed=None)
+
+				self.model.train()
 
 				# 逐块训练
 				for split_index in range(self.dataset_split_num):
@@ -538,6 +517,7 @@ class TrainWholeModel:
 				gc.collect()
 
 			# epoch结束，保存最新的模型
+			model.eval()
 			if not os.path.exists("./last_model/pretrained_memory/"):
 				os.makedirs("./last_model/pretrained_memory/")
 
@@ -556,6 +536,7 @@ class TrainWholeModel:
 
 			torch.save(save_state, "./last_model/pretrained_memory/" + memory_save_name)
 			print(f"model saved at ./last_model/pretrained_memory/{memory_save_name}!!!")
+			model.train()
 
 			# 进行早停操作
 			if not this_epoch_best:
@@ -685,7 +666,7 @@ class TrainWholeModel:
 
 		load_path = load_model_path
 
-		model.load_state_dict(torch.load(load_path))
+		model.load_state_dict(torch.load(load_path)['model'])
 
 		# if self.data_distribute:
 		# 	load_path += ".pt"
@@ -920,6 +901,8 @@ class TrainWholeModel:
 		self.gradient_accumulation_steps = args.gradient_accumulation_steps
 		self.no_initial_test = args.no_initial_test
 		self.load_memory_flag = args.load_memory
+		self.first_stage_lr = args.first_stage_lr
+
 
 	# 读取命令行传入的有关config的参数
 	def __read_args_for_config(self, args):
@@ -1033,8 +1016,10 @@ class TrainWholeModel:
 			elif self.model_class == 'InputMemorySelfAtt':
 				parameters_dict_list = [
 					# 这几个一样
-					{'params': model.memory_for_question, 'lr': 0.3},
-					{'params': model.memory_for_answer, 'lr': 0.3},
+					{'params': model.memory_for_question, 'lr': self.first_stage_lr},
+					{'params': model.memory_for_answer, 'lr': self.first_stage_lr},
+					# {'params': model.memory_for_question, 'lr': 1e-4},
+					# {'params': model.memory_for_answer, 'lr': 1e-4},
 					{'params': model.self_attention_weight_layer.parameters(), 'lr': 1e-4},
 					{'params': model.value_layer.parameters(), 'lr': 1e-4},
 					# 这个不设定
@@ -1055,7 +1040,9 @@ class TrainWholeModel:
 			else:
 				raise Exception("Have Two Stage But No optimizer supported for this model class!")
 
+		print(parameters_dict_list)
 		optimizer = torch.optim.Adam(parameters_dict_list, lr=5e-5)
+		print("*"*30)
 
 		return optimizer
 
