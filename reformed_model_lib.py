@@ -12,7 +12,7 @@ from attention_module import attend
 # --------------------------------------
 class InputMemorySelfAttConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
-                 word_embedding_len=512, sentence_embedding_len=512, memory_num=50):
+                 word_embedding_len=512, sentence_embedding_len=512, memory_num=50, composition='pooler'):
 
         self.tokenizer_len = tokenizer_len
         self.pretrained_bert_path = pretrained_bert_path
@@ -20,6 +20,7 @@ class InputMemorySelfAttConfig:
         self.word_embedding_len = word_embedding_len
         self.sentence_embedding_len = sentence_embedding_len
         self.memory_num = memory_num
+        self.composition = composition
 
     def __str__(self):
         print("*"*20 + "config" + "*"*20)
@@ -29,6 +30,7 @@ class InputMemorySelfAttConfig:
         print("word_embedding_len:", self.word_embedding_len)
         print("sentence_embedding_len:", self.sentence_embedding_len)
         print("memory_num:", self.memory_num)
+        print("composition:", self.composition)
 
 
 class InputMemorySelfAtt(nn.Module):
@@ -294,27 +296,41 @@ class InputMemorySelfAtt(nn.Module):
         # (batch_size, sequence_length, hidden_size)
         last_hidden_state = out['last_hidden_state']
 
-        # (batch_size, sequence_length)
-        final_token_type_ids[final_token_type_ids == 0] = 2
-        # remove memory
-        final_token_type_ids -= 1
-        # remove cls
-        final_token_type_ids[:, 0] = 0
-        # remove sep
-        sequence_len = final_token_type_ids.sum(dim=-1)
-        sequence_len = sequence_len.unsqueeze(-1)
-        final_token_type_ids.scatter_(dim=1, index=sequence_len, src=torch.zeros((final_token_type_ids.shape[0], 1), device=input_ids.device, dtype=final_token_type_ids.dtype))
+        with torch.no_grad():
+            # (batch_size, sequence_length)
+            temp_mask = final_token_type_ids.clone().detach()
 
-        # (batch_size, sequence_length, 1)
-        final_token_type_ids = final_token_type_ids.unsqueeze(-1)
-        last_hidden_state *= final_token_type_ids
+            # remove memory
+            temp_mask[temp_mask == 0] = 2
+            temp_mask -= 1
+
+            # remove cls, if cls is removed, some sentences may be empty
+            # temp_mask[:, 0] = 0
+
+            # remove sep
+            sequence_len = temp_mask.sum(dim=-1) - 1
+            sequence_len = sequence_len.unsqueeze(-1)
+            temp_mask.scatter_(dim=1, index=sequence_len, src=torch.zeros((temp_mask.shape[0], 1), device=input_ids.device, dtype=temp_mask.dtype))
+
+            # (batch_size, sequence_length, 1)
+            temp_mask = temp_mask.unsqueeze(-1)
+
+        last_hidden_state = last_hidden_state * temp_mask
 
         # get average embedding
         representations = last_hidden_state.sum(dim=1)
-        sequence_len = sequence_len - 1
 
-        if (sequence_len.squeeze(-1) == 0).sum() > 0:
-            raise Exception("Existing sequence with length 0!!")
+        # actually exist sentence which is empty
+        # if (sequence_len.squeeze(-1) == 0).sum() > 0:
+        #     temp_sequence_len = sequence_len.squeeze(-1)
+        #     for index, length in enumerate(temp_sequence_len):
+        #         if length == 0:
+        #             print(f"Is question:{is_question}")
+        #             print(token_type_ids[index])
+        #             print(input_ids[index])
+        #             print(attention_mask[index])
+        #
+        #     raise Exception("Existing sequence with length 0!!")
 
         representations = representations / sequence_len
 
@@ -343,23 +359,26 @@ class InputMemorySelfAtt(nn.Module):
         # a_embeddings = self.get_rep_by_self_att(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
         #                                         attention_mask=a_attention_mask, is_question=False)
 
-        # q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                       attention_mask=q_attention_mask, is_question=True)
-        #
-        # b_embeddings = self.get_rep_by_pooler(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-        #                                       attention_mask=b_attention_mask, is_question=True)
-        #
-        # a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                       attention_mask=a_attention_mask, is_question=False)
+        if self.config.composition == 'avg':
+            q_embeddings = self.get_rep_by_avg(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                               attention_mask=q_attention_mask, is_question=True)
 
-        q_embeddings = self.get_rep_by_avg(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-                                           attention_mask=q_attention_mask, is_question=True)
+            b_embeddings = self.get_rep_by_avg(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                               attention_mask=b_attention_mask, is_question=True)
 
-        b_embeddings = self.get_rep_by_avg(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-                                           attention_mask=b_attention_mask, is_question=True)
+            a_embeddings = self.get_rep_by_avg(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                               attention_mask=a_attention_mask, is_question=False)
+        elif self.config.composition == 'pooler':
+            q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                                  attention_mask=q_attention_mask, is_question=True)
 
-        a_embeddings = self.get_rep_by_avg(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-                                           attention_mask=a_attention_mask, is_question=False)
+            b_embeddings = self.get_rep_by_pooler(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                                  attention_mask=b_attention_mask, is_question=True)
+
+            a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                                  attention_mask=a_attention_mask, is_question=False)
+        else:
+            raise Exception(f"Composition {self.config.composition} is not supported!!")
 
         # return torch.zeros((q_input_ids.shape[0], 4), device=q_input_ids.device, requires_grad=True)
 

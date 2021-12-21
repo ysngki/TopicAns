@@ -903,6 +903,8 @@ class TrainWholeModel:
 		self.load_memory_flag = args.load_memory
 		self.first_stage_lr = args.first_stage_lr
 
+		self.composition = args.composition
+
 
 	# 读取命令行传入的有关config的参数
 	def __read_args_for_config(self, args):
@@ -932,7 +934,8 @@ class TrainWholeModel:
 											  num_labels=args.label_num,
 											  word_embedding_len=word_embedding_len,
 											  sentence_embedding_len=sentence_embedding_len,
-											  memory_num=args.memory_num)
+											  memory_num=args.memory_num,
+											  composition=self.composition)
 		elif self.model_class == 'PureMemorySelfAtt':
 			config = PureMemorySelfAttConfig(len(self.tokenizer),
 											 pretrained_bert_path=args.pretrained_bert_path,

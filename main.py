@@ -37,6 +37,7 @@ def read_arguments():
 
 	# related to model
 	parser.add_argument("--hop_num", default=1, type=int, help = 'hop num for pure memory')
+	parser.add_argument("--composition", type=str, default='pooler', help = 'control the way to get sentence representation')
 
 	# related to train
 	parser.add_argument("--no_initial_test", action="store_true", default=False)
