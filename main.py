@@ -40,9 +40,13 @@ def read_arguments():
 	parser.add_argument("--composition", type=str, default='pooler', help = 'control the way to get sentence representation')
 
 	# related to train
+	parser.add_argument("--restore", action="store_true", default=False, help="use restore and only_final together to control which model to read!")
+
 	parser.add_argument("--no_initial_test", action="store_true", default=False)
 
-	parser.add_argument("--load_model", "-l", action="store_true", default=False)
+	parser.add_argument("--load_classifier", "-l", action="store_true", default=False, help="load classifier")
+	parser.add_argument("--classifier_path", type=str, help="load classifier")
+
 	parser.add_argument("--load_memory", action="store_true", default=False)
 	parser.add_argument("--load_middle", action="store_true", default=False)
 	parser.add_argument("--load_model_dict", type=str)

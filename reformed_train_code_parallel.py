@@ -82,6 +82,7 @@ class TrainWholeModel:
 		# 用来判断是哪一阶段的训练
 		final_stage_flag = not train_two_stage_flag
 
+		# two stage training but begin with final stage
 		if only_final:
 			final_stage_flag = True
 
@@ -93,9 +94,18 @@ class TrainWholeModel:
 			if self.load_memory_flag:
 				self.load_pretrained_memory(memory_save_name)
 
-			# 如果要进行第二阶段训练，那需要先读取上一阶段最好的model
+			# 如果要进行第二阶段训练，那需要先读取上一阶段最好的model, for normal two stage
 			if final_stage_flag and train_two_stage_flag:
 				self.model = self.load_models(self.model, model_save_path + "_middle")
+
+			# restore training model
+			restore_path = None
+			if self.restore_flag:
+				restore_path = model_save_path
+				if not final_stage_flag:
+					restore_path += "_middle"
+
+				self.model = self.load_models(self.model, restore_path)
 
 			# 读取数据
 			self.__model_to_device()
@@ -125,7 +135,40 @@ class TrainWholeModel:
 
 			early_stop_count = 0
 
-			for epoch in range(self.num_train_epochs):
+			# restore training settings
+			restore_epoch = 0
+			scheduler_last_epoch = 0
+
+			if self.restore_flag:
+				restore_data = torch.load(restore_path)
+
+				# get scheduler
+				scheduler_last_epoch = restore_data['scheduler']['last_epoch']
+
+				# get optimizer
+				optimizer.load_state_dict(restore_data['optimizer'])
+				# print lr
+				for o in optimizer.state_dict()['param_groups']:
+					print(o['lr'], end="\t")
+				print()
+				# to device
+				for state in optimizer.state.values():
+					for k, v in state.items():
+						if torch.is_tensor(v):
+							state[k] = v.to(self.device)
+
+				# get best performance
+				previous_best_r_1 = restore_data['best performance']
+
+				# get epoch
+				restore_epoch = restore_data['epoch']
+
+				print("model is restored from", restore_path)
+				print(f'Restore epoch: {restore_epoch}, Previous best R@1: {previous_best_r_1}')
+				print("*"*100)
+
+
+			for epoch in range(restore_epoch, self.num_train_epochs):
 				torch.cuda.empty_cache()
 
 				# whether this epoch get the best model
@@ -176,12 +219,21 @@ class TrainWholeModel:
 						train_block_dataloader.sampler.set_epoch(epoch)
 
 					# 获取scheduler
-					if epoch == 0 and split_index == 0:
+					if epoch == restore_epoch and split_index == 0:
 						t_total = (
 										  len(train_block_dataloader) // self.gradient_accumulation_steps) * self.num_train_epochs * self.dataset_split_num
-						scheduler = get_linear_schedule_with_warmup(optimizer,
-																	num_warmup_steps=int(t_total * 0.02),
-																	num_training_steps=t_total)
+
+						if self.restore_flag:
+							scheduler = get_linear_schedule_with_warmup(optimizer,
+																		num_warmup_steps=int(t_total * 0.02),
+																		num_training_steps=t_total,
+																		last_epoch=scheduler_last_epoch)
+							self.restore_flag = False
+						else:
+							scheduler = get_linear_schedule_with_warmup(optimizer,
+																		num_warmup_steps=int(t_total * 0.02),
+																		num_training_steps=t_total)
+
 						print(f"Train {self.num_train_epochs} epochs, Block num {self.dataset_split_num}, "
 							  f"Block Batch num {len(train_block_dataloader)}, "
 							  f"Acc num {self.gradient_accumulation_steps}, Total update {t_total}\n")
@@ -665,7 +717,6 @@ class TrainWholeModel:
 			print("you should offer model paths!")
 
 		load_path = load_model_path
-
 		model.load_state_dict(torch.load(load_path)['model'])
 
 		# if self.data_distribute:
@@ -860,13 +911,8 @@ class TrainWholeModel:
 			raise Exception("This model class is not supported for creating!!")
 
 		# 要不要加载现成的模型
-		if self.load_model_flag:
-			load_model_path = self.args.save_model_dict + "/" + self.args.model_save_prefix + \
-							  self.args.model_class + "_" + self.args.dataset_name
-			if self.args.load_middle:
-				load_model_path += "_middle"
-
-			model = self.load_models(model, load_model_path)
+		if self.load_classifier_flag:
+			model = self.load_models(model, self.classifier_path)
 
 		print("--------------------- model  created ---------------------")
 
@@ -883,7 +929,7 @@ class TrainWholeModel:
 		self.memory_num = args.memory_num
 		self.train_candidate_num = args.train_candidate_num
 		self.print_num_each_epoch = args.print_num_each_epoch
-		self.load_model_flag = args.load_model
+		self.load_classifier_flag = args.load_classifier
 		self.load_model_dict = args.load_model_dict
 		self.dataset_split_num = args.dataset_split_num
 		self.train_batch_size = args.train_batch_size
@@ -904,7 +950,9 @@ class TrainWholeModel:
 		self.first_stage_lr = args.first_stage_lr
 
 		self.composition = args.composition
+		self.restore_flag = args.restore
 
+		self.classifier_path = args.classifier_path
 
 	# 读取命令行传入的有关config的参数
 	def __read_args_for_config(self, args):
@@ -1043,7 +1091,9 @@ class TrainWholeModel:
 			else:
 				raise Exception("Have Two Stage But No optimizer supported for this model class!")
 
-		print(parameters_dict_list)
+		# if to restore, it will be printed in other places
+		if not self.restore_flag:
+			print(parameters_dict_list)
 		optimizer = torch.optim.Adam(parameters_dict_list, lr=5e-5)
 		print("*"*30)
 
