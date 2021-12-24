@@ -111,3 +111,54 @@ class MLMDataset(torch.torch.utils.data.Dataset):
 
 		return item_dic
 
+
+class QAClassifyDataset(torch.torch.utils.data.Dataset):
+	def __init__(self, data, tokenizer, text_max_len):
+		# 读取一块数据
+		self.dataset = data
+
+		# 保存传入的参数
+		self.tokenizer = tokenizer
+		self.text_max_len = text_max_len
+
+		# 读取数据到内存
+		all_titles = data['title']
+		all_bodies = data['body']
+		all_answers = data['answers']
+		all_labels = data['label']
+
+		all_questions = []
+		for index, title in enumerate(all_titles):
+			all_questions.append(title + " " + all_bodies[index])
+			print(title)
+			exit()
+
+		# tokenize
+		self.encoded_title = self.tokenizer(
+			all_titles, padding=True, verbose=False, add_special_tokens=True,
+			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+		self.encoded_body = self.tokenizer(
+			all_bodies, padding=True, verbose=False, add_special_tokens=True,
+			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+		self.encoded_a = self.tokenizer(
+			all_answers, padding=True, verbose=False, add_special_tokens=True,
+			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+		self.all_labels = all_labels
+
+	def __len__(self):  # 返回整个数据集的大小
+		return len(self.encoded_title['input_ids'])
+
+	def __getitem__(self, index):
+		item_dic = {'title_input_ids': self.encoded_title['input_ids'][index],
+					'title_token_type_ids': self.encoded_title['token_type_ids'][index],
+					'title_attention_mask': self.encoded_title['attention_mask'][index],
+					'body_input_ids': self.encoded_body['input_ids'][index],
+					'body_token_type_ids': self.encoded_body['token_type_ids'][index],
+					'body_attention_mask': self.encoded_body['attention_mask'][index],
+					'a_input_ids': self.encoded_a['input_ids'][index],
+					'a_token_type_ids': self.encoded_a['token_type_ids'][index],
+					'a_attention_mask': self.encoded_a['attention_mask'][index],
+					'label': torch.tensor(self.all_labels[index])}
+
+		return item_dic
