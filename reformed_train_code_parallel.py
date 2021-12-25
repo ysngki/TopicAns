@@ -15,7 +15,8 @@ from tqdm import tqdm
 
 from reformed_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt
-from reformed_dataset import TBAClassifyDataset, MLMDataset
+from QAInput_model_lib import QAModel, QAModelConfig
+from reformed_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset
 
 
 class TrainWholeModel:
@@ -57,17 +58,41 @@ class TrainWholeModel:
 		tokenizer_path = args.pretrained_bert_path.replace("/", "_")
 		tokenizer_path = tokenizer_path.replace("\\", "_")
 
+		# add model
+		if self.model_class in ['QAMemory']:
+			tokenizer_path += "_" + str(self.memory_num) + "_" + self.model_class
+
+		# read from disk or save to disk
 		if os.path.exists("./tokenizer/" + tokenizer_path):
 			self.tokenizer = AutoTokenizer.from_pretrained("./tokenizer/" + tokenizer_path)
 		else:
 			print("first time use this tokenizer, downloading...")
 			self.tokenizer = AutoTokenizer.from_pretrained(args.pretrained_bert_path)
 			tokenizer_config = AutoConfig.from_pretrained(args.pretrained_bert_path)
-			# self.tokenizer.add_tokens(['\n'], special_tokens=True)
+
+			# add model
+			# add memory to tokenizer
+			if self.model_class in ['QAMemory']:
+				memory_token_list = []
+
+				for i in range(self.memory_num):
+					memory_token_list.append('<QMEM' + str(i) + '>')
+				for i in range(self.memory_num):
+					memory_token_list.append('<AMEM' + str(i) + '>')
+
+				special_tokens_dict = {'additional_special_tokens': memory_token_list}
+
+				print("-" * 30)
+				print(f"previous token num:{len(self.tokenizer)}")
+				self.tokenizer.add_special_tokens(special_tokens_dict)
+				print(f"now token num:{len(self.tokenizer)}")
+				print("-" * 30 + "\n")
 
 			self.tokenizer.save_pretrained("./tokenizer/" + tokenizer_path)
 			tokenizer_config.save_pretrained("./tokenizer/" + tokenizer_path)
 
+
+		self.origin_voc_size = len(self.tokenizer) - self.memory_num*2
 		# 获得模型配置-------------------------------------------------------------------
 		if config is None:
 			self.config = self.__read_args_for_config(args)
@@ -147,10 +172,12 @@ class TrainWholeModel:
 
 				# get optimizer
 				optimizer.load_state_dict(restore_data['optimizer'])
+
 				# print lr
 				for o in optimizer.state_dict()['param_groups']:
 					print(o['lr'], end="\t")
 				print()
+
 				# to device
 				for state in optimizer.state.values():
 					for k, v in state.items():
@@ -186,7 +213,13 @@ class TrainWholeModel:
 														   split_index=0, split_num=1)
 					val_loss, val_acc = self.classify_validate_model(val_dataloader)
 					print(val_loss, val_acc)
-					r_1 = self.ranking()
+
+					# add model
+					if self.model_class in ['QAMemory', 'QAModel']:
+						r_1 = self.ranking_qa_input()
+					else:
+						r_1 = self.ranking()
+
 					if r_1 > previous_best_r_1:
 						previous_best_r_1 = r_1
 					print("-" * 30 + "initial_test_end" + "-" * 30, end="\n\n")
@@ -223,11 +256,13 @@ class TrainWholeModel:
 						t_total = (
 										  len(train_block_dataloader) // self.gradient_accumulation_steps) * self.num_train_epochs * self.dataset_split_num
 
+						# if restore training, should pass last epoch, otherwise should not pass this argument
 						if self.restore_flag:
 							scheduler = get_linear_schedule_with_warmup(optimizer,
 																		num_warmup_steps=int(t_total * 0.02),
 																		num_training_steps=t_total,
 																		last_epoch=scheduler_last_epoch)
+							# avoid trying to restore again
 							self.restore_flag = False
 						else:
 							scheduler = get_linear_schedule_with_warmup(optimizer,
@@ -296,6 +331,10 @@ class TrainWholeModel:
 				step_loss, step_shoot_num, step_hit_num = \
 					self.__train_step_for_bi(batch=batch, optimizer=optimizer, now_batch_num=now_batch_num,
 													scheduler=scheduler)
+			elif self.model_class in ['QAMemory', 'QAModel']:
+				step_loss, step_shoot_num, step_hit_num = \
+					self.__train_step_for_qa_input(batch=batch, optimizer=optimizer, now_batch_num=now_batch_num,
+												   scheduler=scheduler, final_stage_flag=final_stage_flag)
 			else:
 				raise Exception("Train step have not supported this model class")
 
@@ -333,7 +372,11 @@ class TrainWholeModel:
 													   split_index=0, split_num=1)
 
 				val_loss, val_acc = self.classify_validate_model(val_dataloader)
-				r_1 = self.ranking()
+				# add model
+				if self.model_class in ['QAMemory', 'QAModel']:
+					r_1 = self.ranking_qa_input()
+				else:
+					r_1 = self.ranking()
 				print(
 					f"{epoch + 1} epoch middle eval: " + "*" * 30 +
 					f"\nval_loss:{val_loss}\tval_acc{val_acc}\tR@1:{r_1}\tprevious best R@1:{previous_best_r_1}\tfrom rank:{self.local_rank}")
@@ -626,6 +669,8 @@ class TrainWholeModel:
 				# add model
 				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
 					logits = self.__val_step_for_bi(batch)
+				elif self.model_class in ['QAMemory', 'QAModel']:
+					logits = self.__val_step_for_qa_input(batch)
 				else:
 					raise Exception("Val step is not supported for this model class!")
 
@@ -658,6 +703,9 @@ class TrainWholeModel:
 		return val_loss, accuracy
 
 	def load_pretrained_memory(self, memory_save_name):
+		if self.model_class in ['QAMemory']:
+			raise Exception(f"load_pretrained_memory is not supported for {self.model_class} yet!!!")
+
 		saved_dict = torch.load("./model/pretrained_memory/" + memory_save_name)
 		memory_start_index = saved_dict['memory_start_index']
 
@@ -844,16 +892,14 @@ class TrainWholeModel:
 				now_index += step
 
 				with torch.no_grad():
-					# add model
-					if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
-						# shape = (q_num*candidate_answer_num, 4)
-						logits = self.model(
-							q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
-							q_attention_mask=q_attention_mask,
-							a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
-							a_attention_mask=a_attention_mask,
-							b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-							b_attention_mask=b_attention_mask)
+					# shape = (q_num*candidate_answer_num, 4)
+					logits = self.model(
+						q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
+						q_attention_mask=q_attention_mask,
+						a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+						a_attention_mask=a_attention_mask,
+						b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
+						b_attention_mask=b_attention_mask)
 
 					logits = logits.view(-1, self.ranking_candidate_num, 4)
 					logits = nn.functional.softmax(logits, dim=-1)
@@ -897,6 +943,162 @@ class TrainWholeModel:
 
 		return self.dcg_score(model_ranking, 1)
 
+	def ranking_qa_input(self):
+		print("--------------------- begin ranking -----------------------")
+		self.model.eval()
+
+		# 稍加处理一下数据，把数据都存在元祖里
+		data_from_path = "./" + self.dataset_name + "/eva.dataset"
+		evaluation_data = datasets.load_from_disk(data_from_path)
+
+		# 汇总下数据
+		evaluation_qa_pairs = []
+
+		evaluation_title = evaluation_data['title']
+		evaluation_body = evaluation_data['body']
+		evaluation_answers = evaluation_data['answers']
+
+		for row_index in range(len(evaluation_title)):
+			evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
+										evaluation_answers[row_index]))
+
+		print(f"all {len(evaluation_qa_pairs)} qa pairs!")
+
+		# 开始逐条排序
+		model_ranking = []
+
+		# 一点点处理数据
+		now_pair_index = 0
+		PAIR_STEP = 2000
+
+		while now_pair_index < len(evaluation_qa_pairs):
+			# 获得memory合并的字符串
+			q_memory_sequence = " "
+			for i in range(self.memory_num):
+				q_memory_sequence += '<QMEM' + str(i) + '>' + " "
+
+			a_memory_sequence = " "
+			for i in range(self.memory_num):
+				a_memory_sequence += '<AMEM' + str(i) + '>' + " "
+
+			# 取一定数量的数据
+			questions = []
+			answers = []
+
+			for data in evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP]:
+				temp_question = data[0]
+				body = data[1]
+				candidate_answers = data[2]
+
+				for t_a in candidate_answers[1:self.ranking_candidate_num]:
+					# add model
+					if self.model_class in ['QAMemory']:
+						questions.append((temp_question + ' ' + body, q_memory_sequence))
+						answers.append((t_a, a_memory_sequence))
+					else:
+						questions.append(temp_question + ' ' + body)
+						answers.append(t_a)
+
+				# 把最佳答案塞到最后
+				if self.model_class in ['QAMemory']:
+					questions.append((temp_question + ' ' + body, q_memory_sequence))
+					answers.append((candidate_answers[0], a_memory_sequence))
+				else:
+					questions.append(temp_question + ' ' + body)
+					answers.append(candidate_answers[0])
+
+			# tokenize
+			encoded_a = self.tokenizer(
+				answers, padding=True, verbose=False, add_special_tokens=True,
+				truncation=True, max_length=self.text_max_len - self.memory_num, return_tensors='pt')
+
+			encoded_q = self.tokenizer(
+				questions, padding=True, verbose=False, add_special_tokens=True,
+				truncation=True, max_length=self.text_max_len - self.memory_num, return_tensors='pt')
+
+			# 检查数据数量是否正确，length是问题数
+			length = len(evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
+
+			if len(encoded_q['input_ids']) != length * self.ranking_candidate_num:
+				raise Exception("encode while ranking no possible!")
+
+			# 开始按照更小的批次进行训练，也就是每次计算step*candidate_answer_num条数据
+			now_index = 0
+			step = 40
+
+			while now_index < length:
+				q_input_ids = encoded_q['input_ids'][
+							  now_index * self.ranking_candidate_num:
+							  (now_index + step) * self.ranking_candidate_num].to(self.device)
+				q_token_type_ids = encoded_q['token_type_ids'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				q_attention_mask = encoded_q['attention_mask'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+
+				a_input_ids = encoded_a['input_ids'][
+							  now_index * self.ranking_candidate_num:
+							  (now_index + step) * self.ranking_candidate_num].to(self.device)
+				a_token_type_ids = encoded_a['token_type_ids'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				a_attention_mask = encoded_a['attention_mask'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+
+				now_index += step
+
+				with torch.no_grad():
+					logits = self.model(
+						q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
+						q_attention_mask=q_attention_mask,
+						a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+						a_attention_mask=a_attention_mask)
+
+					logits = logits.view(-1, self.ranking_candidate_num, 4)
+					logits = nn.functional.softmax(logits, dim=-1)
+
+					sorted_index_score = []
+					for q_index, q_item in enumerate(logits):
+						temp_index_score = []
+						for inner_index, inner_item in enumerate(q_item):
+							score = inner_item[0] * (-2) + inner_item[1] * (-1) + inner_item[2] * 1 + inner_item[3] * 2
+							temp_index_score.append((inner_index, score.item()))
+
+						stl = sorted(temp_index_score, key=lambda x: x[1], reverse=True)
+						sorted_index_score.append(stl)
+
+					model_ranking += [([y[0] for y in x].index(self.ranking_candidate_num - 1) + 1) for x in
+									  sorted_index_score]
+
+			now_pair_index += PAIR_STEP
+
+			# 每排好10000个问题，打印下当前的结果
+			if (now_pair_index % 10000) == 0:
+				print(f"now processed: {now_pair_index}/{len(evaluation_qa_pairs)}")
+
+				metric_list = [i for i in range(1, self.ranking_candidate_num + 1)]
+				for k in metric_list:
+					print(
+						"DCG@%4d: %.3f | Hits@%4d: %.3f" % (k, self.dcg_score(model_ranking, k),
+															k, self.hits_count(model_ranking, k)))
+				sys.stdout.flush()
+
+		print()
+
+		# 输出最后的评估结果
+		metric_list = [i for i in range(1, self.ranking_candidate_num + 1)]
+		for k in metric_list:
+			print(
+				"DCG@%4d: %.3f | Hits@%4d: %.3f" % (k, self.dcg_score(model_ranking, k),
+													k, self.hits_count(model_ranking, k)))
+		print("---------------------- end ranking ------------------------")
+		self.model.train()
+
+		return self.dcg_score(model_ranking, 1)
+
+
 	def __create_model(self):
 		print("---------------------- create model ----------------------")
 		# 创建自己的model
@@ -907,6 +1109,8 @@ class TrainWholeModel:
 			model = InputMemorySelfAtt(config=self.config)
 		elif self.model_class == 'PureMemorySelfAtt':
 			model = PureMemorySelfAtt(config=self.config)
+		elif self.model_class in ['QAMemory', 'QAModel']:
+			model = QAModel(config=self.config)
 		else:
 			raise Exception("This model class is not supported for creating!!")
 
@@ -992,6 +1196,13 @@ class TrainWholeModel:
 											 sentence_embedding_len=sentence_embedding_len,
 											 memory_num=args.memory_num,
 											 hop_num=args.hop_num)
+		elif self.model_class in ['QAMemory', 'QAModel']:
+			config = QAModelConfig(len(self.tokenizer),
+										 pretrained_bert_path=args.pretrained_bert_path,
+										 num_labels=args.label_num,
+										 word_embedding_len=word_embedding_len,
+										 sentence_embedding_len=sentence_embedding_len,
+										 composition=self.composition)
 		else:
 			raise Exception("No config for this class!")
 
@@ -1049,6 +1260,16 @@ class TrainWholeModel:
 				# 这个不设定
 				{'params': model.classifier.parameters(), 'lr': 1e-4}
 			]
+		elif self.model_class in ['QAMemory', 'QAModel']:
+			parameters_dict_list = [
+				# 这几个一样
+				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				# 这几个一样
+				{'params': model.self_attention_weight_layer.parameters(), 'lr': 1e-4},
+				{'params': model.value_layer.parameters(), 'lr': 1e-4},
+				# 这个不设定
+				{'params': model.classifier.parameters(), 'lr': 1e-4}
+			]
 		else:
 			raise Exception("No optimizer supported for this model class!")
 
@@ -1083,6 +1304,16 @@ class TrainWholeModel:
 					{'params': model.memories_for_answer.parameters(), 'lr': 1e-4},
 					{'params': model.queries_for_question.parameters(), 'lr': 1e-4},
 					{'params': model.memories_for_question.parameters(), 'lr': 1e-4},
+					{'params': model.self_attention_weight_layer.parameters(), 'lr': 1e-4},
+					{'params': model.value_layer.parameters(), 'lr': 1e-4},
+					# 这个不设定
+					{'params': model.classifier.parameters(), 'lr': 1e-4}
+				]
+			elif self.model_class in ['QAMemory']:
+				parameters_dict_list = [
+					# 这几个一样
+					{'params': model.embeddings.parameters(), 'lr': self.first_stage_lr},
+					# 这几个一样
 					{'params': model.self_attention_weight_layer.parameters(), 'lr': 1e-4},
 					{'params': model.value_layer.parameters(), 'lr': 1e-4},
 					# 这个不设定
@@ -1169,6 +1400,57 @@ class TrainWholeModel:
 
 		return step_loss, step_shoot_num, step_hit_num
 
+	# 输入为QA，而非title.body.answer的模型的训练步
+	def __train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, final_stage_flag):
+		cross_entropy_function = nn.CrossEntropyLoss()
+
+		# 读取数据
+		q_input_ids = (batch['q_input_ids']).to(self.device)
+		q_token_type_ids = (batch['q_token_type_ids']).to(self.device)
+		q_attention_mask = (batch['q_attention_mask']).to(self.device)
+
+		a_input_ids = (batch['a_input_ids']).to(self.device)
+		a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
+		a_attention_mask = (batch['a_attention_mask']).to(self.device)
+
+		qa_labels = (batch['label']).to(self.device)
+
+		# 得到模型的结果
+		logits = self.model(
+			q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
+			q_attention_mask=q_attention_mask,
+			a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+			a_attention_mask=a_attention_mask)
+
+		# 计算损失
+		step_loss = cross_entropy_function(logits, qa_labels)
+
+		# 误差反向传播
+		step_loss.backward()
+
+		# 更新模型参数
+		if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
+			# add model
+			# only update memory in embeddings
+			if self.model_class in ['QAMemory'] and not final_stage_flag:
+				self.model.embeddings.weight.grad[:self.origin_voc_size] *= 0.0
+
+			optimizer.step()
+			optimizer.zero_grad()
+			scheduler.step()
+
+		# 统计命中率
+		step_shoot_num = logits.shape[0]
+		with torch.no_grad():
+			_, row_max_indices = logits.topk(k=1, dim=-1)
+			step_hit_num = 0
+			for i, max_index in enumerate(row_max_indices):
+				inner_index = max_index[0]
+				if inner_index == qa_labels[i]:
+					step_hit_num += 1
+
+		return step_loss, step_shoot_num, step_hit_num
+
 	# cross模型的训练步
 	def __train_step_for_cross(self, batch, optimizer):
 		# 损失函数
@@ -1233,6 +1515,26 @@ class TrainWholeModel:
 
 		return logits
 
+	def __val_step_for_qa_input(self, batch):
+		# 读取数据
+		q_input_ids = (batch['q_input_ids']).to(self.device)
+		q_token_type_ids = (batch['q_token_type_ids']).to(self.device)
+		q_attention_mask = (batch['q_attention_mask']).to(self.device)
+
+		a_input_ids = (batch['a_input_ids']).to(self.device)
+		a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
+		a_attention_mask = (batch['a_attention_mask']).to(self.device)
+
+		with torch.no_grad():
+			# 得到模型的结果
+			logits = self.model(
+				q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
+				q_attention_mask=q_attention_mask,
+				a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+				a_attention_mask=a_attention_mask)
+
+		return logits
+
 	def __val_step_for_cross(self, batch):
 		input_ids = (batch['input_ids']).to(self.device)
 		token_type_ids = (batch['token_type_ids']).to(self.device)
@@ -1255,6 +1557,14 @@ class TrainWholeModel:
 			now_dataset = TBAClassifyDataset(data=now_data_block,
 											 tokenizer=self.tokenizer,
 											 text_max_len=self.text_max_len - self.memory_num)
+		elif self.model_class in ['QAMemory']:
+			now_dataset = QAMemClassifyDataset(data=now_data_block,
+											tokenizer=self.tokenizer,
+											text_max_len=self.text_max_len, memory_num=self.memory_num)
+		elif self.model_class in ['QAModel']:
+			now_dataset = QAClassifyDataset(data=now_data_block,
+											tokenizer=self.tokenizer,
+											text_max_len=self.text_max_len)
 		else:
 			raise Exception("No train dataset supported for this model class!")
 

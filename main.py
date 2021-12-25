@@ -19,7 +19,9 @@ def read_arguments():
 	parser = argparse.ArgumentParser()
 
 	# must set
-	parser.add_argument("--model_class", required=True, type=str)
+	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel',
+							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel'])
+
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
 	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
@@ -95,7 +97,7 @@ if __name__ == '__main__':
 	my_train_two_stage_flag = False
 	# add model
 	if my_args.model_class in ['OneSupremeMemory', 'PureMemory', 'VaeAttention', 'VaeAttentionPlus', 'BasicModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt']:
+							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory']:
 		my_train_two_stage_flag = True
 
 	if my_args.one_stage:

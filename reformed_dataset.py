@@ -112,11 +112,65 @@ class MLMDataset(torch.torch.utils.data.Dataset):
 		return item_dic
 
 
+class QAMemClassifyDataset(torch.torch.utils.data.Dataset):
+	def __init__(self, data, tokenizer, text_max_len, memory_num):
+		# 保存传入的参数
+		self.tokenizer = tokenizer
+		self.text_max_len = text_max_len
+
+		# 获得memory合并的字符串
+		q_memory_sequence = " "
+		for i in range(memory_num):
+			q_memory_sequence += '<QMEM' + str(i) + '>' + " "
+
+		a_memory_sequence = " "
+		for i in range(memory_num):
+			a_memory_sequence += '<AMEM' + str(i) + '>' + " "
+
+		# 读取数据到内存
+		all_titles = data['title']
+		all_bodies = data['body']
+		all_answers = data['answers']
+		all_labels = data['label']
+
+		# process question
+		new_questions = []
+		for index, title in enumerate(all_titles):
+			new_questions.append((title + " " + all_bodies[index], q_memory_sequence))
+
+		# process answers
+		new_answers = []
+		for index, answer in enumerate(all_answers):
+			new_answers.append((answer, a_memory_sequence))
+
+		# tokenize
+		self.encoded_questions = self.tokenizer(
+			new_questions, padding=True, verbose=False, add_special_tokens=True,
+			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+		self.encoded_answers = self.tokenizer(
+			new_answers, padding=True, verbose=False, add_special_tokens=True,
+			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+		self.all_labels = all_labels
+
+	def __len__(self):  # 返回整个数据集的大小
+		return len(self.encoded_questions['input_ids'])
+
+	def __getitem__(self, index):
+		item_dic = {'q_input_ids': self.encoded_questions['input_ids'][index],
+					'q_token_type_ids': self.encoded_questions['token_type_ids'][index],
+					'q_attention_mask': self.encoded_questions['attention_mask'][index],
+					'a_input_ids': self.encoded_answers['input_ids'][index],
+					'a_token_type_ids': self.encoded_answers['token_type_ids'][index],
+					'a_attention_mask': self.encoded_answers['attention_mask'][index],
+					'label': torch.tensor(self.all_labels[index])}
+
+		return item_dic
+
+
 class QAClassifyDataset(torch.torch.utils.data.Dataset):
 	def __init__(self, data, tokenizer, text_max_len):
-		# 读取一块数据
-		self.dataset = data
-
 		# 保存传入的参数
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
@@ -127,38 +181,37 @@ class QAClassifyDataset(torch.torch.utils.data.Dataset):
 		all_answers = data['answers']
 		all_labels = data['label']
 
-		all_questions = []
+		# process question
+		new_questions = []
 		for index, title in enumerate(all_titles):
-			all_questions.append(title + " " + all_bodies[index])
-			print(title)
-			exit()
+			new_questions.append(title + " " + all_bodies[index])
+
+		# process answers
+		new_answers = []
+		for index, answer in enumerate(all_answers):
+			new_answers.append(answer)
 
 		# tokenize
-		self.encoded_title = self.tokenizer(
-			all_titles, padding=True, verbose=False, add_special_tokens=True,
+		self.encoded_questions = self.tokenizer(
+			new_questions, padding=True, verbose=False, add_special_tokens=True,
 			truncation=True, max_length=self.text_max_len, return_tensors='pt')
-		self.encoded_body = self.tokenizer(
-			all_bodies, padding=True, verbose=False, add_special_tokens=True,
-			truncation=True, max_length=self.text_max_len, return_tensors='pt')
-		self.encoded_a = self.tokenizer(
-			all_answers, padding=True, verbose=False, add_special_tokens=True,
+
+		self.encoded_answers = self.tokenizer(
+			new_answers, padding=True, verbose=False, add_special_tokens=True,
 			truncation=True, max_length=self.text_max_len, return_tensors='pt')
 
 		self.all_labels = all_labels
 
 	def __len__(self):  # 返回整个数据集的大小
-		return len(self.encoded_title['input_ids'])
+		return len(self.encoded_questions['input_ids'])
 
 	def __getitem__(self, index):
-		item_dic = {'title_input_ids': self.encoded_title['input_ids'][index],
-					'title_token_type_ids': self.encoded_title['token_type_ids'][index],
-					'title_attention_mask': self.encoded_title['attention_mask'][index],
-					'body_input_ids': self.encoded_body['input_ids'][index],
-					'body_token_type_ids': self.encoded_body['token_type_ids'][index],
-					'body_attention_mask': self.encoded_body['attention_mask'][index],
-					'a_input_ids': self.encoded_a['input_ids'][index],
-					'a_token_type_ids': self.encoded_a['token_type_ids'][index],
-					'a_attention_mask': self.encoded_a['attention_mask'][index],
+		item_dic = {'q_input_ids': self.encoded_questions['input_ids'][index],
+					'q_token_type_ids': self.encoded_questions['token_type_ids'][index],
+					'q_attention_mask': self.encoded_questions['attention_mask'][index],
+					'a_input_ids': self.encoded_answers['input_ids'][index],
+					'a_token_type_ids': self.encoded_answers['token_type_ids'][index],
+					'a_attention_mask': self.encoded_answers['attention_mask'][index],
 					'label': torch.tensor(self.all_labels[index])}
 
 		return item_dic
