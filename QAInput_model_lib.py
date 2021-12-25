@@ -1,4 +1,4 @@
-from transformers import BertModel
+from transformers import BertModel, BertForSequenceClassification, BertConfig
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -166,6 +166,58 @@ class QAModel(nn.Module):
 
         # # 根据输入，进行思考, 思考的结果要选择性遗忘
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
+
+        return logits
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class CrossBERTConfig:
+    def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
+                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler'):
+
+        self.tokenizer_len = tokenizer_len
+        self.pretrained_bert_path = pretrained_bert_path
+        self.num_labels = num_labels
+        self.word_embedding_len = word_embedding_len
+        self.sentence_embedding_len = sentence_embedding_len
+        self.composition = composition
+
+    def __str__(self):
+        print("*"*20 + "config" + "*"*20)
+        print("tokenizer_len:", self.tokenizer_len)
+        print("pretrained_bert_path:", self.pretrained_bert_path)
+        print("num_labels:", self.num_labels)
+        print("word_embedding_len:", self.word_embedding_len)
+        print("sentence_embedding_len:", self.sentence_embedding_len)
+        print("composition:", self.composition)
+
+
+class CrossBERT(nn.Module):
+    def __init__(self, config):
+
+        super(CrossBERT, self).__init__()
+
+        self.config = config
+
+        # 毕竟num_label也算是memory的一部分
+        self.num_labels = config.num_labels
+        self.sentence_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
+        this_bert_config.num_labels = self.num_labels
+
+        self.bert_model = BertForSequenceClassification.from_pretrained(config.pretrained_bert_path, config=this_bert_config)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+        self.embeddings = self.bert_model.get_input_embeddings()
+
+    def forward(self, input_ids, token_type_ids, attention_mask):
+
+        # # 根据输入，进行思考, 思考的结果要选择性遗忘
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask)
+        logits = out['logits']
 
         return logits
 

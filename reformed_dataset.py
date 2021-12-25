@@ -215,3 +215,44 @@ class QAClassifyDataset(torch.torch.utils.data.Dataset):
 					'label': torch.tensor(self.all_labels[index])}
 
 		return item_dic
+
+
+class CrossClassifyDataset(torch.torch.utils.data.Dataset):
+	def __init__(self, data, tokenizer, text_max_len):
+		# 保存传入的参数
+		self.tokenizer = tokenizer
+		self.text_max_len = text_max_len
+
+		# 读取数据到内存
+		all_titles = data['title']
+		all_bodies = data['body']
+		all_answers = data['answers']
+		all_labels = data['label']
+
+		# process question
+		new_questions = []
+		for index, title in enumerate(all_titles):
+			new_questions.append(title + " " + all_bodies[index])
+
+		# process answers
+		all_texts = []
+		for index, answer in enumerate(all_answers):
+			all_texts.append((new_questions[index], answer))
+
+		# tokenize
+		self.encoded_texts = self.tokenizer(
+			all_texts, padding=True, verbose=False, add_special_tokens=True,
+			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+		self.all_labels = all_labels
+
+	def __len__(self):  # 返回整个数据集的大小
+		return len(self.encoded_texts['input_ids'])
+
+	def __getitem__(self, index):
+		item_dic = {'input_ids': self.encoded_texts['input_ids'][index],
+					'token_type_ids': self.encoded_texts['token_type_ids'][index],
+					'attention_mask': self.encoded_texts['attention_mask'][index],
+					'label': torch.tensor(self.all_labels[index])}
+
+		return item_dic
