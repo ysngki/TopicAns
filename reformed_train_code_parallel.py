@@ -15,8 +15,8 @@ from tqdm import tqdm
 
 from reformed_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt
-from QAInput_model_lib import QAModel, QAModelConfig
-from reformed_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset
+from QAInput_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig
+from reformed_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset
 
 
 class TrainWholeModel:
@@ -217,6 +217,8 @@ class TrainWholeModel:
 					# add model
 					if self.model_class in ['QAMemory', 'QAModel']:
 						r_1 = self.ranking_qa_input()
+					elif self.model_class in ['CrossBERT']:
+						r_1 = self.ranking_cross()
 					else:
 						r_1 = self.ranking()
 
@@ -324,9 +326,10 @@ class TrainWholeModel:
 		# 开始训练
 		for batch in bar:
 			# add model
-			if self.model_class == "CrossEncoder":
-				step_loss, step_shoot_num, step_hit_num = self.__train_step_for_cross(batch=batch,
-																					  optimizer=optimizer)
+			if self.model_class == "CrossBERT":
+				step_loss, step_shoot_num, step_hit_num = self.__train_step_for_cross(batch=batch, optimizer=optimizer,
+																					  now_batch_num=now_batch_num,
+																					  scheduler=scheduler)
 			elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
 				step_loss, step_shoot_num, step_hit_num = \
 					self.__train_step_for_bi(batch=batch, optimizer=optimizer, now_batch_num=now_batch_num,
@@ -375,6 +378,8 @@ class TrainWholeModel:
 				# add model
 				if self.model_class in ['QAMemory', 'QAModel']:
 					r_1 = self.ranking_qa_input()
+				elif self.model_class in ['CrossBERT']:
+					r_1 = self.ranking_cross()
 				else:
 					r_1 = self.ranking()
 				print(
@@ -671,6 +676,8 @@ class TrainWholeModel:
 					logits = self.__val_step_for_bi(batch)
 				elif self.model_class in ['QAMemory', 'QAModel']:
 					logits = self.__val_step_for_qa_input(batch)
+				elif self.model_class in ['CrossBERT']:
+					logits = self.__val_step_for_cross(batch)
 				else:
 					raise Exception("Val step is not supported for this model class!")
 
@@ -1010,11 +1017,11 @@ class TrainWholeModel:
 			# tokenize
 			encoded_a = self.tokenizer(
 				answers, padding=True, verbose=False, add_special_tokens=True,
-				truncation=True, max_length=self.text_max_len - self.memory_num, return_tensors='pt')
+				truncation=True, max_length=self.text_max_len, return_tensors='pt')
 
 			encoded_q = self.tokenizer(
 				questions, padding=True, verbose=False, add_special_tokens=True,
-				truncation=True, max_length=self.text_max_len - self.memory_num, return_tensors='pt')
+				truncation=True, max_length=self.text_max_len, return_tensors='pt')
 
 			# 检查数据数量是否正确，length是问题数
 			length = len(evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
@@ -1098,6 +1105,124 @@ class TrainWholeModel:
 
 		return self.dcg_score(model_ranking, 1)
 
+	def ranking_cross(self):
+		print("--------------------- begin ranking -----------------------")
+		self.model.eval()
+
+		# 稍加处理一下数据，把数据都存在元祖里
+		data_from_path = "./" + self.dataset_name + "/eva.dataset"
+		evaluation_data = datasets.load_from_disk(data_from_path)
+
+		# 汇总下数据
+		evaluation_qa_pairs = []
+
+		evaluation_title = evaluation_data['title']
+		evaluation_body = evaluation_data['body']
+		evaluation_answers = evaluation_data['answers']
+
+		for row_index in range(len(evaluation_title)):
+			evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
+										evaluation_answers[row_index]))
+
+		print(f"all {len(evaluation_qa_pairs)} qa pairs!")
+
+		# 开始逐条排序
+		model_ranking = []
+
+		# 一点点处理数据
+		now_pair_index = 0
+		PAIR_STEP = 2000
+
+		while now_pair_index < len(evaluation_qa_pairs):
+			# 取一定数量的数据
+			texts = []
+
+			for data in evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP]:
+				temp_question = data[0]
+				body = data[1]
+				candidate_answers = data[2]
+
+				for t_a in candidate_answers[1:self.ranking_candidate_num]:
+					texts.append((temp_question + ' ' + body, t_a))
+
+				# 把最佳答案塞到最后
+				texts.append((temp_question + ' ' + body, candidate_answers[0]))
+
+			# tokenize
+			encoded_texts = self.tokenizer(
+				texts, padding=True, verbose=False, add_special_tokens=True,
+				truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+			# 检查数据数量是否正确，length是问题数
+			length = len(evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
+
+			if len(encoded_texts['input_ids']) != length * self.ranking_candidate_num:
+				raise Exception("encode while ranking no possible!")
+
+			# 开始按照更小的批次进行训练，也就是每次计算step*candidate_answer_num条数据
+			now_index = 0
+			step = 40
+
+			while now_index < length:
+				input_ids = encoded_texts['input_ids'][
+							  now_index * self.ranking_candidate_num:
+							  (now_index + step) * self.ranking_candidate_num].to(self.device)
+				token_type_ids = encoded_texts['token_type_ids'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				attention_mask = encoded_texts['attention_mask'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+
+				now_index += step
+
+				with torch.no_grad():
+					logits = self.model(
+						input_ids=input_ids, token_type_ids=token_type_ids,
+						attention_mask=attention_mask)
+
+					logits = logits.view(-1, self.ranking_candidate_num, 4)
+					logits = nn.functional.softmax(logits, dim=-1)
+
+					sorted_index_score = []
+					for q_index, q_item in enumerate(logits):
+						temp_index_score = []
+						for inner_index, inner_item in enumerate(q_item):
+							score = inner_item[0] * (-2) + inner_item[1] * (-1) + inner_item[2] * 1 + inner_item[3] * 2
+							temp_index_score.append((inner_index, score.item()))
+
+						stl = sorted(temp_index_score, key=lambda x: x[1], reverse=True)
+						sorted_index_score.append(stl)
+
+					model_ranking += [([y[0] for y in x].index(self.ranking_candidate_num - 1) + 1) for x in
+									  sorted_index_score]
+
+			now_pair_index += PAIR_STEP
+
+			# 每排好10000个问题，打印下当前的结果
+			if (now_pair_index % 10000) == 0:
+				print(f"now processed: {now_pair_index}/{len(evaluation_qa_pairs)}")
+
+				metric_list = [i for i in range(1, self.ranking_candidate_num + 1)]
+				for k in metric_list:
+					print(
+						"DCG@%4d: %.3f | Hits@%4d: %.3f" % (k, self.dcg_score(model_ranking, k),
+															k, self.hits_count(model_ranking, k)))
+				sys.stdout.flush()
+
+		print()
+
+		# 输出最后的评估结果
+		metric_list = [i for i in range(1, self.ranking_candidate_num + 1)]
+		for k in metric_list:
+			print(
+				"DCG@%4d: %.3f | Hits@%4d: %.3f" % (k, self.dcg_score(model_ranking, k),
+													k, self.hits_count(model_ranking, k)))
+		print("---------------------- end ranking ------------------------")
+		self.model.train()
+
+		return self.dcg_score(model_ranking, 1)
+
 
 	def __create_model(self):
 		print("---------------------- create model ----------------------")
@@ -1111,6 +1236,8 @@ class TrainWholeModel:
 			model = PureMemorySelfAtt(config=self.config)
 		elif self.model_class in ['QAMemory', 'QAModel']:
 			model = QAModel(config=self.config)
+		elif self.model_class in ['CrossBERT']:
+			model = CrossBERT(config=self.config)
 		else:
 			raise Exception("This model class is not supported for creating!!")
 
@@ -1203,6 +1330,13 @@ class TrainWholeModel:
 										 word_embedding_len=word_embedding_len,
 										 sentence_embedding_len=sentence_embedding_len,
 										 composition=self.composition)
+		elif self.model_class in ['CrossBERT']:
+			config = CrossBERTConfig(len(self.tokenizer),
+									 pretrained_bert_path=args.pretrained_bert_path,
+									 num_labels=args.label_num,
+									 word_embedding_len=word_embedding_len,
+									 sentence_embedding_len=sentence_embedding_len,
+									 composition=self.composition)
 		else:
 			raise Exception("No config for this class!")
 
@@ -1269,6 +1403,11 @@ class TrainWholeModel:
 				{'params': model.value_layer.parameters(), 'lr': 1e-4},
 				# 这个不设定
 				{'params': model.classifier.parameters(), 'lr': 1e-4}
+			]
+		elif self.model_class in ['CrossBERT']:
+			parameters_dict_list = [
+				# 这几个一样
+				{'params': model.bert_model.parameters(), 'lr': 5e-5},
 			]
 		else:
 			raise Exception("No optimizer supported for this model class!")
@@ -1452,8 +1591,7 @@ class TrainWholeModel:
 		return step_loss, step_shoot_num, step_hit_num
 
 	# cross模型的训练步
-	def __train_step_for_cross(self, batch, optimizer):
-		# 损失函数
+	def __train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler):
 		cross_entropy_function = nn.CrossEntropyLoss()
 
 		# 读取数据
@@ -1461,21 +1599,24 @@ class TrainWholeModel:
 		token_type_ids = (batch['token_type_ids']).to(self.device)
 		attention_mask = (batch['attention_mask']).to(self.device)
 
-		# 优化器置零
-		optimizer.zero_grad()
+		qa_labels = (batch['label']).to(self.device)
 
-		logits = self.model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask)
+		# 得到模型的结果
+		logits = self.model(
+			input_ids=input_ids, token_type_ids=token_type_ids,
+			attention_mask=attention_mask)
 
-		target = torch.tensor([self.train_candidate_num - 1] * logits.shape[0]).to(logits.device)
-
-		step_loss = cross_entropy_function(logits, target)
+		# 计算损失
+		step_loss = cross_entropy_function(logits, qa_labels)
 
 		# 误差反向传播
 		step_loss.backward()
 
 		# 更新模型参数
-		optimizer.step()
-		optimizer.zero_grad()
+		if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
+			optimizer.step()
+			optimizer.zero_grad()
+			scheduler.step()
 
 		# 统计命中率
 		step_shoot_num = logits.shape[0]
@@ -1484,7 +1625,7 @@ class TrainWholeModel:
 			step_hit_num = 0
 			for i, max_index in enumerate(row_max_indices):
 				inner_index = max_index[0]
-				if inner_index == self.train_candidate_num - 1:
+				if inner_index == qa_labels[i]:
 					step_hit_num += 1
 
 		return step_loss, step_shoot_num, step_hit_num
@@ -1536,12 +1677,15 @@ class TrainWholeModel:
 		return logits
 
 	def __val_step_for_cross(self, batch):
+		# 读取数据
 		input_ids = (batch['input_ids']).to(self.device)
 		token_type_ids = (batch['token_type_ids']).to(self.device)
 		attention_mask = (batch['attention_mask']).to(self.device)
 
-		logits = self.model.evaluate(input_ids=input_ids, token_type_ids=token_type_ids,
-									 attention_mask=attention_mask)
+		with torch.no_grad():
+			# 得到模型的结果
+			logits = self.model(input_ids=input_ids, token_type_ids=token_type_ids,
+								attention_mask=attention_mask)
 
 		return logits
 
@@ -1565,6 +1709,10 @@ class TrainWholeModel:
 			now_dataset = QAClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len)
+		elif self.model_class in ['CrossBERT']:
+			now_dataset = CrossClassifyDataset(data=now_data_block,
+											   tokenizer=self.tokenizer,
+											   text_max_len=self.text_max_len)
 		else:
 			raise Exception("No train dataset supported for this model class!")
 
