@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from reformed_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt
-from QAInput_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig
+from QAInput_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig
 from reformed_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset
 
 
@@ -215,7 +215,7 @@ class TrainWholeModel:
 					print(val_loss, val_acc)
 
 					# add model
-					if self.model_class in ['QAMemory', 'QAModel']:
+					if self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 						r_1 = self.ranking_qa_input()
 					elif self.model_class in ['CrossBERT']:
 						r_1 = self.ranking_cross()
@@ -334,7 +334,7 @@ class TrainWholeModel:
 				step_loss, step_shoot_num, step_hit_num = \
 					self.__train_step_for_bi(batch=batch, optimizer=optimizer, now_batch_num=now_batch_num,
 													scheduler=scheduler)
-			elif self.model_class in ['QAMemory', 'QAModel']:
+			elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 				step_loss, step_shoot_num, step_hit_num = \
 					self.__train_step_for_qa_input(batch=batch, optimizer=optimizer, now_batch_num=now_batch_num,
 												   scheduler=scheduler, final_stage_flag=final_stage_flag)
@@ -376,7 +376,7 @@ class TrainWholeModel:
 
 				val_loss, val_acc = self.classify_validate_model(val_dataloader)
 				# add model
-				if self.model_class in ['QAMemory', 'QAModel']:
+				if self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 					r_1 = self.ranking_qa_input()
 				elif self.model_class in ['CrossBERT']:
 					r_1 = self.ranking_cross()
@@ -674,7 +674,7 @@ class TrainWholeModel:
 				# add model
 				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
 					logits = self.__val_step_for_bi(batch)
-				elif self.model_class in ['QAMemory', 'QAModel']:
+				elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 					logits = self.__val_step_for_qa_input(batch)
 				elif self.model_class in ['CrossBERT']:
 					logits = self.__val_step_for_cross(batch)
@@ -1238,6 +1238,8 @@ class TrainWholeModel:
 			model = QAModel(config=self.config)
 		elif self.model_class in ['CrossBERT']:
 			model = CrossBERT(config=self.config)
+		elif self.model_class in ['ADecoder']:
+			model = ADecoder(config=self.config)
 		else:
 			raise Exception("This model class is not supported for creating!!")
 
@@ -1337,6 +1339,13 @@ class TrainWholeModel:
 									 word_embedding_len=word_embedding_len,
 									 sentence_embedding_len=sentence_embedding_len,
 									 composition=self.composition)
+		elif self.model_class in ['ADecoder']:
+			config = ADecoderConfig(len(self.tokenizer),
+									pretrained_bert_path=args.pretrained_bert_path,
+									num_labels=args.label_num,
+									word_embedding_len=word_embedding_len,
+									sentence_embedding_len=sentence_embedding_len,
+									composition=self.composition)
 		else:
 			raise Exception("No config for this class!")
 
@@ -1409,6 +1418,14 @@ class TrainWholeModel:
 				# 这几个一样
 				{'params': model.bert_model.parameters(), 'lr': 5e-5},
 			]
+		elif self.model_class in ['ADecoder']:
+			parameters_dict_list = [
+				# 这几个一样
+				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				{'params': model.decode_query.parameters(), 'lr': 5e-5},
+				{'params': model.decode_layer_chunks.parameters(), 'lr': 5e-5},
+				{'params': model.classifier.parameters(), 'lr': 5e-5},
+			]
 		else:
 			raise Exception("No optimizer supported for this model class!")
 
@@ -1457,6 +1474,13 @@ class TrainWholeModel:
 					{'params': model.value_layer.parameters(), 'lr': 1e-4},
 					# 这个不设定
 					{'params': model.classifier.parameters(), 'lr': 1e-4}
+				]
+			elif self.model_class in ['ADecoder']:
+				parameters_dict_list = [
+					# 这几个一样
+					{'params': model.decode_query.parameters(), 'lr': 5e-5},
+					{'params': model.decode_layer_chunks.parameters(), 'lr': 5e-5},
+					{'params': model.classifier.parameters(), 'lr': 1e-4},
 				]
 			else:
 				raise Exception("Have Two Stage But No optimizer supported for this model class!")
@@ -1705,7 +1729,7 @@ class TrainWholeModel:
 			now_dataset = QAMemClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len, memory_num=self.memory_num)
-		elif self.model_class in ['QAModel']:
+		elif self.model_class in ['QAModel', 'ADecoder']:
 			now_dataset = QAClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len)

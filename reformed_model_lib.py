@@ -304,6 +304,10 @@ class InputMemorySelfAtt(nn.Module):
             temp_mask[temp_mask == 0] = 2
             temp_mask -= 1
 
+            # remove tokens whose attention mask is 0
+            temp_attention_mask = final_attention_mask.clone().detach()
+            temp_mask = temp_mask * temp_attention_mask
+
             # remove cls, if cls is removed, some sentences may be empty
             # temp_mask[:, 0] = 0
 
