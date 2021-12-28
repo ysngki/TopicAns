@@ -325,6 +325,7 @@ class TrainWholeModel:
 
 		# 开始训练
 		for batch in bar:
+
 			# add model
 			if self.model_class == "CrossBERT":
 				step_loss, step_shoot_num, step_hit_num = self.__train_step_for_cross(batch=batch, optimizer=optimizer,
@@ -340,7 +341,6 @@ class TrainWholeModel:
 												   scheduler=scheduler, final_stage_flag=final_stage_flag)
 			else:
 				raise Exception("Train step have not supported this model class")
-
 
 			# 更新一下信息
 			train_loss += step_loss.item()
@@ -1422,8 +1422,8 @@ class TrainWholeModel:
 			parameters_dict_list = [
 				# 这几个一样
 				{'params': model.bert_model.parameters(), 'lr': 5e-5},
-				{'params': model.decode_query.parameters(), 'lr': 5e-5},
-				{'params': model.decode_layer_chunks.parameters(), 'lr': 5e-5},
+				{'params': model.composition_layer.parameters(), 'lr': 5e-5},
+				{'params': model.decoder.parameters(), 'lr': 5e-5},
 				{'params': model.classifier.parameters(), 'lr': 5e-5},
 			]
 		else:
@@ -1478,8 +1478,8 @@ class TrainWholeModel:
 			elif self.model_class in ['ADecoder']:
 				parameters_dict_list = [
 					# 这几个一样
-					{'params': model.decode_query.parameters(), 'lr': 5e-5},
-					{'params': model.decode_layer_chunks.parameters(), 'lr': 5e-5},
+					{'params': model.decoder.parameters(), 'lr': 5e-5},
+					{'params': model.composition_layer.parameters(), 'lr': 1e-4},
 					{'params': model.classifier.parameters(), 'lr': 1e-4},
 				]
 			else:

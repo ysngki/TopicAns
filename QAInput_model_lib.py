@@ -232,7 +232,7 @@ class CrossBERT(nn.Module):
 # --------------------------------------
 class ADecoderConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
-                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler'):
+                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler', answer_context_num=1):
 
         self.tokenizer_len = tokenizer_len
         self.pretrained_bert_path = pretrained_bert_path
@@ -240,6 +240,7 @@ class ADecoderConfig:
         self.word_embedding_len = word_embedding_len
         self.sentence_embedding_len = sentence_embedding_len
         self.composition = composition
+        self.answer_context_num = answer_context_num
 
     def __str__(self):
         print("*"*20 + "config" + "*"*20)
@@ -249,10 +250,11 @@ class ADecoderConfig:
         print("word_embedding_len:", self.word_embedding_len)
         print("sentence_embedding_len:", self.sentence_embedding_len)
         print("composition:", self.composition)
+        print("answer_context_num:", self.answer_context_num)
 
 
 class ADecoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: ADecoderConfig):
 
         super(ADecoder, self).__init__()
 
@@ -264,18 +266,33 @@ class ADecoder(nn.Module):
 
         # 这个学习率不一样
         self.this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
+
+        # contain the parameters of encoder
         self.bert_model = MyBertModel.from_pretrained(config.pretrained_bert_path)
 
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
         self.embeddings = self.bert_model.get_input_embeddings()
+
+        # create models for compress answer
+        self.composition_layer = nn.ModuleList([LinearSelfAttentionLayer(self.this_bert_config.hidden_size) for _ in range(config.answer_context_num)])
 
         # create models for decoder
         self.num_attention_heads = self.this_bert_config.num_attention_heads
         self.attention_head_size = int(self.this_bert_config.hidden_size / self.this_bert_config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        self.decode_query = nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in range(self.this_bert_config.num_hidden_layers)])
-        self.decode_layer_chunks = nn.ModuleList([DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)])
+        self.decoder = nn.ModuleDict({
+            'answer_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
+                                           range(self.this_bert_config.num_hidden_layers)]),
+            'answer_key': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
+                                           range(self.this_bert_config.num_hidden_layers)]),
+            'answer_value': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
+                                           range(self.this_bert_config.num_hidden_layers)]),
+            'layer_chunks': nn.ModuleList([DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)])
+        })
+
+        # self.decode_query = nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in range(self.this_bert_config.num_hidden_layers)])
+        # self.decode_layer_chunks = nn.ModuleList([DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)])
 
         # create classifier
         self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
@@ -285,7 +302,7 @@ class ADecoder(nn.Module):
     def init_decoder_params(self):
         #  read parameters for layer chunks from encoder
         for index in range(self.this_bert_config.num_hidden_layers):
-            this_static = self.decode_layer_chunks[index].state_dict()
+            this_static = self.decoder['layer_chunks'][index].state_dict()
             pretrained_static = self.bert_model.encoder.layer[index].state_dict()
 
             updating_query_static = {}
@@ -294,11 +311,11 @@ class ADecoder(nn.Module):
                 updating_query_static[k] = pretrained_static[new_k]
 
             this_static.update(updating_query_static)
-            self.decode_layer_chunks[index].load_state_dict(this_static)
+            self.decoder['layer_chunks'][index].load_state_dict(this_static)
 
         #  read parameters for query from encoder
         pretrained_static = self.bert_model.state_dict()
-        query_static = self.decode_query.state_dict()
+        query_static = self.decoder['answer_query'].state_dict()
 
         updating_query_static = {}
         for k in query_static.keys():
@@ -306,7 +323,7 @@ class ADecoder(nn.Module):
             updating_query_static[k] = pretrained_static[full_key]
 
         query_static.update(updating_query_static)
-        self.decode_query.load_state_dict(query_static)
+        self.decoder['answer_query'].load_state_dict(query_static)
 
     # use the average embedding of last layer as sentence representation
     @staticmethod
@@ -351,16 +368,27 @@ class ADecoder(nn.Module):
         # get a
         a_out = self.bert_model(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask,
                                 enrich_answer_by_question=False)
+        # (batch size, sequence len, dim)
         a_last_hidden_state = a_out['last_hidden_state']
 
-        a_embeddings = self.get_rep_by_avg(a_last_hidden_state, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
-        # (batch, 1, sequence dim)
-        a_embeddings = a_embeddings.unsqueeze(-2)
+        a_embeddings = None
+        for index in range(self.config.answer_context_num):
+            # (batch size, 1, dim)
+            this_answer_context = self.composition_layer[index](a_last_hidden_state).unsqueeze(1)
+
+            if a_embeddings is None:
+                a_embeddings = this_answer_context
+            else:
+                a_embeddings = torch.cat((a_embeddings, this_answer_context), dim=1)
+
+        # a_embeddings = self.get_rep_by_avg(a_last_hidden_state, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
+        # # (batch, 1, sequence dim)
+        # a_embeddings = a_embeddings.unsqueeze(-2)
 
         # get q and new a
         q_out = self.bert_model(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask,
                                 enrich_answer_by_question=True, answer_embeddings=a_embeddings,
-                                decode_related_models=(self.decode_query, self.decode_layer_chunks))
+                                decoder=self.decoder)
 
         q_last_hidden_state, a_embeddings = q_out['last_hidden_state'], q_out['a_embedding']
 
@@ -371,6 +399,35 @@ class ADecoder(nn.Module):
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
 
         return logits
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+# according to Multihop Attention Networks for Question Answer Matching
+class LinearSelfAttentionLayer(nn.Module):
+    def __init__(self, input_dim, drop_prob=0.2):
+        super(LinearSelfAttentionLayer, self).__init__()
+        self.conversion_layer = nn.Linear(input_dim, input_dim*2)
+        self.weight_layer = nn.Linear(input_dim*2, input_dim)
+
+        self.dropout = torch.nn.Dropout(p=drop_prob)
+        self.tanh = torch.nn.Tanh()
+        self.softmax = nn.Softmax(dim=-1)
+
+    # context shape is supposed to be (batch size, sequence dim, input_dim)
+    # output is (batch size, input_dim)
+    def forward(self, context):
+        # (batch size, sequence dim, input_dim)
+        converted_context = self.tanh(self.conversion_layer(context))
+        attention_weight = self.softmax(self.weight_layer(converted_context))
+
+        processed_context = attention_weight.mul(context)
+
+        # sum by dim -1
+        # (batch size, input_dim)
+        context_representation = processed_context.sum(dim=-2)
+        return context_representation
 
 
 # --------------------------------------
