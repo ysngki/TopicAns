@@ -13,10 +13,10 @@ import numpy as np
 import sys
 from tqdm import tqdm
 
-from reformed_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
+from TBA_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt
-from QAInput_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig
-from reformed_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset
+from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig
+from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset
 
 
 class TrainWholeModel:
