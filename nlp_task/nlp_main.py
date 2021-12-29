@@ -38,6 +38,7 @@ def read_arguments():
 	parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
 	parser.add_argument("--val_num_each_epoch", default=3, type=int)
 	parser.add_argument("--save_model_dict", default="./model/", type=str)
+	parser.add_argument("--last_model_dict", default="./last_model/", type=str)
 	parser.add_argument("--first_stage_lr", default=0.3, type=float, help="the lr of memory at first stage")
 	parser.add_argument("--no_train", action="store_true", default=False)
 	parser.add_argument("--do_test", action="store_true", default=False)
@@ -110,14 +111,17 @@ if __name__ == '__main__':
 	if my_args.distill:
 		raise Exception("Distillation is not supported yes!")
 
+	if not os.path.exists(my_args.save_model_dict):
+		os.makedirs(my_args.save_model_dict)
+	if not os.path.exists(my_args.last_model_dict):
+		os.makedirs(my_args.last_model_dict)
+
 	# 如果读取memory，或者不训练mlm，就要train
 	if not os.path.exists(my_args.save_model_dict):
 		os.makedirs(my_args.save_model_dict)
 
 	if not my_args.no_train:
-		my_train_model.train(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
-											 my_args.model_class + "_" +
-											 my_args.dataset_name, train_two_stage_flag=my_train_two_stage_flag,
+		my_train_model.train(train_two_stage_flag=my_train_two_stage_flag,
 							 only_final=my_args.only_final)
 
 	if my_args.do_test:
