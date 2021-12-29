@@ -1,10 +1,12 @@
 import argparse
+import os
+
 import torch
 from torch.backends import cudnn
 import random
 import numpy as np
 
-from QA_trainer import TrainWholeModel
+from nlp_trainer import TrainWholeModel
 
 
 def set_seed(seed):
@@ -20,13 +22,13 @@ def read_arguments():
 
 	# must set
 	# add model
-	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder'])
+	parser.add_argument("--model_class", required=True, type=str, choices=['QAClassifierModel', 'CrossBERT', 'ParallelEncoder'])
 
-	parser.add_argument("--dataset_name", "-d", required=True, type=str)
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
 	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
+	parser.add_argument("--dataset_name", "-d", type=str)
+	parser.add_argument("--label_num", required=True, type=int)  # !!!
 	parser.add_argument("--one_stage", action="store_true", default=False)
 	parser.add_argument("--model_save_prefix", default="", type=str)
 	parser.add_argument("--memory_save_prefix", default="", type=str)
@@ -37,6 +39,9 @@ def read_arguments():
 	parser.add_argument("--val_num_each_epoch", default=3, type=int)
 	parser.add_argument("--save_model_dict", default="./model/", type=str)
 	parser.add_argument("--first_stage_lr", default=0.3, type=float, help="the lr of memory at first stage")
+	parser.add_argument("--no_train", action="store_true", default=False)
+	parser.add_argument("--do_test", action="store_true", default=False)
+	parser.add_argument("--use_cpu", action="store_true", default=False)
 
 	# related to model
 	parser.add_argument("--hop_num", default=1, type=int, help = 'hop num for pure memory')
@@ -47,8 +52,8 @@ def read_arguments():
 
 	parser.add_argument("--no_initial_test", action="store_true", default=False)
 
-	parser.add_argument("--load_classifier", "-l", action="store_true", default=False, help="load classifier")
-	parser.add_argument("--classifier_path", type=str, help="load classifier")
+	parser.add_argument("--load_model", "-l", action="store_true", default=False)
+	parser.add_argument("--load_model_path", type=str, help="load classifier")
 
 	parser.add_argument("--load_memory", action="store_true", default=False)
 	parser.add_argument("--load_middle", action="store_true", default=False)
@@ -69,7 +74,6 @@ def read_arguments():
 	parser.add_argument("--seed", "-s", default=42, type=int)
 	parser.add_argument("--text_max_len", default=512, type=int)
 	parser.add_argument("--ranking_candidate_num", default=5, type=int)
-	parser.add_argument("--label_num", default=4, type=int)  # !!!
 	parser.add_argument("--num_train_epochs", "-e",type=int, default=50)
 
 	# outdated
@@ -97,8 +101,7 @@ if __name__ == '__main__':
 	# 设置训练参数
 	my_train_two_stage_flag = False
 	# add model
-	if my_args.model_class in ['OneSupremeMemory', 'PureMemory', 'VaeAttention', 'VaeAttentionPlus', 'BasicModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'ADecoder']:
+	if my_args.model_class in ['ParallelEncoder']:
 		my_train_two_stage_flag = True
 
 	if my_args.one_stage:
@@ -107,16 +110,17 @@ if __name__ == '__main__':
 	if my_args.distill:
 		raise Exception("Distillation is not supported yes!")
 
-	# 通过mlm训练memory
-	if my_args.mlm:
-		my_train_model.train_memory_by_mlm(memory_save_name=my_args.memory_save_prefix + "_" +
-															my_args.dataset_name)
-
 	# 如果读取memory，或者不训练mlm，就要train
-	if my_args.load_memory or (not my_args.mlm):
+	if not os.path.exists(my_args.save_model_dict):
+		os.makedirs(my_args.save_model_dict)
+
+	if not my_args.no_train:
 		my_train_model.train(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 											 my_args.model_class + "_" +
 											 my_args.dataset_name, train_two_stage_flag=my_train_two_stage_flag,
-							 memory_save_name=my_args.memory_save_prefix + "_" +
-											  my_args.dataset_name, only_final=my_args.only_final)
+							 only_final=my_args.only_final)
 
+	if my_args.do_test:
+		my_train_model.glue_test(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
+												 my_args.model_class + "_" +
+												 my_args.dataset_name)

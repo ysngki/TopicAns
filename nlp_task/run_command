@@ -1,0 +1,7 @@
+Task1: mnli --------------------
+# train bi
+python -u nlp_main.py -d mnli --model_class QAClassifierModel --composition pooler -n 0 --label_num 3 --train_batch_size 128 | tee  logs/mnli/bi.log
+# train cross
+python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 0 --label_num 3 --train_batch_size 64 --gradient_accumulation_steps 2 | tee  logs/mnli/cross.log
+# train ParallelEncoder
+python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 0 --label_num 3 --train_batch_size 64 --gradient_accumulation_steps 2 | tee  logs/mnli/cross.log

@@ -343,7 +343,7 @@ class InputMemorySelfAtt(nn.Module):
     def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
-        # 获得表示，普普通通
+        # 获得表示，普普通通, no memory
         # q_embeddings = self.get_rep_by_self_att_basic(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
         #                                               attention_mask=q_attention_mask)
         #
@@ -352,16 +352,6 @@ class InputMemorySelfAtt(nn.Module):
         #
         # a_embeddings = self.get_rep_by_self_att_basic(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
         #                                               attention_mask=a_attention_mask)
-
-        # 获得表示,结合memory
-        # q_embeddings = self.get_rep_by_self_att(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                         attention_mask=q_attention_mask, is_question=True)
-        #
-        # b_embeddings = self.get_rep_by_self_att(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-        #                                         attention_mask=b_attention_mask, is_question=True)
-        #
-        # a_embeddings = self.get_rep_by_self_att(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                         attention_mask=a_attention_mask, is_question=False)
 
         if self.config.composition == 'avg':
             q_embeddings = self.get_rep_by_avg(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
@@ -381,6 +371,15 @@ class InputMemorySelfAtt(nn.Module):
 
             a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
                                                   attention_mask=a_attention_mask, is_question=False)
+        elif self.config.composition == 'self':
+            q_embeddings = self.get_rep_by_self_att(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                                    attention_mask=q_attention_mask, is_question=True)
+
+            b_embeddings = self.get_rep_by_self_att(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                                    attention_mask=b_attention_mask, is_question=True)
+
+            a_embeddings = self.get_rep_by_self_att(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                                    attention_mask=a_attention_mask, is_question=False)
         else:
             raise Exception(f"Composition {self.config.composition} is not supported!!")
 
@@ -812,20 +811,22 @@ class BodyClassifier(nn.Module):
         x = torch.cat((q_embedding, a_embedding), dim=-1)
         x = torch.cat((x, b_embedding), dim=-1)
 
+        res_x = x
         x = self.linear1(x)
         x = self.relu(x)
-        # x = self.dropout(x)
-        x = self.bn1(x)
+        x = self.dropout(x) + res_x
+        # x = self.bn1(x)
 
         x = self.linear2(x)
         x = self.relu(x)
-        # x = self.dropout(x)
-        x = self.bn2(x)
+        x = self.dropout(x)
+        # x = self.bn2(x)
 
+        res_x = x
         x = self.linear3(x)
         x = self.relu(x)
-        # x = self.dropout(x)
-        x = self.bn3(x)
+        x = self.dropout(x) + res_x
+        # x = self.bn3(x)
 
         x = self.linear4(x)
 

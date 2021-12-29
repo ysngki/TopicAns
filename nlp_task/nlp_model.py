@@ -12,7 +12,7 @@ import torch.nn.functional
 #       basic bi-encoder, support mem
 # 2. CrossBERT
 #       basic cross-encoder
-# 3. ADecoder
+# 3. ParallelEncoder
 #       my model
 
 
@@ -20,7 +20,7 @@ import torch.nn.functional
 # fen ge xian
 # --------------------------------------
 # No matter whether use memory mechanism, all models whose input consists of Q and A can use this class
-class QAModelConfig:
+class QAClassifierModelConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
                  word_embedding_len=512, sentence_embedding_len=512, composition='pooler'):
 
@@ -41,10 +41,10 @@ class QAModelConfig:
         print("composition:", self.composition)
 
 
-class QAModel(nn.Module):
+class QAClassifierModel(nn.Module):
     def __init__(self, config):
 
-        super(QAModel, self).__init__()
+        super(QAClassifierModel, self).__init__()
 
         self.config = config
 
@@ -160,27 +160,24 @@ class QAModel(nn.Module):
 
         return representations
 
-    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
-                a_input_ids, a_token_type_ids, a_attention_mask):
+    def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask):
 
         if self.config.composition == 'avg':
-            q_embeddings = self.get_rep_by_avg(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-                                               attention_mask=q_attention_mask)
-
-            a_embeddings = self.get_rep_by_avg(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-                                               attention_mask=a_attention_mask)
+            composition_function = self.get_rep_by_avg
         elif self.config.composition == 'pooler':
-            q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-                                                  attention_mask=q_attention_mask)
-
-            a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-                                                  attention_mask=a_attention_mask)
+            composition_function = self.get_rep_by_pooler
         else:
             raise Exception(f"Composition {self.config.composition} is not supported!!")
 
-        # # 根据输入，进行思考, 思考的结果要选择性遗忘
-        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
+        a_embeddings = composition_function(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                            attention_mask=a_attention_mask)
 
+        b_embeddings = composition_function(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                            attention_mask=b_attention_mask)
+
+        # # 根据输入，进行思考, 思考的结果要选择性遗忘
+        logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
 
         return logits
 
@@ -240,7 +237,7 @@ class CrossBERT(nn.Module):
 # --------------------------------------
 # fen ge xian
 # --------------------------------------
-class ADecoderConfig:
+class ParallelEncoderConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
                  word_embedding_len=512, sentence_embedding_len=512, composition='pooler', answer_context_num=1):
 
@@ -263,10 +260,10 @@ class ADecoderConfig:
         print("answer_context_num:", self.answer_context_num)
 
 
-class ADecoder(nn.Module):
-    def __init__(self, config: ADecoderConfig):
+class ParallelEncoder(nn.Module):
+    def __init__(self, config: ParallelEncoderConfig):
 
-        super(ADecoder, self).__init__()
+        super(ParallelEncoder, self).__init__()
 
         self.config = config
 
@@ -292,13 +289,14 @@ class ADecoder(nn.Module):
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
         self.decoder = nn.ModuleDict({
-            'answer_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
-                                           range(self.this_bert_config.num_hidden_layers)]),
-            'answer_key': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
-                                           range(self.this_bert_config.num_hidden_layers)]),
-            'answer_value': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
-                                           range(self.this_bert_config.num_hidden_layers)]),
-            'layer_chunks': nn.ModuleList([DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)])
+            'candidate_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
+                                              range(self.this_bert_config.num_hidden_layers)]),
+            'candidate_key': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
+                                            range(self.this_bert_config.num_hidden_layers)]),
+            'candidate_value': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
+                                              range(self.this_bert_config.num_hidden_layers)]),
+            'layer_chunks': nn.ModuleList(
+                [DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)])
         })
 
         # self.decode_query = nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in range(self.this_bert_config.num_hidden_layers)])
@@ -315,17 +313,17 @@ class ADecoder(nn.Module):
             this_static = self.decoder['layer_chunks'][index].state_dict()
             pretrained_static = self.bert_model.encoder.layer[index].state_dict()
 
-            updating_query_static = {}
+            updating_layer_static = {}
             for k in this_static.keys():
                 new_k = k.replace('attention.', 'attention.output.', 1)
-                updating_query_static[k] = pretrained_static[new_k]
+                updating_layer_static[k] = pretrained_static[new_k]
 
-            this_static.update(updating_query_static)
+            this_static.update(updating_layer_static)
             self.decoder['layer_chunks'][index].load_state_dict(this_static)
 
         #  read parameters for query from encoder
         pretrained_static = self.bert_model.state_dict()
-        query_static = self.decoder['answer_query'].state_dict()
+        query_static = self.decoder['candidate_query'].state_dict()
 
         updating_query_static = {}
         for k in query_static.keys():
@@ -333,7 +331,29 @@ class ADecoder(nn.Module):
             updating_query_static[k] = pretrained_static[full_key]
 
         query_static.update(updating_query_static)
-        self.decoder['answer_query'].load_state_dict(query_static)
+        self.decoder['candidate_query'].load_state_dict(query_static)
+
+        #  read parameters for key from encoder
+        key_static = self.decoder['candidate_key'].state_dict()
+
+        updating_key_static = {}
+        for k in key_static.keys():
+            full_key = 'encoder.layer.' + k.split(".")[0] + '.attention.self.key.' + k.split(".")[1]
+            updating_key_static[k] = pretrained_static[full_key]
+
+        key_static.update(updating_key_static)
+        self.decoder['candidate_key'].load_state_dict(key_static)
+
+        #  read parameters for value from encoder
+        value_static = self.decoder['candidate_value'].state_dict()
+
+        updating_value_static = {}
+        for k in value_static.keys():
+            full_key = 'encoder.layer.' + k.split(".")[0] + '.attention.self.value.' + k.split(".")[1]
+            updating_value_static[k] = pretrained_static[full_key]
+
+        value_static.update(updating_value_static)
+        self.decoder['candidate_value'].load_state_dict(value_static)
 
     # use the average embedding of last layer as sentence representation
     @staticmethod
@@ -372,41 +392,41 @@ class ADecoder(nn.Module):
         return representations
 
     # 如果不把a传进q，就会退化成最普通的QAModel，已经被验证过了
-    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
-                a_input_ids, a_token_type_ids, a_attention_mask):
-
-        # get a
-        a_out = self.bert_model(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask,
-                                enrich_answer_by_question=False)
+    # b_text can be computed ti zao
+    def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask):
+        # get b (candidate texts)
+        b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask,
+                                enrich_candidate_by_question=False)
         # (batch size, sequence len, dim)
-        a_last_hidden_state = a_out['last_hidden_state']
+        b_last_hidden_state = b_out['last_hidden_state']
 
-        a_embeddings = None
+        b_embeddings = None
         for index in range(self.config.answer_context_num):
             # (batch size, 1, dim)
-            this_answer_context = self.composition_layer[index](a_last_hidden_state).unsqueeze(1)
+            this_candidate_context = self.composition_layer[index](b_last_hidden_state, b_attention_mask).unsqueeze(1)
 
-            if a_embeddings is None:
-                a_embeddings = this_answer_context
+            if b_embeddings is None:
+                b_embeddings = this_candidate_context
             else:
-                a_embeddings = torch.cat((a_embeddings, this_answer_context), dim=1)
+                b_embeddings = torch.cat((b_embeddings, this_candidate_context), dim=1)
 
         # a_embeddings = self.get_rep_by_avg(a_last_hidden_state, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
         # # (batch, 1, sequence dim)
         # a_embeddings = a_embeddings.unsqueeze(-2)
 
         # get q and new a
-        q_out = self.bert_model(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask,
-                                enrich_answer_by_question=True, answer_embeddings=a_embeddings,
+        a_out = self.bert_model(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask,
+                                enrich_candidate_by_question=True, candidate_embeddings=b_embeddings,
                                 decoder=self.decoder)
 
-        q_last_hidden_state, a_embeddings = q_out['last_hidden_state'], q_out['a_embedding']
+        a_last_hidden_state, b_embeddings = a_out['last_hidden_state'], a_out['b_embeddings']
 
-        q_embeddings = self.get_rep_by_avg(q_last_hidden_state, token_type_ids=q_token_type_ids,
-                                           attention_mask=q_attention_mask)
+        b_embeddings = b_embeddings.squeeze(-2)
+        a_embeddings = self.get_rep_by_avg(a_last_hidden_state, token_type_ids=a_token_type_ids,
+                                           attention_mask=a_attention_mask)
 
-        a_embeddings = a_embeddings.squeeze(-2)
-        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
+        logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
 
         return logits
 
@@ -423,14 +443,28 @@ class LinearSelfAttentionLayer(nn.Module):
 
         self.dropout = torch.nn.Dropout(p=drop_prob)
         self.tanh = torch.nn.Tanh()
-        self.softmax = nn.Softmax(dim=-1)
+        # here is different from that paper
+        self.softmax = nn.Softmax(dim=-2)
 
-    # context shape is supposed to be (batch size, sequence dim, input_dim)
+    # context shape is supposed to be (batch size, sequence len, input_dim)
+    # attention_mask shape is (batch size, sequence len)
     # output is (batch size, input_dim)
-    def forward(self, context):
+    def forward(self, context, attention_mask):
         # (batch size, sequence dim, input_dim)
         converted_context = self.tanh(self.conversion_layer(context))
-        attention_weight = self.softmax(self.weight_layer(converted_context))
+        raw_attention_weight = self.weight_layer(converted_context)
+
+        # 创作出mask
+        with torch.no_grad():
+            mask = attention_mask.type(dtype=torch.float).clone().detach()
+            mask[mask == 0] = -np.inf
+            mask[mask == 1] = 0.0
+            mask = mask.repeat(context.shape[-1], 1, 1)
+            mask.transpose_(0, 1)
+            mask.transpose_(1, 2)
+
+        raw_attention_weight = raw_attention_weight + mask
+        attention_weight = self.softmax(raw_attention_weight)
 
         processed_context = attention_weight.mul(context)
 
@@ -448,45 +482,27 @@ class QAClassifier(nn.Module):
     def __init__(self, input_len, keep_prob=0.9, num_labels=4):
         super(QAClassifier, self).__init__()
 
-        self.linear1 = torch.nn.Linear(input_len * 2, input_len * 2, bias=True)
-        self.bn1 = nn.BatchNorm1d(input_len * 2)
-        self.linear2 = torch.nn.Linear(input_len * 2, input_len, bias=True)
-        self.bn2 = nn.BatchNorm1d(input_len)
-        self.linear3 = torch.nn.Linear(input_len, input_len, bias=True)
-        self.bn3 = nn.BatchNorm1d(input_len)
-        self.linear4 = torch.nn.Linear(input_len, num_labels, bias=True)
+        self.linear1 = torch.nn.Linear(input_len * 3, input_len * 3, bias=True)
+        self.linear2 = torch.nn.Linear(input_len * 3, num_labels, bias=True)
 
         self.relu = torch.nn.ReLU()
-        self.tanh = torch.nn.Tanh()
-        self.sigmoid = torch.nn.Sigmoid()
         self.dropout = torch.nn.Dropout(p=1 - keep_prob)
         self.init_weights()
 
     def init_weights(self):
         torch.nn.init.xavier_uniform_(self.linear1.weight)
         torch.nn.init.xavier_uniform_(self.linear2.weight)
-        torch.nn.init.xavier_uniform_(self.linear3.weight)
-        torch.nn.init.xavier_uniform_(self.linear4.weight)
 
-    def forward(self, q_embedding, a_embedding):
-        x = torch.cat((q_embedding, a_embedding), dim=-1)
+    def forward(self, a_embedding, b_embedding):
+        x = torch.cat((a_embedding, b_embedding, torch.abs(a_embedding-b_embedding)), dim=-1)
+        # x = torch.cat((q_embedding, a_embedding), dim=-1)
 
+        res_x = x
         x = self.linear1(x)
         x = self.relu(x)
         x = self.dropout(x)
-        x = self.bn1(x)
 
         x = self.linear2(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.bn2(x)
-
-        x = self.linear3(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.bn3(x)
-
-        x = self.linear4(x)
 
         return x
 
