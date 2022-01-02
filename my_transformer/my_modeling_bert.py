@@ -40,7 +40,6 @@ from ...modeling_utils import (
 from ...utils import logging
 from .configuration_bert import BertConfig
 
-
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "bert-base-uncased"
@@ -122,19 +121,27 @@ class MyBertSelfAttention(nn.Module):
 			past_key_value=None,
 			output_attentions=False,
 			enrich_candidate_by_question=False,
-			candidate_embeddings=None,
+			# (batch_size, candidate_context_num, dim)
+			candidate_context_embeddings=None,
+			lstm_hint_vector=None,
 			decoder=None,
 			layer_index=None,
+			candidate_num=1,
 	):
 		mixed_query_layer = self.query(hidden_states)
 		# get query for candidate
 		if enrich_candidate_by_question:
-			if candidate_embeddings is None or decoder is None or layer_index is None:
+			if candidate_context_embeddings is None or decoder is None or layer_index is None:
 				raise Exception(
 					"candidate_embeddings or decode_query_layer or layer_index missed for enrich_candidate_by_question!")
 
 			# (batch, candidate num, dim)
-			candidate_query = decoder['candidate_query'][layer_index](candidate_embeddings)
+			# used to enrich candidate contexts themselves
+			candidate_query = decoder['candidate_query'][layer_index](candidate_context_embeddings)
+
+			# used to compress the text a into a vector, like what cls does
+			compress_query = decoder['compress_query'][layer_index](lstm_hint_vector)
+			mixed_query_layer = torch.cat((mixed_query_layer, compress_query), dim=1)
 
 		# If this is instantiated as a cross-attention module, the keys
 		# and values come from an encoder; the attention mask needs to be
@@ -163,8 +170,10 @@ class MyBertSelfAttention(nn.Module):
 
 			# get key and value for candidate
 			if enrich_candidate_by_question:
-				candidate_key_layer = self.transpose_for_scores(decoder['candidate_key'][layer_index](candidate_embeddings))
-				candidate_value_layer = self.transpose_for_scores(decoder['candidate_value'][layer_index](candidate_embeddings))
+				candidate_key_layer = self.transpose_for_scores(
+					decoder['candidate_key'][layer_index](candidate_context_embeddings))
+				candidate_value_layer = self.transpose_for_scores(
+					decoder['candidate_value'][layer_index](candidate_context_embeddings))
 
 				# candidate can see almost all tokens
 				candidate_key_layer = torch.cat([key_layer, candidate_key_layer], dim=-2)
@@ -188,7 +197,7 @@ class MyBertSelfAttention(nn.Module):
 		# (batch size, head num, sequence len, sequence len)
 		attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
 		if enrich_candidate_by_question:
-			# (batch size, head num, candidate_num, sequence len + candidate_num)
+			# (batch size, head num, candidate_num*context_num, sequence len + candidate_num*context_num)
 			candidate_attention_scores = torch.matmul(candidate_query, candidate_key_layer.transpose(-1, -2))
 
 		if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
@@ -209,7 +218,7 @@ class MyBertSelfAttention(nn.Module):
 
 		attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 		if enrich_candidate_by_question:
-			# (batch size, head num, candidate_num, sequence len + candidate_num)
+			# (batch size, head num, candidate_num*context_num, sequence len + candidate_num*context_num)
 			candidate_attention_scores = candidate_attention_scores / math.sqrt(self.attention_head_size)
 
 		# attention_mask.shape = (batch size, 1, 1, question_sequence_len)
@@ -219,21 +228,32 @@ class MyBertSelfAttention(nn.Module):
 
 			if enrich_candidate_by_question:
 				# prepare mask for candidate
-				candidate_num = candidate_embeddings.shape[1]
-				candidate_mask_tensor = torch.tensor([-10000.0] * candidate_num, device=attention_scores.device).unsqueeze(
+				candidate_context_num = candidate_context_embeddings.shape[1]
+
+				# (1, 1, 1, candidate_context_num)
+				candidate_mask_tensor = torch.tensor([-10000.0] * candidate_context_num,
+													 device=attention_scores.device).unsqueeze(
 					0).unsqueeze(0).unsqueeze(0)
-				# (batch size, 1, 1, candidate num)
+				# (batch size, 1, 1, candidate_context_num)
 				candidate_mask_tensor = candidate_mask_tensor.repeat(attention_mask.shape[0], 1, 1, 1)
-				# (batch size, 1, 1, question_sequence_len + candidate_num)
+				# (batch size, 1, 1, question_sequence_len + candidate_context_num)
 				new_attention_mask = torch.cat([attention_mask, candidate_mask_tensor], dim=-1)
-				# (batch size, head num, candidate_num, question_sequence_len + candidate_num)
+				# (batch size, head num, candidate_context_num, question_sequence_len + candidate_context_num)
 				new_attention_mask = new_attention_mask.repeat(1, candidate_attention_scores.shape[1],
 															   candidate_attention_scores.shape[2], 1)
+				# (batch size, head num, candidate_num, context_num, question_sequence_len + candidate_context_num)
+				previous_shape = new_attention_mask.size()
+
+				new_attention_mask = new_attention_mask.reshape(previous_shape[0], previous_shape[1], candidate_num, -1,
+																previous_shape[-1])
+				context_num = new_attention_mask.shape[-2]
+				all_sequence_num = new_attention_mask.shape[-1]
 
 				# let candidate diagno to be 0.0
 				for inner_index in range(1, candidate_num + 1):
-					new_attention_mask[:, :, -inner_index, -inner_index] = 0.0
-
+					new_attention_mask[:, :, -inner_index, :,
+					-inner_index * context_num: all_sequence_num - ((inner_index - 1) * context_num)] = 0.0
+				new_attention_mask = new_attention_mask.reshape(*previous_shape)
 				# now candidate can see itself and question, while question can only see itself
 				candidate_attention_scores = candidate_attention_scores + new_attention_mask
 
@@ -269,11 +289,15 @@ class MyBertSelfAttention(nn.Module):
 		context_layer = context_layer.view(*new_context_layer_shape)
 		if enrich_candidate_by_question:
 			candidate_context = candidate_context.view(*new_candidate_context_shape)
+			lstm_hidden_states = context_layer[:, -candidate_num:, :]
+
+			context_layer = context_layer[:, :-candidate_num, :]
 		else:
 			candidate_context = None
+			lstm_hidden_states = None
 
-		outputs = (context_layer, candidate_context, attention_probs) if output_attentions else (
-		context_layer, candidate_context,)
+		outputs = (context_layer, candidate_context, lstm_hidden_states, attention_probs) if output_attentions else (
+			context_layer, candidate_context, lstm_hidden_states,)
 
 		if self.is_decoder:
 			outputs = outputs + (past_key_value,)
@@ -318,7 +342,20 @@ class MyBertAttention(nn.Module):
 			candidate_embeddings=None,
 			decoder=None,
 			layer_index=None,
+			candidate_num=1,
 	):
+		if enrich_candidate_by_question:
+			candidate_context_embeddings = candidate_embeddings[:, :-candidate_num, :]
+			# lstm_hint_vector may need to be compressed if context num of each candidate is larger than 1
+			lstm_hint_vector = candidate_context_embeddings.reshape(candidate_embeddings.shape[0], candidate_num, -1,
+																	candidate_embeddings.shape[-1])
+			lstm_hint_vector = torch.mean(lstm_hint_vector, dim=-2)
+			lstm_hidden_states = candidate_embeddings[:, -candidate_num:, :]
+		else:
+			candidate_context_embeddings = None
+			lstm_hidden_states = None
+			lstm_hint_vector = None
+
 		self_outputs = self.self(
 			hidden_states,
 			attention_mask,
@@ -328,49 +365,36 @@ class MyBertAttention(nn.Module):
 			past_key_value,
 			output_attentions,
 			enrich_candidate_by_question,
-			candidate_embeddings,
+			# each candiate has only one compressing hint
+			candidate_context_embeddings,
+			lstm_hint_vector,
 			decoder,
 			layer_index,
+			candidate_num,
 		)
 
 		# dense + dropout + layer_norm(res)
 		attention_output = self.output(self_outputs[0], hidden_states)
 
 		if enrich_candidate_by_question:
-			# dense + dropout + layer_norm(res)
-			candidate_embeddings = decoder['layer_chunks'][layer_index](self_outputs[1], candidate_embeddings)
+			# dense + dropout + layer_norm(res) + intermediate ...
+			new_candidate_context_embeddings = decoder['layer_chunks'][layer_index](res_flag=True,
+																					new_embeddings=self_outputs[1],
+																					old_embeddings=candidate_context_embeddings)
+
+			new_lstm_hidden_states = decoder['layer_chunks'][layer_index](res_flag=False,
+																		  new_embeddings=self_outputs[2],
+																		  old_embeddings=lstm_hidden_states,
+																		  lstm_cell=decoder['LSTM'],
+																		  lstm_hint_vector=lstm_hint_vector)
+
+			candidate_embeddings = torch.cat((new_candidate_context_embeddings, new_lstm_hidden_states), dim=1)
 		else:
 			candidate_embeddings = None
 
 		outputs = (attention_output, candidate_embeddings) + self_outputs[1:]  # add attentions if we output them
 
 		return outputs
-
-
-# used by decoder. support copy parameters from encoder
-class DecoderLayerChunk(nn.Module):
-	def __init__(self, config):
-		super().__init__()
-		self.chunk_size_feed_forward = config.chunk_size_feed_forward
-		self.seq_len_dim = 1
-
-		self.attention = BertSelfOutput(config)
-		self.intermediate = BertIntermediate(config)
-		self.output = BertOutput(config)
-
-	def forward(
-			self,
-			new_candidate_embeddings=None,
-			old_candidate_embeddings=None
-	):
-		# dense + dropout + layer_norm(res)
-		attention_output = self.attention(new_candidate_embeddings, old_candidate_embeddings)
-		# dense + activation
-		intermediate_output = self.intermediate(attention_output)
-		# dense + dropout + layer_norm(res)
-		layer_output = self.output(intermediate_output, attention_output)
-
-		return layer_output
 
 
 class MyBertLayer(nn.Module):
@@ -403,6 +427,7 @@ class MyBertLayer(nn.Module):
 			candidate_embeddings=None,
 			decoder=None,
 			layer_index=None,
+			candidate_num=1,
 	):
 		# decoder uni-directional self-attention cached key/values tuple is at positions 1,2
 		self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
@@ -416,10 +441,12 @@ class MyBertLayer(nn.Module):
 			candidate_embeddings=candidate_embeddings,
 			decoder=decoder,
 			layer_index=layer_index,
+			candidate_num=candidate_num,
 		)
 
 		attention_output = self_attention_outputs[0]
 
+		# feed attention_output forward---------------------------------------------------------------------
 		# if decoder, the last output is tuple of self-attn cache
 		if self.is_decoder:
 			outputs = self_attention_outputs[1:-1]
@@ -498,6 +525,7 @@ class MyBertEncoder(nn.Module):
 			enrich_candidate_by_question=False,
 			candidate_embeddings=None,
 			decoder=None,
+			candidate_num=1,
 	):
 
 		all_hidden_states = () if output_hidden_states else None
@@ -507,7 +535,8 @@ class MyBertEncoder(nn.Module):
 		next_decoder_cache = () if use_cache else None
 
 		# decode related part
-		this_layer_candidates = candidate_embeddings
+		# contain context vectors of text_B as well as lstm initial states
+		this_layer_decoder_state = candidate_embeddings
 
 		for i, layer_module in enumerate(self.layer):
 			if output_hidden_states:
@@ -538,9 +567,10 @@ class MyBertEncoder(nn.Module):
 					encoder_hidden_states,
 					encoder_attention_mask,
 					enrich_candidate_by_question=enrich_candidate_by_question,
-					candidate_embeddings=this_layer_candidates,
+					candidate_embeddings=this_layer_decoder_state,
 					decoder=decoder,
 					layer_index=i,
+					candidate_num=candidate_num,
 				)
 			else:
 				layer_outputs = layer_module(
@@ -552,14 +582,15 @@ class MyBertEncoder(nn.Module):
 					past_key_value,
 					output_attentions,
 					enrich_candidate_by_question=enrich_candidate_by_question,
-					candidate_embeddings=this_layer_candidates,
+					candidate_embeddings=this_layer_decoder_state,
 					decoder=decoder,
 					layer_index=i,
+					candidate_num=candidate_num,
 				)
+			# (Batch, Context_num * Candidate_num + Candidate_num, Dim)
+			this_layer_decoder_state = layer_outputs[1]
 
-			this_layer_candidates = layer_outputs[1]
-
-			# (Batch, Q_Sentence, Dim)
+			# (Batch, A_Sentence, Dim)
 			hidden_states = layer_outputs[0]
 
 			if use_cache:
@@ -580,7 +611,7 @@ class MyBertEncoder(nn.Module):
 				all_hidden_states,
 				all_self_attentions,
 				all_cross_attentions,
-				this_layer_candidates,
+				this_layer_decoder_state,
 			]
 			# if v is not None
 		)
@@ -650,9 +681,11 @@ class MyBertModel(BertPreTrainedModel):
 			output_attentions=None,
 			output_hidden_states=None,
 			return_dict=None,
+			# added by yyh
 			enrich_candidate_by_question=False,
 			candidate_embeddings=None,
 			decoder=None,
+			candidate_num=1,
 	):
 		r"""
 		encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
@@ -759,6 +792,7 @@ class MyBertModel(BertPreTrainedModel):
 			enrich_candidate_by_question=enrich_candidate_by_question,
 			candidate_embeddings=candidate_embeddings,
 			decoder=decoder,
+			candidate_num=candidate_num,
 		)
 		sequence_output = encoder_outputs[0]
 		pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
@@ -766,4 +800,52 @@ class MyBertModel(BertPreTrainedModel):
 		return {'last_hidden_state': encoder_outputs[0], 'pooler_output': pooled_output,
 				'past_key_values': encoder_outputs[1], 'hidden_states': encoder_outputs[2],
 				'attentions': encoder_outputs[3], 'cross_attentions': encoder_outputs[4],
-				'b_embeddings': encoder_outputs[5]}
+				'decoder_output': encoder_outputs[5]}
+
+
+# used by decoder. support copy parameters from encoder
+class DecoderLayerChunk(nn.Module):
+	def __init__(self, config):
+		super().__init__()
+		self.chunk_size_feed_forward = config.chunk_size_feed_forward
+		self.seq_len_dim = 1
+
+		self.attention = MyBertSelfOutput(config)
+		self.intermediate = BertIntermediate(config)
+		self.output = BertOutput(config)
+
+	def forward(
+			self,
+			# lstm_flag = not res_flag
+			res_flag,
+			new_embeddings=None,
+			old_embeddings=None,
+			lstm_cell=None,
+			lstm_hint_vector=None,
+	):
+		# dense + dropout + layer_norm(res)
+		attention_output = self.attention(new_embeddings, old_embeddings, res_flag, lstm_cell, lstm_hint_vector)
+		# dense + activation
+		intermediate_output = self.intermediate(attention_output)
+		# dense + dropout + layer_norm(res)
+		layer_output = self.output(intermediate_output, attention_output)
+
+		return layer_output
+
+
+class MyBertSelfOutput(nn.Module):
+	def __init__(self, config):
+		super().__init__()
+		self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+		self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+		self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+	def forward(self, hidden_states, input_tensor, res_flag, lstm_cell, lstm_hint_vector):
+		hidden_states = self.dense(hidden_states)
+		hidden_states = self.dropout(hidden_states)
+		if res_flag:
+			hidden_states = self.LayerNorm(hidden_states + input_tensor)
+		else:
+			hidden_states = self.LayerNorm(lstm_cell(hidden_states, input_tensor, lstm_hint_vector))
+
+		return hidden_states

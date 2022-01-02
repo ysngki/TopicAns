@@ -6,6 +6,7 @@ import torch.utils.data
 import numpy as np
 import torch.nn.functional
 
+from my_function import get_rep_by_avg
 
 # model list
 # 1. QAModel
@@ -128,35 +129,7 @@ class QAClassifierModel(nn.Module):
         # (batch_size, sequence_length, hidden_size)
         last_hidden_state = out['last_hidden_state']
 
-        with torch.no_grad():
-            temp_attention_mask = attention_mask.clone().detach()
-
-            # (batch_size, sequence_length)
-            temp_mask = token_type_ids.clone().detach()
-
-            # remove memory if existing
-            temp_mask[temp_mask == 0] = 2
-            temp_mask -= 1
-
-            temp_mask = temp_mask * temp_attention_mask
-
-            # remove cls, if cls is removed, some sentences may be empty
-            # temp_mask[:, 0] = 0
-
-            # remove sep--the last token whose type id equals 0
-            sequence_len = temp_mask.sum(dim=-1) - 1
-            sequence_len = sequence_len.unsqueeze(-1)
-            temp_mask.scatter_(dim=1, index=sequence_len, src=torch.zeros((temp_mask.shape[0], 1), device=input_ids.device, dtype=temp_mask.dtype))
-
-            # (batch_size, sequence_length, 1)
-            temp_mask = temp_mask.unsqueeze(-1)
-
-        last_hidden_state = last_hidden_state * temp_mask
-
-        # get average embedding
-        representations = last_hidden_state.sum(dim=1)
-
-        representations = representations / sequence_len
+        representations = get_rep_by_avg(embeddings=last_hidden_state, attention_mask=attention_mask, token_type_ids=token_type_ids)
 
         return representations
 
@@ -239,7 +212,7 @@ class CrossBERT(nn.Module):
 # --------------------------------------
 class ParallelEncoderConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
-                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler', answer_context_num=1):
+                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler', context_num=1):
 
         self.tokenizer_len = tokenizer_len
         self.pretrained_bert_path = pretrained_bert_path
@@ -247,7 +220,7 @@ class ParallelEncoderConfig:
         self.word_embedding_len = word_embedding_len
         self.sentence_embedding_len = sentence_embedding_len
         self.composition = composition
-        self.answer_context_num = answer_context_num
+        self.context_num = context_num
 
     def __str__(self):
         print("*"*20 + "config" + "*"*20)
@@ -257,7 +230,7 @@ class ParallelEncoderConfig:
         print("word_embedding_len:", self.word_embedding_len)
         print("sentence_embedding_len:", self.sentence_embedding_len)
         print("composition:", self.composition)
-        print("answer_context_num:", self.answer_context_num)
+        print("context_num:", self.context_num)
 
 
 class ParallelEncoder(nn.Module):
@@ -281,7 +254,7 @@ class ParallelEncoder(nn.Module):
         self.embeddings = self.bert_model.get_input_embeddings()
 
         # create models for compress answer
-        self.composition_layer = nn.ModuleList([LinearSelfAttentionLayer(self.this_bert_config.hidden_size) for _ in range(config.answer_context_num)])
+        self.composition_layer = nn.ModuleList([OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size) for _ in range(config.context_num)])
 
         # create models for decoder
         self.num_attention_heads = self.this_bert_config.num_attention_heads
@@ -296,17 +269,21 @@ class ParallelEncoder(nn.Module):
             'candidate_value': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
                                               range(self.this_bert_config.num_hidden_layers)]),
             'layer_chunks': nn.ModuleList(
-                [DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)])
+                [DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)]),
+            # used to get representations of text_a with the guidance of text_b from key and value of text_a
+            'compress_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
+                                             range(self.this_bert_config.num_hidden_layers)]),
+            'LSTM': MyLSTMBlock(self.this_bert_config.hidden_size),
+            # # maybe one this is ok, maybe need num_hidden_layers
+            # 'convert_layer_for_compressing': CompressingLayerChunk(self.this_bert_config),
         })
-
-        # self.decode_query = nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in range(self.this_bert_config.num_hidden_layers)])
-        # self.decode_layer_chunks = nn.ModuleList([DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)])
 
         # create classifier
         self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
 
         self.init_decoder_params()
 
+    # use parameters of pre-trained encoder to initialize decoder
     def init_decoder_params(self):
         #  read parameters for layer chunks from encoder
         for index in range(self.this_bert_config.num_hidden_layers):
@@ -333,6 +310,17 @@ class ParallelEncoder(nn.Module):
         query_static.update(updating_query_static)
         self.decoder['candidate_query'].load_state_dict(query_static)
 
+        #  read parameters for compress_query from encoder
+        compress_query_static = self.decoder['compress_query'].state_dict()
+
+        updating_query_static = {}
+        for k in compress_query_static.keys():
+            full_key = 'encoder.layer.' + k.split(".")[0] + '.attention.self.query.' + k.split(".")[1]
+            updating_query_static[k] = pretrained_static[full_key]
+
+        compress_query_static.update(updating_query_static)
+        self.decoder['compress_query'].load_state_dict(compress_query_static)
+
         #  read parameters for key from encoder
         key_static = self.decoder['candidate_key'].state_dict()
 
@@ -355,54 +343,21 @@ class ParallelEncoder(nn.Module):
         value_static.update(updating_value_static)
         self.decoder['candidate_value'].load_state_dict(value_static)
 
-    # use the average embedding of last layer as sentence representation
-    @staticmethod
-    def get_rep_by_avg(embeddings, token_type_ids, attention_mask):
-        with torch.no_grad():
-            # (batch_size, sequence_length)
-            temp_mask = token_type_ids.clone().detach()
-
-            # remove tokens whose type id is 1
-            temp_mask[temp_mask == 0] = 2
-            temp_mask -= 1
-
-            # remove tokens whose attention mask is 0
-            temp_attention_mask = attention_mask.clone().detach()
-            temp_mask = temp_mask * temp_attention_mask
-            # remove cls, if cls is removed, some sentences may be empty
-            # temp_mask[:, 0] = 0
-
-            # remove sep--the last token
-            sequence_len = temp_mask.sum(dim=-1) - 1
-            sequence_len = sequence_len.unsqueeze(-1)
-            temp_mask.scatter_(dim=1, index=sequence_len,
-                               src=torch.zeros((temp_mask.shape[0], 1), device=embeddings.device,
-                                               dtype=temp_mask.dtype))
-
-            # (batch_size, sequence_length, 1)
-            temp_mask = temp_mask.unsqueeze(-1)
-
-        embeddings = embeddings * temp_mask
-
-        # get average embedding
-        representations = embeddings.sum(dim=1)
-
-        representations = representations / sequence_len
-
-        return representations
-
     # 如果不把a传进q，就会退化成最普通的QAModel，已经被验证过了
-    # b_text can be computed ti zao
+    # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
+        candidate_num = 1
+
         # get b (candidate texts)
         b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask,
                                 enrich_candidate_by_question=False)
         # (batch size, sequence len, dim)
         b_last_hidden_state = b_out['last_hidden_state']
 
+        # should be (batch size, context_num, dim)
         b_embeddings = None
-        for index in range(self.config.answer_context_num):
+        for index in range(self.config.context_num):
             # (batch size, 1, dim)
             this_candidate_context = self.composition_layer[index](b_last_hidden_state, b_attention_mask).unsqueeze(1)
 
@@ -411,22 +366,26 @@ class ParallelEncoder(nn.Module):
             else:
                 b_embeddings = torch.cat((b_embeddings, this_candidate_context), dim=1)
 
-        # a_embeddings = self.get_rep_by_avg(a_last_hidden_state, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
-        # # (batch, 1, sequence dim)
-        # a_embeddings = a_embeddings.unsqueeze(-2)
+        lstm_initial_state = torch.zeros(b_embeddings.shape[0], 1, b_embeddings.shape[-1], device=b_embeddings.device)
+        # (batch size, candidate_num*(context_num + 1), dim)
+        b_embeddings = torch.cat((b_embeddings, lstm_initial_state), dim=1)
 
         # get q and new a
         a_out = self.bert_model(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask,
                                 enrich_candidate_by_question=True, candidate_embeddings=b_embeddings,
-                                decoder=self.decoder)
+                                decoder=self.decoder, candidate_num=candidate_num)
 
-        a_last_hidden_state, b_embeddings = a_out['last_hidden_state'], a_out['b_embeddings']
+        a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
 
-        b_embeddings = b_embeddings.squeeze(-2)
-        a_embeddings = self.get_rep_by_avg(a_last_hidden_state, token_type_ids=a_token_type_ids,
-                                           attention_mask=a_attention_mask)
+        # get final representations
+        a_context_embeddings = decoder_output[:,:-candidate_num,:].reshape(decoder_output.shape[0], candidate_num, -1, decoder_output.shape[-1])
+        a_embeddings = torch.mean(a_context_embeddings, dim=-2)
+
+        b_embeddings = decoder_output[:,-candidate_num:,:]
 
         logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
+        if candidate_num == 1:
+            logits = logits.squeeze(1)
 
         return logits
 
@@ -474,6 +433,65 @@ class LinearSelfAttentionLayer(nn.Module):
         return context_representation
 
 
+class OutVectorSelfAttentionLayer(nn.Module):
+    def __init__(self, input_dim):
+        super(OutVectorSelfAttentionLayer, self).__init__()
+        self.query = nn.Parameter(torch.randn(input_dim, 1))
+        self.softmax = nn.Softmax(dim=-1)
+
+    # context shape is supposed to be (batch size, sequence len, input_dim)
+    # attention_mask shape is (batch size, sequence len)
+    # output is (batch size, input_dim)
+    def forward(self, context, attention_mask=None):
+        # (batch size, sequence len)
+        raw_attention_weight = torch.matmul(context, self.query).squeeze(-1)
+
+        # 创作出mask
+        if attention_mask is None:
+            attention_weight = raw_attention_weight
+        else:
+            with torch.no_grad():
+                mask = attention_mask.type(dtype=torch.float).clone().detach()
+                mask[mask == 0] = -np.inf
+                mask[mask == 1] = 0.0
+                attention_weight = raw_attention_weight + mask
+
+        attention_weight = self.softmax(attention_weight)
+
+        # (batch size, sequence len, input dim)
+        attention_weight = attention_weight.repeat(context.shape[-1], 1, 1)
+        attention_weight.transpose_(0, 1)
+        attention_weight.transpose_(1, 2)
+
+        processed_context = attention_weight.mul(context)
+
+        # sum by dim -1
+        # (batch size, input_dim)
+        context_representation = processed_context.sum(dim=-2)
+        return context_representation
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+# A gate, a substitution of resnet
+class MyLSTMBlock(nn.Module):
+    def __init__(self, input_dim):
+        super(MyLSTMBlock, self).__init__()
+        self.weight_layer = nn.Linear(input_dim*3, input_dim)
+
+        self.sigmoid = nn.Sigmoid()
+
+    # shapes are supposed to be (batch size, input_dim)
+    def forward(self, this_compressed_vector, last_compressed_vector, weight_hint):
+        weight = self.weight_layer(torch.cat((weight_hint, this_compressed_vector, last_compressed_vector), dim=-1))
+        weight = self.sigmoid(weight)
+
+        new_compressed_vector = weight * this_compressed_vector + (1-weight)*last_compressed_vector
+
+        return new_compressed_vector
+
+
 # --------------------------------------
 # fen ge xian
 # --------------------------------------
@@ -497,7 +515,6 @@ class QAClassifier(nn.Module):
         x = torch.cat((a_embedding, b_embedding, torch.abs(a_embedding-b_embedding)), dim=-1)
         # x = torch.cat((q_embedding, a_embedding), dim=-1)
 
-        res_x = x
         x = self.linear1(x)
         x = self.relu(x)
         x = self.dropout(x)

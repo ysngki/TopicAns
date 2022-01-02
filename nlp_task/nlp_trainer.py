@@ -109,15 +109,13 @@ class TrainWholeModel:
             if final_stage_flag and train_two_stage_flag:
                 self.model = load_model(self.model, model_save_path + "_middle")
 
-            # load model to restore
+            # load model to restore training
             restore_path = self.get_restore_path(final_stage_flag)
             if self.restore_flag:
                 self.model = load_model(self.model, restore_path)
 
-            # 读取数据
+            # 训练准备
             self.__model_to_device()
-
-            # 这不不会出问题吧
             self.__model_parallel()
 
             # 优化器
@@ -651,6 +649,7 @@ class TrainWholeModel:
         self.load_model_path = args.load_model_path
         self.save_model_dict = args.save_model_dict
         self.last_model_dict = args.last_model_dict
+        self.context_num = args.context_num
 
     # 读取命令行传入的有关config的参数
     def __read_args_for_config(self, args):
@@ -688,7 +687,8 @@ class TrainWholeModel:
                                     num_labels=args.label_num,
                                     word_embedding_len=word_embedding_len,
                                     sentence_embedding_len=sentence_embedding_len,
-                                    composition=self.composition)
+                                    composition=self.composition,
+                                    context_num=self.context_num)
         else:
             raise Exception("No config for this class!")
 

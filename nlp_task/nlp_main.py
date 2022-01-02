@@ -25,6 +25,7 @@ def read_arguments():
 	parser.add_argument("--model_class", required=True, type=str, choices=['QAClassifierModel', 'CrossBERT', 'ParallelEncoder'])
 
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
+	parser.add_argument("--context_num", "-c", default=1, type=int)
 	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
 	parser.add_argument("--dataset_name", "-d", type=str)
