@@ -21,7 +21,7 @@ def read_arguments():
 	# must set
 	# add model
 	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder'])
+							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory'])
 
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
@@ -98,7 +98,7 @@ if __name__ == '__main__':
 	my_train_two_stage_flag = False
 	# add model
 	if my_args.model_class in ['OneSupremeMemory', 'PureMemory', 'VaeAttention', 'VaeAttentionPlus', 'BasicModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'ADecoder']:
+							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'ADecoder', 'OneSupremeMemory']:
 		my_train_two_stage_flag = True
 
 	if my_args.one_stage:

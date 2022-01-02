@@ -14,7 +14,7 @@ import sys
 from tqdm import tqdm
 
 from TBA_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
-	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt
+	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig
 from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig
 from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset
 
@@ -219,6 +219,7 @@ class TrainWholeModel:
 						r_1 = self.ranking_qa_input()
 					elif self.model_class in ['CrossBERT']:
 						r_1 = self.ranking_cross()
+					# TBA
 					else:
 						r_1 = self.ranking()
 
@@ -331,7 +332,7 @@ class TrainWholeModel:
 				step_loss, step_shoot_num, step_hit_num = self.__train_step_for_cross(batch=batch, optimizer=optimizer,
 																					  now_batch_num=now_batch_num,
 																					  scheduler=scheduler)
-			elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
+			elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory']:
 				step_loss, step_shoot_num, step_hit_num = \
 					self.__train_step_for_bi(batch=batch, optimizer=optimizer, now_batch_num=now_batch_num,
 													scheduler=scheduler)
@@ -672,7 +673,7 @@ class TrainWholeModel:
 			for index, batch in enumerate(classify_dataloader):
 				# 读取数据
 				# add model
-				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
+				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory']:
 					logits = self.__val_step_for_bi(batch)
 				elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 					logits = self.__val_step_for_qa_input(batch)
@@ -1240,6 +1241,8 @@ class TrainWholeModel:
 			model = CrossBERT(config=self.config)
 		elif self.model_class in ['ADecoder']:
 			model = ADecoder(config=self.config)
+		elif self.model_class in ['OneSupremeMemory']:
+			model = OneSupremeMemory(config=self.config)
 		else:
 			raise Exception("This model class is not supported for creating!!")
 
@@ -1346,6 +1349,13 @@ class TrainWholeModel:
 									word_embedding_len=word_embedding_len,
 									sentence_embedding_len=sentence_embedding_len,
 									composition=self.composition)
+		elif self.model_class in ['OneSupremeMemory']:
+			config = OneSupremeMemoryConfig(len(self.tokenizer),
+											 pretrained_bert_path=args.pretrained_bert_path,
+											 num_labels=args.label_num,
+											 word_embedding_len=word_embedding_len,
+											 sentence_embedding_len=sentence_embedding_len,
+											 memory_num=args.memory_num)
 		else:
 			raise Exception("No config for this class!")
 
@@ -1426,6 +1436,16 @@ class TrainWholeModel:
 				{'params': model.decoder.parameters(), 'lr': 5e-5},
 				{'params': model.classifier.parameters(), 'lr': 5e-5},
 			]
+		elif self.model_class in ['OneSupremeMemory']:
+			parameters_dict_list = [
+				# 这几个一样
+				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				{'params': model.memory_for_answer, 'lr': 5e-5},
+				{'params': model.memory_for_question, 'lr': 5e-5},
+				{'params': model.key_layer.parameters(), 'lr': 5e-5},
+				{'params': model.value_layer.parameters(), 'lr': 5e-5},
+				{'params': model.classifier.parameters(), 'lr': 5e-5},
+			]
 		else:
 			raise Exception("No optimizer supported for this model class!")
 
@@ -1480,6 +1500,15 @@ class TrainWholeModel:
 					# 这几个一样
 					{'params': model.decoder.parameters(), 'lr': 5e-5},
 					{'params': model.composition_layer.parameters(), 'lr': 1e-4},
+					{'params': model.classifier.parameters(), 'lr': 1e-4},
+				]
+			elif self.model_class in ['OneSupremeMemory']:
+				parameters_dict_list = [
+					# 这几个一样
+					{'params': model.memory_for_answer, 'lr': 1e-4},
+					{'params': model.memory_for_question, 'lr': 1e-4},
+					{'params': model.key_layer.parameters(), 'lr': 1e-4},
+					{'params': model.value_layer.parameters(), 'lr': 1e-4},
 					{'params': model.classifier.parameters(), 'lr': 1e-4},
 				]
 			else:
@@ -1721,7 +1750,7 @@ class TrainWholeModel:
 								  int((split_index + 1) * len(data) / split_num)]
 
 		# add model
-		if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt']:
+		if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory']:
 			now_dataset = TBAClassifyDataset(data=now_data_block,
 											 tokenizer=self.tokenizer,
 											 text_max_len=self.text_max_len - self.memory_num)
