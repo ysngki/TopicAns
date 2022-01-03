@@ -243,6 +243,8 @@ class TrainWholeModel:
                                     previous_best_performance=previous_best_acc, early_stop_count=early_stop_count)
                     this_epoch_best = True
 
+                    self.glue_test(test_datasets=test_datasets, postfix=postfix)
+
                 self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
                                 previous_best_performance=previous_best_acc, early_stop_count=early_stop_count)
 

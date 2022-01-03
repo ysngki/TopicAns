@@ -1,5 +1,5 @@
 from transformers import BertModel, BertForSequenceClassification, BertConfig
-from transformers.models.bert.my_modeling_bert import MyBertModel, DecoderLayerChunk
+from transformers.models.bert.out_vector_modeling_bert import MyBertModel, DecoderLayerChunk
 import torch
 import torch.nn as nn
 import torch.utils.data
