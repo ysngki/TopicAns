@@ -254,7 +254,7 @@ class ParallelEncoder(nn.Module):
         self.embeddings = self.bert_model.get_input_embeddings()
 
         # create models for compress answer
-        self.composition_layer = nn.ModuleList([OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size) for _ in range(config.context_num)])
+        self.composition_layer = OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, config.context_num)
 
         # create models for decoder
         self.num_attention_heads = self.this_bert_config.num_attention_heads
@@ -262,20 +262,23 @@ class ParallelEncoder(nn.Module):
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
         self.decoder = nn.ModuleDict({
+            # used by candidate context embeddings to enrich themselves
             'candidate_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
                                               range(self.this_bert_config.num_hidden_layers)]),
             'candidate_key': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
                                             range(self.this_bert_config.num_hidden_layers)]),
             'candidate_value': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
                                               range(self.this_bert_config.num_hidden_layers)]),
+            # used to project representations into same space
             'layer_chunks': nn.ModuleList(
                 [DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)]),
-            # used to get representations of text_a with the guidance of text_b from key and value of text_a
+            # used to compress candidate context embeddings into a vector
+            'candidate_composition_layer': OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, 1),
+            # used to generate query to compress Text_A
             'compress_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
                                              range(self.this_bert_config.num_hidden_layers)]),
+            # used to update hidden states with self-att output as input
             'LSTM': MyLSTMBlock(self.this_bert_config.hidden_size),
-            # # maybe one this is ok, maybe need num_hidden_layers
-            # 'convert_layer_for_compressing': CompressingLayerChunk(self.this_bert_config),
         })
 
         # create classifier
@@ -346,28 +349,31 @@ class ParallelEncoder(nn.Module):
     # 如果不把a传进q，就会退化成最普通的QAModel，已经被验证过了
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
-                b_input_ids, b_token_type_ids, b_attention_mask):
-        candidate_num = 1
-
-        # get b (candidate texts)
+                b_input_ids, b_token_type_ids, b_attention_mask, candidate_num=1):
+        # encoding candidate texts
         b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask,
                                 enrich_candidate_by_question=False)
-        # (batch size, sequence len, dim)
+        # (text_b_num, sequence len, dim)
         b_last_hidden_state = b_out['last_hidden_state']
 
-        # should be (batch size, context_num, dim)
-        b_embeddings = None
-        for index in range(self.config.context_num):
-            # (batch size, 1, dim)
-            this_candidate_context = self.composition_layer[index](b_last_hidden_state, b_attention_mask).unsqueeze(1)
+        # (text_b_num, context_num, dim)
+        b_embeddings = self.composition_layer(b_last_hidden_state, attention_mask=b_attention_mask)
+        if candidate_num != b_embeddings.shape[0]:
+            # (query_num, candidate_context_num, dim)
+            b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], candidate_num*self.config.context_num, b_embeddings.shape[-1])
+        elif candidate_num == b_embeddings.shape[0]:
+            # broadcast to (query_num, candidate_context_num, dim)
+            b_embeddings = b_embeddings.reshape(-1, b_embeddings.shape[-1]).unsqueeze(0).repeat(a_input_ids.shape[0], 1, 1)
+        else:
+            raise Exception("Candidate num should either equal to text_b_num or equal to (text_b_num / text_a_num)!")
 
-            if b_embeddings is None:
-                b_embeddings = this_candidate_context
-            else:
-                b_embeddings = torch.cat((b_embeddings, this_candidate_context), dim=1)
+        # now a and b is 1:1
+        # should support 1:N where N is candidate num
+        # b_embeddings should look like (query_num, candidate_num, context_num, dim)
+        # ......
 
-        lstm_initial_state = torch.zeros(b_embeddings.shape[0], 1, b_embeddings.shape[-1], device=b_embeddings.device)
-        # (batch size, candidate_num*(context_num + 1), dim)
+        lstm_initial_state = torch.zeros(a_input_ids.shape[0], candidate_num, b_embeddings.shape[-1], device=b_embeddings.device)
+        # (query_num, candidate_context_num + candidate_num, dim)
         b_embeddings = torch.cat((b_embeddings, lstm_initial_state), dim=1)
 
         # get q and new a
@@ -378,8 +384,14 @@ class ParallelEncoder(nn.Module):
         a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
 
         # get final representations
+        # (batch size, candidate_num, context_num, dim)
         a_context_embeddings = decoder_output[:,:-candidate_num,:].reshape(decoder_output.shape[0], candidate_num, -1, decoder_output.shape[-1])
-        a_embeddings = torch.mean(a_context_embeddings, dim=-2)
+
+        # previous >>>>>
+        # a_embeddings = torch.mean(a_context_embeddings, dim=-2)
+        # --------------------------
+        a_embeddings = self.decoder['candidate_composition_layer'](a_context_embeddings).squeeze(-2)
+        # <<<<< new
 
         b_embeddings = decoder_output[:,-candidate_num:,:]
 
@@ -434,17 +446,19 @@ class LinearSelfAttentionLayer(nn.Module):
 
 
 class OutVectorSelfAttentionLayer(nn.Module):
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, context_num):
         super(OutVectorSelfAttentionLayer, self).__init__()
-        self.query = nn.Parameter(torch.randn(input_dim, 1))
-        self.softmax = nn.Softmax(dim=-1)
+        self.query = nn.Parameter(torch.randn(input_dim, context_num))
+        self.softmax = nn.Softmax(dim=-2)
 
-    # context shape is supposed to be (batch size, sequence len, input_dim)
-    # attention_mask shape is (batch size, sequence len)
-    # output is (batch size, input_dim)
     def forward(self, context, attention_mask=None):
-        # (batch size, sequence len)
-        raw_attention_weight = torch.matmul(context, self.query).squeeze(-1)
+        '''
+        :param context: (..., sequence len, input_dim)
+        :param attention_mask: (..., sequence len)
+        :return: (..., context_num, input_dim)
+        '''
+        # (..., sequence len, context_num)
+        raw_attention_weight = torch.matmul(context, self.query)
 
         # 创作出mask
         if attention_mask is None:
@@ -454,20 +468,20 @@ class OutVectorSelfAttentionLayer(nn.Module):
                 mask = attention_mask.type(dtype=torch.float).clone().detach()
                 mask[mask == 0] = -np.inf
                 mask[mask == 1] = 0.0
-                attention_weight = raw_attention_weight + mask
 
-        attention_weight = self.softmax(attention_weight)
+                if raw_attention_weight.shape[:-1] != mask.shape:
+                    raise Exception("Dimension error!!")
+                else:
+                    attention_weight = raw_attention_weight + mask.unsqueeze(-1)
 
-        # (batch size, sequence len, input dim)
-        attention_weight = attention_weight.repeat(context.shape[-1], 1, 1)
-        attention_weight.transpose_(0, 1)
-        attention_weight.transpose_(1, 2)
+        # exchange last 2 dimensions
+        converted_dim = tuple( [ _ for _ in range(attention_weight.dim()-2)] ) + (-1, -2,)
+        # (..., context_num, sequence len)
+        attention_weight = self.softmax(attention_weight).permute(converted_dim)
 
-        processed_context = attention_weight.mul(context)
+        # (..., context_num, input_dim)
+        context_representation = torch.matmul(attention_weight, context)
 
-        # sum by dim -1
-        # (batch size, input_dim)
-        context_representation = processed_context.sum(dim=-2)
         return context_representation
 
 

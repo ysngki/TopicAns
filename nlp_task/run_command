@@ -4,4 +4,4 @@ python -u nlp_main.py -d mnli --model_class QAClassifierModel --composition pool
 # train cross
 python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 0 --label_num 3 --train_batch_size 64 --gradient_accumulation_steps 2 | tee  logs/mnli/cross.log
 # train ParallelEncoder
-python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 0 --label_num 3 --train_batch_size 64 --gradient_accumulation_steps 2 | tee  logs/mnli/cross.log
+python -u nlp_main.py -d mnli --model_class ParallelEncoder -n 1 --label_num 3 --train_batch_size 32 --gradient_accumulation_steps 4 --one_stage --model_save_prefix c3_one_stage_out_vector_ --context_num 3 | tee  logs/mnli/test.log

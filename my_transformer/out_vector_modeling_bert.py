@@ -135,11 +135,12 @@ class MyBertSelfAttention(nn.Module):
 				raise Exception(
 					"candidate_embeddings or decode_query_layer or layer_index missed for enrich_candidate_by_question!")
 
-			# (batch, candidate num, dim)
+			# (query_num, candidate_context_num, vec_dim)
 			# used to enrich candidate contexts themselves
 			candidate_query = decoder['candidate_query'][layer_index](candidate_context_embeddings)
 
 			# used to compress the text a into a vector, like what cls does
+  			# (query_num, candidate_num, vec_dim)
 			compress_query = decoder['compress_query'][layer_index](lstm_hint_vector)
 			mixed_query_layer = torch.cat((mixed_query_layer, compress_query), dim=1)
 
@@ -247,13 +248,15 @@ class MyBertSelfAttention(nn.Module):
 				new_attention_mask = new_attention_mask.reshape(previous_shape[0], previous_shape[1], candidate_num, -1,
 																previous_shape[-1])
 				context_num = new_attention_mask.shape[-2]
-				all_sequence_num = new_attention_mask.shape[-1]
+				all_sequence_len = new_attention_mask.shape[-1]
 
 				# let candidate diagno to be 0.0
 				for inner_index in range(1, candidate_num + 1):
 					new_attention_mask[:, :, -inner_index, :,
-					-inner_index * context_num: all_sequence_num - ((inner_index - 1) * context_num)] = 0.0
+					-inner_index * context_num: all_sequence_len - ((inner_index - 1) * context_num)] = 0.0
 				new_attention_mask = new_attention_mask.reshape(*previous_shape)
+				if candidate_num > 1:
+					raise Exception("Please check here whether new_attention_mask is correct!")
 				# now candidate can see itself and question, while question can only see itself
 				candidate_attention_scores = candidate_attention_scores + new_attention_mask
 
@@ -339,17 +342,22 @@ class MyBertAttention(nn.Module):
 			past_key_value=None,
 			output_attentions=False,
 			enrich_candidate_by_question=False,
+			# (query_num, candidate_context_num + candidate_num, dim)
 			candidate_embeddings=None,
 			decoder=None,
 			layer_index=None,
 			candidate_num=1,
 	):
 		if enrich_candidate_by_question:
+      		# (query_num, candidate_context_num, dim)
 			candidate_context_embeddings = candidate_embeddings[:, :-candidate_num, :]
-			# lstm_hint_vector may need to be compressed if context num of each candidate is larger than 1
+			# (query_num, candidate_num, context_num, dim)
 			lstm_hint_vector = candidate_context_embeddings.reshape(candidate_embeddings.shape[0], candidate_num, -1,
 																	candidate_embeddings.shape[-1])
-			lstm_hint_vector = torch.mean(lstm_hint_vector, dim=-2)
+			# (query_num, candidate_num, vec_dim)
+			lstm_hint_vector = decoder['candidate_composition_layer'](lstm_hint_vector).squeeze(-2)
+			# lstm_hint_vector = torch.mean(lstm_hint_vector, dim=-2)
+			# hidden states at last step
 			lstm_hidden_states = candidate_embeddings[:, -candidate_num:, :]
 		else:
 			candidate_context_embeddings = None
