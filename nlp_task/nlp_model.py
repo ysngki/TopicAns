@@ -452,11 +452,11 @@ class OutVectorSelfAttentionLayer(nn.Module):
         self.softmax = nn.Softmax(dim=-2)
 
     def forward(self, context, attention_mask=None):
-        '''
+        """
         :param context: (..., sequence len, input_dim)
         :param attention_mask: (..., sequence len)
         :return: (..., context_num, input_dim)
-        '''
+        """
         # (..., sequence len, context_num)
         raw_attention_weight = torch.matmul(context, self.query)
 
