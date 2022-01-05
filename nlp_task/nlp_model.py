@@ -130,6 +130,7 @@ class QAClassifierModel(nn.Module):
         last_hidden_state = out['last_hidden_state']
 
         representations = get_rep_by_avg(embeddings=last_hidden_state, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        representations = representations.squeeze(-2)
 
         return representations
 
@@ -249,11 +250,11 @@ class ParallelEncoder(nn.Module):
 
         # contain the parameters of encoder
         self.bert_model = MyBertModel.from_pretrained(config.pretrained_bert_path)
-
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
         self.embeddings = self.bert_model.get_input_embeddings()
 
-        # create models for compress answer
+        # used to compressing candidate to generate context vectors
         self.composition_layer = OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, config.context_num)
 
         # create models for decoder
@@ -274,7 +275,8 @@ class ParallelEncoder(nn.Module):
                 [DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)]),
             # used to compress candidate context embeddings into a vector
             'candidate_composition_layer': OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, 1),
-            # used to generate query to compress Text_A
+            # 'candidate_composition_layer': MeanLayer(),
+            # used to generate query to compress Text_A thus get its representation
             'compress_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
                                              range(self.this_bert_config.num_hidden_layers)]),
             # used to update hidden states with self-att output as input
@@ -403,7 +405,10 @@ class ParallelEncoder(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Composition Layers
+# 1. LinearSelfAttentionLayer: Multi-layer self-attention
+# 2. OutVectorSelfAttentionLayer: maintain several queries to get several representations by attention mechanism
+# 3. MeanLayer: do average to get representations
 # --------------------------------------
 # according to Multihop Attention Networks for Question Answer Matching
 class LinearSelfAttentionLayer(nn.Module):
@@ -483,6 +488,25 @@ class OutVectorSelfAttentionLayer(nn.Module):
         context_representation = torch.matmul(attention_weight, context)
 
         return context_representation
+
+
+class MeanLayer(nn.Module):
+    def __init__(self):
+        super(MeanLayer, self).__init__()
+
+    @staticmethod
+    def forward(embeddings, token_type_ids=None, attention_mask=None):
+        """
+        do average at dim -2 without remove this dimension
+        :param embeddings: (..., sequence len, dim)
+        :param token_type_ids: optional
+        :param attention_mask: optional
+        :return: (..., 1, dim)
+        """
+
+        representation = get_rep_by_avg(embeddings, token_type_ids, attention_mask)
+
+        return representation
 
 
 # --------------------------------------

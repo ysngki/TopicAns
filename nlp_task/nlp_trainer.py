@@ -101,6 +101,8 @@ class TrainWholeModel:
         if only_final:
             final_stage_flag = True
 
+        previous_best_performance = 0.0
+
         while True:
             # 创建模型
             self.model = self.__create_model()
@@ -121,9 +123,6 @@ class TrainWholeModel:
             # 优化器
             optimizer = self.__get_model_optimizer(final_stage_flag=final_stage_flag)
 
-            # 准备训练
-            previous_best_acc = -1
-
             if train_two_stage_flag:
                 if final_stage_flag:
                     print("~"*60 + " begin final stage train " + "~"*60)
@@ -139,7 +138,7 @@ class TrainWholeModel:
                 early_stop_threshold = 5
 
             # restore training settings
-            early_stop_count, restore_epoch, scheduler_last_epoch = self.restore_settings(optimizer, restore_path)
+            early_stop_count, restore_epoch, scheduler_last_epoch, previous_best_performance = self.restore_settings(optimizer, restore_path, previous_best_performance)
 
             # prepare dataset, all are tuples
             train_dataset, val_datasets, test_datasets = self.__get_datasets()
@@ -164,10 +163,10 @@ class TrainWholeModel:
 
                     print(
                         f"Initial eval on Validation Dataset: " + "*" * 30 +
-                        f"\nval_loss:{avg_val_loss}\tval_acc:{avg_val_acc}%\tprevious best acc:{previous_best_acc}\tfrom rank:{self.local_rank}")
+                        f"\nval_loss:{avg_val_loss}\tval_acc:{avg_val_acc}%\tprevious best acc:{previous_best_performance}\tfrom rank:{self.local_rank}")
 
-                    if avg_val_acc > previous_best_acc:
-                        previous_best_acc = avg_val_acc
+                    if avg_val_acc > previous_best_performance:
+                        previous_best_performance = avg_val_acc
                     print("-" * 30 + "initial_test_end" + "-" * 30, end="\n\n")
 
                 # 开始训练
@@ -228,7 +227,7 @@ class TrainWholeModel:
 
                 print(
                     f"{epoch + 1} epoch end eval on Validation Dataset: " + "*" * 30 +
-                    f"\nval_loss:{avg_val_loss}\tval_acc:{avg_val_acc}%\tprevious best acc:{previous_best_acc}\tfrom rank:{self.local_rank}")
+                    f"\nval_loss:{avg_val_loss}\ttrain_acc:{hit_num / shoot_num * 100}%\tval_acc:{avg_val_acc}%\tprevious best acc:{previous_best_performance}\tfrom rank:{self.local_rank}")
 
                 # 准备存储模型
                 postfix = ""
@@ -236,17 +235,17 @@ class TrainWholeModel:
                     postfix = "_middle"
 
                 # 存储最优模型
-                if avg_val_acc > previous_best_acc:
-                    previous_best_acc = avg_val_acc
+                if avg_val_acc > previous_best_performance:
+                    previous_best_performance = avg_val_acc
 
                     self.save_model(model_save_path=model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
-                                    previous_best_performance=previous_best_acc, early_stop_count=early_stop_count)
+                                    previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
                     this_epoch_best = True
 
                     self.glue_test(test_datasets=test_datasets, postfix=postfix)
 
                 self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
-                                previous_best_performance=previous_best_acc, early_stop_count=early_stop_count)
+                                previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
 
                 torch.cuda.empty_cache()
                 gc.collect()
@@ -319,10 +318,11 @@ class TrainWholeModel:
 
         return (sum_val_acc, avg_val_acc), (sum_val_loss, avg_val_loss)
 
-    def restore_settings(self, optimizer, restore_path):
+    def restore_settings(self, optimizer, restore_path, previous_best_performance):
         early_stop_count = 0
         restore_epoch = 0
         scheduler_last_epoch = 0
+        new_previous_best_performance = previous_best_performance
 
         if self.restore_flag:
             restore_data = torch.load(restore_path)
@@ -341,16 +341,16 @@ class TrainWholeModel:
                         state[k] = v.to(self.device)
 
             # get best performance
-            previous_best_r_1 = restore_data['best performance']
+            new_previous_best_performance = restore_data['best performance']
 
             # get epoch
             restore_epoch = restore_data['epoch']
 
             print("model is restored from", restore_path)
-            print(f'Restore epoch: {restore_epoch}, Previous best R@1: {previous_best_r_1}')
+            print(f'Restore epoch: {restore_epoch}, Previous best R@1: {new_previous_best_performance}')
             print("*" * 100)
 
-        return early_stop_count, restore_epoch, scheduler_last_epoch
+        return early_stop_count, restore_epoch, scheduler_last_epoch, new_previous_best_performance
 
     def get_restore_path(self, final_stage_flag):
         restore_path = "./last_model/" + self.model_save_prefix + self.model_class + "_" + self.dataset_name
