@@ -98,7 +98,7 @@ def get_rep_by_avg(embeddings, token_type_ids=None, attention_mask=None):
 			# remove tokens whose attention mask is 0
 			temp_attention_mask = attention_mask.clone().detach()
 			temp_mask = temp_mask * temp_attention_mask
-			sequence_len = temp_mask.sum(dim=-1)
+			sequence_len = temp_mask.sum(dim=-1).unsqueeze(-1)
 
 			# remove cls, if cls is removed, some sentences may be empty
 			# temp_mask[:, 0] = 0

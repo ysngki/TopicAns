@@ -252,10 +252,10 @@ class ParallelEncoder(nn.Module):
         self.bert_model = MyBertModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        self.embeddings = self.bert_model.get_input_embeddings()
+        # self.embeddings = self.bert_model.get_input_embeddings()
 
         # used to compressing candidate to generate context vectors
-        self.composition_layer = OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, config.context_num)
+        self.composition_layer = OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, config.context_num - 1)
 
         # create models for decoder
         self.num_attention_heads = self.this_bert_config.num_attention_heads
@@ -274,8 +274,8 @@ class ParallelEncoder(nn.Module):
             'layer_chunks': nn.ModuleList(
                 [DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)]),
             # used to compress candidate context embeddings into a vector
-            'candidate_composition_layer': OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, 1),
-            # 'candidate_composition_layer': MeanLayer(),
+            # 'candidate_composition_layer': OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, 1),
+            'candidate_composition_layer': MeanLayer(),
             # used to generate query to compress Text_A thus get its representation
             'compress_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
                                              range(self.this_bert_config.num_hidden_layers)]),
@@ -353,26 +353,21 @@ class ParallelEncoder(nn.Module):
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, candidate_num=1):
         # encoding candidate texts
+        # (text_b_num, sequence len, dim)
         b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask,
                                 enrich_candidate_by_question=False)
-        # (text_b_num, sequence len, dim)
         b_last_hidden_state = b_out['last_hidden_state']
 
-        # (text_b_num, context_num, dim)
+        # get (text_b_num, context_num, dim)
         b_embeddings = self.composition_layer(b_last_hidden_state, attention_mask=b_attention_mask)
+        # convert to (query_num, candidate_context_num, dim)
         if candidate_num != b_embeddings.shape[0]:
-            # (query_num, candidate_context_num, dim)
             b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], candidate_num*self.config.context_num, b_embeddings.shape[-1])
         elif candidate_num == b_embeddings.shape[0]:
-            # broadcast to (query_num, candidate_context_num, dim)
+            # need broadcast
             b_embeddings = b_embeddings.reshape(-1, b_embeddings.shape[-1]).unsqueeze(0).repeat(a_input_ids.shape[0], 1, 1)
         else:
             raise Exception("Candidate num should either equal to text_b_num or equal to (text_b_num / text_a_num)!")
-
-        # now a and b is 1:1
-        # should support 1:N where N is candidate num
-        # b_embeddings should look like (query_num, candidate_num, context_num, dim)
-        # ......
 
         lstm_initial_state = torch.zeros(a_input_ids.shape[0], candidate_num, b_embeddings.shape[-1], device=b_embeddings.device)
         # (query_num, candidate_context_num + candidate_num, dim)
@@ -386,16 +381,12 @@ class ParallelEncoder(nn.Module):
         a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
 
         # get final representations
-        # (batch size, candidate_num, context_num, dim)
-        a_context_embeddings = decoder_output[:,:-candidate_num,:].reshape(decoder_output.shape[0], candidate_num, -1, decoder_output.shape[-1])
+        # (query_num, candidate_num, context_num, dim)
+        b_context_embeddings = decoder_output[:,:-candidate_num,:].reshape(decoder_output.shape[0], candidate_num, self.config.context_num, decoder_output.shape[-1])
+        # (query_num, candidate_num, dim)
+        b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
 
-        # previous >>>>>
-        # a_embeddings = torch.mean(a_context_embeddings, dim=-2)
-        # --------------------------
-        a_embeddings = self.decoder['candidate_composition_layer'](a_context_embeddings).squeeze(-2)
-        # <<<<< new
-
-        b_embeddings = decoder_output[:,-candidate_num:,:]
+        a_embeddings = decoder_output[:,-candidate_num:,:]
 
         logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
         if candidate_num == 1:
