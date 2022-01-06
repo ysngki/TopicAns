@@ -5,8 +5,9 @@ import torch.nn as nn
 import torch.utils.data
 import numpy as np
 import torch.nn.functional
+import torch.nn.functional as F
 
-from my_function import get_rep_by_avg
+from my_function import get_rep_by_avg, dot_attention
 
 # model list
 # 1. QAModel
@@ -444,8 +445,7 @@ class LinearSelfAttentionLayer(nn.Module):
 class OutVectorSelfAttentionLayer(nn.Module):
     def __init__(self, input_dim, context_num):
         super(OutVectorSelfAttentionLayer, self).__init__()
-        self.query = nn.Parameter(torch.randn(input_dim, context_num))
-        self.softmax = nn.Softmax(dim=-2)
+        self.query = nn.Parameter(torch.randn(context_num, input_dim))
 
     def forward(self, context, attention_mask=None):
         """
@@ -453,30 +453,8 @@ class OutVectorSelfAttentionLayer(nn.Module):
         :param attention_mask: (..., sequence len)
         :return: (..., context_num, input_dim)
         """
-        # (..., sequence len, context_num)
-        raw_attention_weight = torch.matmul(context, self.query)
 
-        # 创作出mask
-        if attention_mask is None:
-            attention_weight = raw_attention_weight
-        else:
-            with torch.no_grad():
-                mask = attention_mask.type(dtype=torch.float).clone().detach()
-                mask[mask == 0] = -np.inf
-                mask[mask == 1] = 0.0
-
-                if raw_attention_weight.shape[:-1] != mask.shape:
-                    raise Exception("Dimension error!!")
-                else:
-                    attention_weight = raw_attention_weight + mask.unsqueeze(-1)
-
-        # exchange last 2 dimensions
-        converted_dim = tuple( [ _ for _ in range(attention_weight.dim()-2)] ) + (-1, -2,)
-        # (..., context_num, sequence len)
-        attention_weight = self.softmax(attention_weight).permute(converted_dim)
-
-        # (..., context_num, input_dim)
-        context_representation = torch.matmul(attention_weight, context)
+        context_representation = dot_attention(q=self.query, k=context, v=context, v_mask=attention_mask)
 
         return context_representation
 
@@ -519,6 +497,106 @@ class MyLSTMBlock(nn.Module):
         new_compressed_vector = weight * this_compressed_vector + (1-weight)*last_compressed_vector
 
         return new_compressed_vector
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class PolyEncoderConfig:
+    def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
+                 word_embedding_len=512, sentence_embedding_len=512, context_num=1):
+
+        self.tokenizer_len = tokenizer_len
+        self.pretrained_bert_path = pretrained_bert_path
+        self.num_labels = num_labels
+        self.word_embedding_len = word_embedding_len
+        self.sentence_embedding_len = sentence_embedding_len
+        self.context_num = context_num
+
+    def __str__(self):
+        print("*"*20 + "config" + "*"*20)
+        print("tokenizer_len:", self.tokenizer_len)
+        print("pretrained_bert_path:", self.pretrained_bert_path)
+        print("num_labels:", self.num_labels)
+        print("word_embedding_len:", self.word_embedding_len)
+        print("sentence_embedding_len:", self.sentence_embedding_len)
+        print("context_num:", self.context_num)
+
+
+class PolyEncoder(nn.Module):
+    def __init__(self, config: PolyEncoderConfig):
+
+        super(PolyEncoder, self).__init__()
+
+        self.config = config
+
+        # 毕竟num_label也算是memory的一部分
+        self.num_labels = config.num_labels
+        self.sentence_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        self.this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
+
+        # contain the parameters of encoder
+        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        self.query_composition_layer = OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, self.config.context_num)
+
+        self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+
+        torch.nn.init.normal_(self.query_composition_layer.query, self.this_bert_config.hidden_size ** -0.5)
+
+    # 如果不把a传进q，就会退化成最普通的QAModel，已经被验证过了
+    # b_text can be pre-computed
+    def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask):
+
+        batch_size = a_token_type_ids.shape[0]
+
+        # encoding candidate texts
+        # (batch_size, sequence len, dim)
+        b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
+        b_last_hidden_state = b_out['last_hidden_state']
+        # (batch_size, 1, dim) ---- pooler
+        candidate_context_vectors = b_last_hidden_state[:,0,:].unsqueeze(-2)
+
+        # encoding query texts
+        a_out = self.bert_model(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
+        a_last_hidden_state = a_out['last_hidden_state']
+        # (batch_size, context_num, dim)
+        query_context_vectors = self.query_composition_layer(a_last_hidden_state, a_attention_mask)
+
+        # one-one classification task
+        if self.config.num_labels > 0:
+            pass
+        else:
+            # (batch_size, batch_size, dim)
+            candidate_context_vectors = candidate_context_vectors.squeeze(-2).unsqueeze(0).repeat(batch_size, batch_size, query_context_vectors.shape[-1])
+
+        # (batch_size, 1, dim) or (batch_size, batch_size, dim)
+        # i,j,k ---> i means different query, j means different candidate
+        final_query_context_vec = dot_attention(q=candidate_context_vectors, k=query_context_vectors,
+                                                v=query_context_vectors)
+
+        # one-one classification task
+        if self.config.num_labels > 0:
+            final_query_context_vec = final_query_context_vec.squeeze(-2)
+            candidate_context_vectors = candidate_context_vectors.squeeze(-2)
+
+            logits = self.classifier(a_embedding=final_query_context_vec, b_embedding=candidate_context_vectors)
+
+            return logits
+        # cos full-match task
+        else:
+            # (batch size, batch size)
+            # first is query, second is candidate
+            dot_product = torch.sum(final_query_context_vec * candidate_context_vectors, -1)
+            mask = torch.eye(batch_size).to(dot_product.device)
+            loss = F.log_softmax(dot_product, dim=-1) * mask
+            loss = (-loss.sum(dim=1)).mean()
+
+            return loss
 
 
 # --------------------------------------

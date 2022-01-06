@@ -22,7 +22,7 @@ def read_arguments():
 
 	# must set
 	# add model
-	parser.add_argument("--model_class", required=True, type=str, choices=['QAClassifierModel', 'CrossBERT', 'ParallelEncoder'])
+	parser.add_argument("--model_class", required=True, type=str, choices=['QAClassifierModel', 'CrossBERT', 'ParallelEncoder', 'PolyEncoder'])
 
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
 	parser.add_argument("--context_num", "-c", default=1, type=int)

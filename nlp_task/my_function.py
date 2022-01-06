@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 
 def sum_average_tuple(in_tuple):
@@ -126,3 +127,29 @@ def get_rep_by_avg(embeddings, token_type_ids=None, attention_mask=None):
 	representations = representations.unsqueeze(-2)
 
 	return representations
+
+
+def dot_attention(q, k, v, v_mask=None):
+	"""
+	use q to aggregate v according to k
+	:param q: (..., q_num, dim)
+	:param k: (..., v_num, dim)
+	:param v: (..., v_num, dim)
+	:param v_mask: (..., v_num)
+	:return: (..., q_num, dim)
+	"""
+
+	# (..., q_num, v_num)
+	attention_weights = torch.matmul(q, k.transpose(-1, -2))
+
+	if v_mask is not None:
+		# # (..., 1, v_num)
+		extended_v_mask = (1.0 - v_mask.clone().detach().unsqueeze(-2)) * -100000.0
+		attention_weights += extended_v_mask
+
+	attention_weights = F.softmax(attention_weights, -1)
+
+	representations = torch.matmul(attention_weights, v)
+
+	return representations
+

@@ -14,7 +14,8 @@ import sys
 from tqdm import tqdm
 import csv
 
-from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ParallelEncoder, ParallelEncoderConfig
+from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ParallelEncoder, ParallelEncoderConfig, \
+    PolyEncoder, PolyEncoderConfig
 from my_function import sum_average_tuple, raise_dataset_error, print_recall_precise, load_model, print_optimizer
 
 
@@ -198,7 +199,7 @@ class TrainWholeModel:
                                                                                               optimizer=optimizer,
                                                                                               now_batch_num=now_batch_num,
                                                                                               scheduler=scheduler)
-                    elif self.model_class in ['QAClassifierModel', 'ParallelEncoder']:
+                    elif self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
                         step_loss, step_shoot_num, step_hit_num = \
                             self.__train_step_for_qa_input(batch=batch, optimizer=optimizer,
                                                            now_batch_num=now_batch_num,
@@ -382,7 +383,7 @@ class TrainWholeModel:
             for index, batch in enumerate(classify_dataloader):
                 # 读取数据
                 # add model
-                if self.model_class in ['QAClassifierModel', 'ParallelEncoder']:
+                if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
                     logits = self.__val_step_for_qa_input(batch)
                 elif self.model_class in ['CrossBERT']:
                     logits = self.__val_step_for_cross(batch)
@@ -453,7 +454,7 @@ class TrainWholeModel:
 
                     # 读取数据
                     # add model
-                    if self.model_class in ['QAClassifierModel', 'ParallelEncoder']:
+                    if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
                         logits = self.__val_step_for_qa_input(batch)
                     elif self.model_class in ['CrossBERT']:
                         logits = self.__val_step_for_cross(batch)
@@ -531,7 +532,7 @@ class TrainWholeModel:
         test_datasets = ()
 
         # add model
-        if self.model_class in ['QAClassifierModel', 'ParallelEncoder']:
+        if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
             temp_dataset_process_function = self.__tokenize_qa_classify_data_then_save
             load_prefix = ""
         elif self.model_class in ['CrossBERT']:
@@ -603,6 +604,8 @@ class TrainWholeModel:
             model = CrossBERT(config=self.config)
         elif self.model_class in ['ParallelEncoder']:
             model = ParallelEncoder(config=self.config)
+        elif self.model_class in ['PolyEncoder']:
+            model = PolyEncoder(config=self.config)
         else:
             raise Exception("This model class is not supported for creating!!")
 
@@ -691,6 +694,13 @@ class TrainWholeModel:
                                     sentence_embedding_len=sentence_embedding_len,
                                     composition=self.composition,
                                     context_num=self.context_num)
+        elif self.model_class == 'PolyEncoder':
+            config = PolyEncoderConfig(len(self.tokenizer),
+                                       pretrained_bert_path=args.pretrained_bert_path,
+                                       num_labels=args.label_num,
+                                       word_embedding_len=word_embedding_len,
+                                       sentence_embedding_len=sentence_embedding_len,
+                                       context_num=self.context_num)
         else:
             raise Exception("No config for this class!")
 
@@ -727,6 +737,13 @@ class TrainWholeModel:
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
                 {'params': model.composition_layer.parameters(), 'lr': 5e-5},
                 {'params': model.decoder.parameters(), 'lr': 5e-5},
+                {'params': model.classifier.parameters(), 'lr': 5e-5},
+            ]
+        elif self.model_class == 'PolyEncoder':
+            parameters_dict_list = [
+                # 这几个一样
+                {'params': model.bert_model.parameters(), 'lr': 5e-5},
+                {'params': model.query_composition_layer.parameters(), 'lr': 5e-5},
                 {'params': model.classifier.parameters(), 'lr': 5e-5},
             ]
         else:
