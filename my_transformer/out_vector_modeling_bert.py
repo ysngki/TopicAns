@@ -356,7 +356,6 @@ class MyBertAttention(nn.Module):
 																	candidate_embeddings.shape[-1])
 			# (query_num, candidate_num, vec_dim)
 			lstm_hint_vector = decoder['candidate_composition_layer'](lstm_hint_vector).squeeze(-2)
-			# lstm_hint_vector = torch.mean(lstm_hint_vector, dim=-2)
 			# hidden states at last step
 			lstm_hidden_states = candidate_embeddings[:, -candidate_num:, :]
 		else:

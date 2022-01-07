@@ -1,3 +1,7 @@
+import time
+from torch.backends import cudnn
+import random
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -152,4 +156,23 @@ def dot_attention(q, k, v, v_mask=None):
 	representations = torch.matmul(attention_weights, v)
 
 	return representations
+
+
+def get_elapse_time(t0):
+	elapse_time = time.time() - t0
+	if elapse_time > 3600:
+		hour = int(elapse_time // 3600)
+		minute = int((elapse_time % 3600) // 60)
+		return "{}h{}m".format(hour, minute)
+	else:
+		minute = int((elapse_time % 3600) // 60)
+		return "{}m".format(minute)
+
+
+def set_seed(seed):
+	random.seed(seed)
+	np.random.seed(seed)
+	torch.manual_seed(seed)
+	cudnn.deterministic = True
+	cudnn.benchmark = False
 

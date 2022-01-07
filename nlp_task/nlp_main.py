@@ -1,20 +1,9 @@
 import argparse
 import os
-
-import torch
-from torch.backends import cudnn
-import random
-import numpy as np
+import time
 
 from nlp_trainer import TrainWholeModel
-
-
-def set_seed(seed):
-	random.seed(seed)
-	np.random.seed(seed)
-	torch.manual_seed(seed)
-	cudnn.deterministic = True
-	cudnn.benchmark = False
+from my_function import get_elapse_time, set_seed
 
 
 def read_arguments():
@@ -97,6 +86,9 @@ if __name__ == '__main__':
 	# 设置随机种子
 	set_seed(my_args.seed)
 
+	# begin time
+	begin_time = time.time()
+
 	# 创建训练类
 	my_train_model = TrainWholeModel(my_args)
 
@@ -129,3 +121,8 @@ if __name__ == '__main__':
 		my_train_model.glue_test(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 												 my_args.model_class + "_" +
 												 my_args.dataset_name)
+
+	print("*"*100)
+	print("Finish training and take %s", get_elapse_time(begin_time))
+	print("*" * 100)
+
