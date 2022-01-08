@@ -256,7 +256,7 @@ class ParallelEncoder(nn.Module):
         # self.embeddings = self.bert_model.get_input_embeddings()
 
         # used to compressing candidate to generate context vectors
-        self.composition_layer = OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, config.context_num - 1)
+        self.composition_layer = OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, config.context_num)
 
         # create models for decoder
         self.num_attention_heads = self.this_bert_config.num_attention_heads
@@ -275,7 +275,6 @@ class ParallelEncoder(nn.Module):
             'layer_chunks': nn.ModuleList(
                 [DecoderLayerChunk(self.this_bert_config) for _ in range(self.this_bert_config.num_hidden_layers)]),
             # used to compress candidate context embeddings into a vector
-            # 'candidate_composition_layer': OutVectorSelfAttentionLayer(self.this_bert_config.hidden_size, 1),
             'candidate_composition_layer': MeanLayer(),
             # used to generate query to compress Text_A thus get its representation
             'compress_query': nn.ModuleList([nn.Linear(self.this_bert_config.hidden_size, self.all_head_size) for _ in
@@ -397,6 +396,27 @@ class ParallelEncoder(nn.Module):
 
 
 # --------------------------------------
+# fen ge xian
+# --------------------------------------
+# A gate, a substitution of resnet
+class MyLSTMBlock(nn.Module):
+    def __init__(self, input_dim):
+        super(MyLSTMBlock, self).__init__()
+        self.weight_layer = nn.Linear(input_dim*3, input_dim)
+
+        self.sigmoid = nn.Sigmoid()
+
+    # shapes are supposed to be (batch size, input_dim)
+    def forward(self, this_compressed_vector, last_compressed_vector, weight_hint):
+        weight = self.weight_layer(torch.cat((weight_hint, this_compressed_vector, last_compressed_vector), dim=-1))
+        weight = self.sigmoid(weight)
+
+        new_compressed_vector = weight * this_compressed_vector + (1-weight)*last_compressed_vector
+
+        return new_compressed_vector
+
+
+# --------------------------------------
 # Composition Layers
 # 1. LinearSelfAttentionLayer: Multi-layer self-attention
 # 2. OutVectorSelfAttentionLayer: maintain several queries to get several representations by attention mechanism
@@ -476,27 +496,6 @@ class MeanLayer(nn.Module):
         representation = get_rep_by_avg(embeddings, token_type_ids, attention_mask)
 
         return representation
-
-
-# --------------------------------------
-# fen ge xian
-# --------------------------------------
-# A gate, a substitution of resnet
-class MyLSTMBlock(nn.Module):
-    def __init__(self, input_dim):
-        super(MyLSTMBlock, self).__init__()
-        self.weight_layer = nn.Linear(input_dim*3, input_dim)
-
-        self.sigmoid = nn.Sigmoid()
-
-    # shapes are supposed to be (batch size, input_dim)
-    def forward(self, this_compressed_vector, last_compressed_vector, weight_hint):
-        weight = self.weight_layer(torch.cat((weight_hint, this_compressed_vector, last_compressed_vector), dim=-1))
-        weight = self.sigmoid(weight)
-
-        new_compressed_vector = weight * this_compressed_vector + (1-weight)*last_compressed_vector
-
-        return new_compressed_vector
 
 
 # --------------------------------------

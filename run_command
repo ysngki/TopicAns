@@ -1,3 +1,6 @@
+# 最普通的bert
+python -u main.py -d so_python -m 50 --model_class BasicModel  -n 0 --model_save_prefix pooler_ --train_batch_size 16 --gradient_accumulation_steps 4 --one_stage --composition pooler  | tee -a logs/python/one_stage_pooler_basic.log
+
 # 同时进行预训练和训练
 python -u main.py -d ask_ubuntu -m 50 --model_class InputMemorySelfAtt -n 0 --mlm --model_class InputMemorySelfAtt --model_save_prefix mlm_m50_ask_ubuntu_ --train_batch_size 16 --gradient_accumulation_steps 4  --load_memory --memory_save_prefix layer4_ | tee logs/ask_ubuntu/mlm_m50_input_memory.log
 
@@ -18,9 +21,3 @@ python -u main.py -d ask_ubuntu -m 50 --model_class QAMemory -n 1 --model_save_p
 
 # 输入为qa，不加上memory的最普通训练(pooler)
 python -u main.py -d ask_ubuntu --model_class QAModel -n 1 --train_batch_size 16 --gradient_accumulation_steps 4  | tee -a logs/ask_ubuntu/two_stage_qa_input.log
-
-# cross model
-python -u main.py -d ask_ubuntu -m 50 --model_class CrossBERT -n 1 --train_batch_size 16 --gradient_accumulation_steps 4 | tee -a logs/ask_ubuntu/CrossBERT.log
-
-# 半升级版，只有Q和A，没有H
-python -u main.py -d ask_ubuntu -m 50 --model_class ADecoder -n 0 --train_batch_size 16 --gradient_accumulation_steps 4 | tee   logs/ask_ubuntu/ADecoder_v2.0.log

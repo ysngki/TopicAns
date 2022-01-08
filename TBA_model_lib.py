@@ -605,13 +605,14 @@ class PureMemorySelfAtt(nn.Module):
 # --------------------------------------
 class BasicConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
-                 word_embedding_len=512, sentence_embedding_len=512):
+                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler'):
 
         self.tokenizer_len = tokenizer_len
         self.pretrained_bert_path = pretrained_bert_path
         self.num_labels = num_labels
         self.word_embedding_len = word_embedding_len
         self.sentence_embedding_len = sentence_embedding_len
+        self.composition = composition
 
     def __str__(self):
         print("*"*20 + "config" + "*"*20)
@@ -620,6 +621,7 @@ class BasicConfig:
         print("num_labels:", self.num_labels)
         print("word_embedding_len:", self.word_embedding_len)
         print("sentence_embedding_len:", self.sentence_embedding_len)
+        print("composition:", self.composition)
 
 
 class BasicModel(nn.Module):
@@ -657,6 +659,7 @@ class BasicModel(nn.Module):
 
         self.relu = torch.nn.ReLU(inplace=True)
         self.softmax = torch.nn.Softmax(dim=-2)
+        self.composition = config.composition
 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
         # 获得隐藏层输出
@@ -747,25 +750,27 @@ class BasicModel(nn.Module):
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
 
-        # 获得表示
-        # q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                       attention_mask=q_attention_mask)
-        #
-        # a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                       attention_mask=a_attention_mask)
-        #
-        # b_embeddings = self.get_rep_by_pooler(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-        #                                       attention_mask=b_attention_mask)
+        if self.composition == 'pooler':
+            # 获得表示
+            q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                                  attention_mask=q_attention_mask)
 
-        q_embeddings = self.get_rep_by_self_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-                                                      attention_mask=q_attention_mask)
+            a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                                  attention_mask=a_attention_mask)
 
-        a_embeddings = self.get_rep_by_self_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-                                                      attention_mask=a_attention_mask)
+            b_embeddings = self.get_rep_by_pooler(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                              attention_mask=b_attention_mask)
+        elif self.composition == 'self':
+            q_embeddings = self.get_rep_by_self_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                                          attention_mask=q_attention_mask)
 
-        b_embeddings = self.get_rep_by_self_attention(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-                                                      attention_mask=b_attention_mask)
+            a_embeddings = self.get_rep_by_self_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                                          attention_mask=a_attention_mask)
 
+            b_embeddings = self.get_rep_by_self_attention(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                                          attention_mask=b_attention_mask)
+        else:
+            raise Exception("This composition is not supported! Please use \'pooler\' or \'self\'")
         # q_embeddings = self.get_rep_by_multi_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
         #                                                attention_mask=q_attention_mask)
         #

@@ -105,16 +105,6 @@ def get_rep_by_avg(embeddings, token_type_ids=None, attention_mask=None):
 			temp_mask = temp_mask * temp_attention_mask
 			sequence_len = temp_mask.sum(dim=-1).unsqueeze(-1)
 
-			# remove cls, if cls is removed, some sentences may be empty
-			# temp_mask[:, 0] = 0
-
-			# remove <sep> or <eos>--the last token of first sentence
-			# sequence_len = temp_mask.sum(dim=-1) - 1
-			# sequence_len = sequence_len.unsqueeze(-1)
-			# temp_mask.scatter_(dim=1, index=sequence_len,
-			# 				   src=torch.zeros((temp_mask.shape[0], 1), device=embeddings.device,
-			# 								   dtype=temp_mask.dtype))
-
 			# (batch_size, sequence_length, 1)
 			temp_mask = temp_mask.unsqueeze(-1)
 

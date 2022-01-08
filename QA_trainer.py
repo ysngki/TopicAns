@@ -1311,7 +1311,8 @@ class TrainWholeModel:
 								 pretrained_bert_path=args.pretrained_bert_path,
 								 num_labels=args.label_num,
 								 word_embedding_len=word_embedding_len,
-								 sentence_embedding_len=sentence_embedding_len)
+								 sentence_embedding_len=sentence_embedding_len,
+								 composition=self.composition)
 		elif self.model_class == 'InputMemorySelfAtt':
 			config = InputMemorySelfAttConfig(len(self.tokenizer),
 											  pretrained_bert_path=args.pretrained_bert_path,
