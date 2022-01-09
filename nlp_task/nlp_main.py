@@ -17,7 +17,7 @@ def read_arguments():
 	parser.add_argument("--context_num", "-c", default=1, type=int)
 	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
-	parser.add_argument("--dataset_name", "-d", type=str)
+	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli'])
 	parser.add_argument("--label_num", required=True, type=int)  # !!!
 	parser.add_argument("--one_stage", action="store_true", default=False)
 	parser.add_argument("--model_save_prefix", default="", type=str)
@@ -40,6 +40,8 @@ def read_arguments():
 
 	# related to train
 	parser.add_argument("--restore", action="store_true", default=False, help="use restore and only_final together to control which model to read!")
+	parser.add_argument("--train_candidate_num", default=-1, type=int, help="only need by cross")
+	parser.add_argument("--val_candidate_num", default=100, type=int, help="only need by match task")
 
 	parser.add_argument("--no_initial_test", action="store_true", default=False)
 
@@ -69,8 +71,6 @@ def read_arguments():
 
 	# outdated
 	parser.add_argument("--print_num_each_epoch", default=20, type=int)
-	parser.add_argument("--val_candidate_num", default=100, type=int, help="candidates num for ranking")
-	parser.add_argument("--train_candidate_num", default=16, type=int, help="only need by cross")
 	parser.add_argument("--latent_dim", default=100, type=int)
 	parser.add_argument("--train_vae", action="store_true", default=False)
 

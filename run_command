@@ -1,5 +1,5 @@
 # 最普通的bert
-python -u main.py -d so_python -m 50 --model_class BasicModel  -n 0 --model_save_prefix pooler_ --train_batch_size 16 --gradient_accumulation_steps 4 --one_stage --composition pooler  | tee -a logs/python/one_stage_pooler_basic.log
+python -u main.py -d so_python -m 50 --model_class BasicModel  -n 1 --model_save_prefix pooler_ --train_batch_size 16 --gradient_accumulation_steps 4 --one_stage --composition pooler  | tee -a logs/python/one_stage_pooler_basic.log
 
 # 同时进行预训练和训练
 python -u main.py -d ask_ubuntu -m 50 --model_class InputMemorySelfAtt -n 0 --mlm --model_class InputMemorySelfAtt --model_save_prefix mlm_m50_ask_ubuntu_ --train_batch_size 16 --gradient_accumulation_steps 4  --load_memory --memory_save_prefix layer4_ | tee logs/ask_ubuntu/mlm_m50_input_memory.log

@@ -17,6 +17,10 @@ def raise_dataset_error():
 	raise Exception("This dataset is not supported now!")
 
 
+def raise_test_error():
+	raise Exception("Test stop here!!")
+
+
 def print_recall_precise(label_hit_num, label_shoot_num, label_target_num, label_num):
 	print(label_hit_num, label_shoot_num, label_target_num)
 	# 统计命中率

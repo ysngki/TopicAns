@@ -1,5 +1,6 @@
 # %%
 import gc
+import math
 
 import datasets
 from datasets import Dataset
@@ -11,12 +12,14 @@ import os
 import torch.utils.data
 from transformers import AutoTokenizer, AutoConfig, get_linear_schedule_with_warmup
 import sys
-from tqdm import tqdm
+from tqdm import tqdm, trange
 import csv
 
-from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ParallelEncoder, ParallelEncoderConfig, \
-    PolyEncoder, PolyEncoderConfig
-from my_function import sum_average_tuple, raise_dataset_error, print_recall_precise, load_model, print_optimizer
+from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ParallelEncoder, \
+    ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig
+from my_function import sum_average_tuple, raise_dataset_error, print_recall_precise, load_model, print_optimizer, \
+    raise_test_error
+from nlp_dataset import SingleInputDataset, DoubleInputDataset
 
 
 class TrainWholeModel:
@@ -28,7 +31,7 @@ class TrainWholeModel:
 
         # 设置gpu-------------------------------------------------------------------
         # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        # os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["CUDA_VISIBLE_DEVICES"] = args.nvidia_number
 
         # for data_parallel-------------------------------------------------------------------
@@ -91,7 +94,8 @@ class TrainWholeModel:
 
     def train(self, train_two_stage_flag, only_final=False):
         # best model save path
-        model_save_path = self.save_model_dict + "/" + self.model_save_prefix + self.model_class + "_" + self.dataset_name
+        model_save_path = self.save_model_dict + "/" + self.model_save_prefix + self.model_class + "_" + \
+                          self.dataset_name
         # last model save path
         last_model_save_path = self.last_model_dict + "/" + self.model_save_prefix + self.model_class + "_" + self.dataset_name
 
@@ -139,7 +143,8 @@ class TrainWholeModel:
                 early_stop_threshold = 5
 
             # restore training settings
-            early_stop_count, restore_epoch, scheduler_last_epoch, previous_best_performance = self.restore_settings(optimizer, restore_path, previous_best_performance)
+            early_stop_count, restore_epoch, scheduler_last_epoch, previous_best_performance = \
+                self.restore_settings(optimizer, restore_path, previous_best_performance)
 
             # prepare dataset, all are tuples
             train_dataset, val_datasets, test_datasets = self.__get_datasets()
@@ -160,14 +165,10 @@ class TrainWholeModel:
                 if epoch == restore_epoch and not self.no_initial_test:
                     print("-" * 30 + "initial validation" + "-" * 30)
 
-                    (_, avg_val_acc), (_, avg_val_loss) = self.do_val(val_datasets)
+                    this_best_performance = self.do_val(test_datasets, previous_best_performance, r_k_num=(1, 10))
 
-                    print(
-                        f"Initial eval on Validation Dataset: " + "*" * 30 +
-                        f"\nval_loss:{avg_val_loss}\tval_acc:{avg_val_acc}%\tprevious best acc:{previous_best_performance}\tfrom rank:{self.local_rank}")
-
-                    if avg_val_acc > previous_best_performance:
-                        previous_best_performance = avg_val_acc
+                    if this_best_performance > previous_best_performance:
+                        previous_best_performance = this_best_performance
                     print("-" * 30 + "initial_test_end" + "-" * 30, end="\n\n")
 
                 # 开始训练
@@ -178,7 +179,8 @@ class TrainWholeModel:
                 self.model.train()
 
                 # get train dataloader
-                train_dataloader = self.__get_dataloader(data=train_dataset, batch_size=self.train_batch_size, train_flag=True)[0]
+                train_dataloader = self.__get_dataloader(data=train_dataset, batch_size=self.train_batch_size,
+                                                         train_flag=True)[0]
 
                 if self.data_distribute:
                     train_dataloader.sampler.set_epoch(epoch)
@@ -194,18 +196,13 @@ class TrainWholeModel:
                 # 开始训练
                 for batch in bar:
                     # add model
-                    if self.model_class == "CrossBERT":
-                        step_loss, step_shoot_num, step_hit_num = self.__train_step_for_cross(batch=batch,
-                                                                                              optimizer=optimizer,
-                                                                                              now_batch_num=now_batch_num,
-                                                                                              scheduler=scheduler)
-                    elif self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
-                        step_loss, step_shoot_num, step_hit_num = \
-                            self.__train_step_for_qa_input(batch=batch, optimizer=optimizer,
-                                                           now_batch_num=now_batch_num,
-                                                           scheduler=scheduler, final_stage_flag=final_stage_flag)
-                    else:
-                        raise Exception("Train step have not supported this model class")
+                    train_step_function = self.select_train_step_function()
+
+                    step_loss, step_shoot_num, step_hit_num = train_step_function(batch=batch,
+                                                                                  optimizer=optimizer,
+                                                                                  now_batch_num=now_batch_num,
+                                                                                  scheduler=scheduler,
+                                                                                  final_stage_flag=final_stage_flag)
 
                     # 更新一下信息
                     train_loss += step_loss.item()
@@ -215,20 +212,16 @@ class TrainWholeModel:
                     now_batch_num += 1
 
                     bar.set_description(
-                        "epoch {:>3d} loss {:.4f} Acc {:>10d}/{:>10d} = {:.4f}".format(epoch + 1,
-                                                                                       train_loss / now_batch_num,
-                                                                                       hit_num, shoot_num,
-                                                                                       hit_num / shoot_num * 100))
+                        "epoch {:>3d} loss {:.4f} Acc(R@1) {:>10d}/{:>10d} = {:.4f}".format(epoch + 1,
+                                                                                            train_loss / now_batch_num,
+                                                                                            hit_num, shoot_num,
+                                                                                            hit_num / shoot_num * 100))
 
                     # 是否评测一次
                     # 忽略，变更为一次epoch结束评测一次
                     # ......
 
-                (_, avg_val_acc), (_, avg_val_loss) = self.do_val(val_datasets)
-
-                print(
-                    f"{epoch + 1} epoch end eval on Validation Dataset: " + "*" * 30 +
-                    f"\nval_loss:{avg_val_loss}\ttrain_acc:{hit_num / shoot_num * 100}%\tval_acc:{avg_val_acc}%\tprevious best acc:{previous_best_performance}\tfrom rank:{self.local_rank}")
+                this_best_performance = self.do_val(val_datasets, previous_best_performance, r_k_num=(1, 10))
 
                 # 准备存储模型
                 postfix = ""
@@ -236,14 +229,14 @@ class TrainWholeModel:
                     postfix = "_middle"
 
                 # 存储最优模型
-                if avg_val_acc > previous_best_performance:
-                    previous_best_performance = avg_val_acc
+                if this_best_performance > previous_best_performance:
+                    previous_best_performance = this_best_performance
 
                     self.save_model(model_save_path=model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
                                     previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
                     this_epoch_best = True
 
-                    self.glue_test(test_datasets=test_datasets, postfix=postfix)
+                    self.do_test(test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
 
                 self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
                                 previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
@@ -272,7 +265,7 @@ class TrainWholeModel:
             # 用最好的模型
             self.model = load_model(self.model, model_save_path + postfix)
 
-            self.glue_test(test_datasets=test_datasets, postfix=postfix)
+            self.do_test(test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
 
             # 如果只是第一阶段的训练，那么还要继续训练
             if not final_stage_flag:
@@ -280,10 +273,30 @@ class TrainWholeModel:
             else:
                 break
 
+    def select_train_step_function(self):
+        train_step_function = None
+
+        if self.model_class == "CrossBERT":
+            if self.dataset_name in ['mnli']:
+                train_step_function = self.__classify_train_step_for_cross
+            elif self.dataset_name in ['dstc7']:
+                train_step_function = self.__match_train_step_for_cross
+            else:
+                raise_dataset_error()
+        elif self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
+            if self.dataset_name in ['mnli']:
+                train_step_function = self.__classify_train_step_for_qa_input
+            else:
+                raise_dataset_error()
+        else:
+            raise Exception("Train step have not supported this model class")
+
+        return train_step_function
+
     def get_scheduler(self, optimizer, scheduler_last_epoch, train_dataloader):
         t_total = (
                           len(train_dataloader) // self.gradient_accumulation_steps) * self.num_train_epochs
-        remain_step = t_total -  scheduler_last_epoch
+        remain_step = t_total - scheduler_last_epoch
 
         # if restore training, should pass last epoch, otherwise should not pass this argument
         if self.restore_flag:
@@ -306,8 +319,36 @@ class TrainWholeModel:
 
         return scheduler
 
-    def do_val(self, val_datasets):
+    def do_val(self, val_datasets, previous_best_performance, **kwargs):
+        self.model.eval()
+
         val_dataloader = self.__get_dataloader(data=val_datasets, batch_size=self.val_batch_size)
+
+        if self.dataset_name in ['mnli']:
+            now_best_performance = self.classify_do_val_body(val_dataloader, previous_best_performance)
+        elif self.dataset_name in ['dstc7']:
+            now_best_performance = self.match_do_val_body(val_dataloader, previous_best_performance, r_k_num=kwargs['r_k_num'])
+        else:
+            raise Exception("do_val is not supported for this dataset_name!")
+
+        self.model.train()
+        return now_best_performance
+
+    def do_test(self, test_datasets, **kwargs):
+        self.model.eval()
+
+        if self.dataset_name in ['mnli']:
+            self.glue_test(test_datasets, postfix=kwargs['postfix'])
+        elif self.dataset_name in ['dstc7']:
+            test_dataloader = self.__get_dataloader(data=test_datasets, batch_size=self.val_batch_size)
+            _ = self.match_do_val_body(test_dataloader, previous_best_performance=kwargs['previous_best_performance'], r_k_num=kwargs['r_k_num'], do_test=True)
+        else:
+            raise Exception("do_val is not supported for this dataset_name!")
+
+        self.model.train()
+        return None
+
+    def classify_do_val_body(self, val_dataloader, previous_best_performance):
         val_loss_tuple, val_acc_tuple = (), ()
         for dataloader in val_dataloader:
             this_val_loss, this_val_acc = self.classify_validate_model(dataloader)
@@ -317,7 +358,58 @@ class TrainWholeModel:
         sum_val_acc, avg_val_acc = sum_average_tuple(val_acc_tuple)
         sum_val_loss, avg_val_loss = sum_average_tuple(val_loss_tuple)
 
-        return (sum_val_acc, avg_val_acc), (sum_val_loss, avg_val_loss)
+        print(
+            f"Eval on Validation Dataset: " + "*" * 30 +
+            f"\nval_loss:{avg_val_loss}\tval_acc:{avg_val_acc}%\tprevious best acc:{previous_best_performance}\tfrom rank:{self.local_rank}")
+
+        return avg_val_acc
+
+    def match_do_val_body(self, val_dataloader, previous_best_performance, r_k_num, do_test=False):
+        """
+        calculate R@K, and loss
+        :param do_test: do test or validation
+        :param val_dataloader:
+        :param previous_best_performance: used to print
+        :param r_k_num: can be tuple or int
+        :return: (loss, R@K, ...)
+        """
+        if len(val_dataloader) > 1:
+            raise Exception("Match val_dataloader is more than 1.")
+
+        cross_entropy_function = nn.CrossEntropyLoss()
+        this_loss, r_k_result = None, None
+
+        for dataloader in val_dataloader:
+            logits = self.match_validate_model(dataloader)
+
+            # calculate R@K
+            r_k_result = ()
+            if isinstance(r_k_num, int):
+                _, indices = torch.topk(logits, r_k_num, dim=-1)
+                hit_num = ((indices == (self.val_candidate_num-1)).sum(-1)).sum().item()
+                r_k_result += (hit_num / logits.shape[0], )
+            elif isinstance(r_k_num, tuple):
+                for k in r_k_num:
+                    _, indices = torch.topk(logits, k, dim=-1)
+                    hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
+                    r_k_result += (hit_num / logits.shape[0],)
+            else:
+                raise Exception("r_k_num should be int or tuple!")
+
+            _, avg_r_k_result = sum_average_tuple(r_k_result)
+
+            # calculate loss
+            my_label = torch.tensor([self.val_candidate_num-1]*logits.shape[0], dtype=torch.long, device=logits.device)
+            this_loss = cross_entropy_function(logits, my_label)
+
+        log_text = "test" if do_test else "validation"
+
+        print(
+            f"Eval on {log_text} Dataset: " + "*" * 30 +
+            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{r_k_num}\tloss:{this_loss}\tprevious best acc:{-previous_best_performance}\tfrom rank:{self.local_rank}")
+
+        # in order to use > to reveal priority
+        return -this_loss
 
     def restore_settings(self, optimizer, restore_path, previous_best_performance):
         early_stop_count = 0
@@ -386,7 +478,7 @@ class TrainWholeModel:
                 if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
                     logits = self.__val_step_for_qa_input(batch)
                 elif self.model_class in ['CrossBERT']:
-                    logits = self.__val_step_for_cross(batch)
+                    logits = self.__classify_val_step_for_cross(batch)
                 else:
                     raise Exception("Val step is not supported for this model class!")
 
@@ -423,6 +515,38 @@ class TrainWholeModel:
 
         return val_loss, accuracy
 
+    def match_validate_model(self, dataloader):
+        """
+        :param dataloader: (query_num, candidate_num, seq_len)
+        :return: logits = (query_num, candidate_num)
+        """
+        self.model.eval()
+
+        # 开始评测
+        with torch.no_grad():
+            # 生成dataloader
+            match_dataloader = dataloader
+
+            print(f"------- begin val {self.val_batch_size * len(match_dataloader)} data--------")
+
+            # 计算正确率
+            whole_logits = []
+            for index, batch in enumerate(tqdm(match_dataloader)):
+                # 读取数据
+                # add model
+                if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
+                    raise Exception("match_validate_model is not supported for this model class!")
+                elif self.model_class in ['CrossBERT']:
+                    logits = self.__match_val_step_for_cross(batch)
+                else:
+                    raise Exception("match_validate_model is not supported for this model class!")
+
+                whole_logits.append(logits)
+
+            whole_logits = torch.cat(whole_logits, dim=0)
+
+        return whole_logits
+
     def glue_test(self, test_datasets=None, model_save_path=None, postfix=""):
         # add dataset
         dataset_label_dict = {'mnli': ['entailment', 'neutral', 'contradiction']}
@@ -457,12 +581,12 @@ class TrainWholeModel:
                     if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
                         logits = self.__val_step_for_qa_input(batch)
                     elif self.model_class in ['CrossBERT']:
-                        logits = self.__val_step_for_cross(batch)
+                        logits = self.__classify_val_step_for_cross(batch)
                     else:
                         raise Exception("Val step is not supported for this model class!")
 
                     _, row_max_indices = logits.topk(k=1, dim=-1)
-                    this_prediction = [ (this_batch_index[i], item[0]) for i, item in enumerate(row_max_indices)]
+                    this_prediction = [(this_batch_index[i], item[0]) for i, item in enumerate(row_max_indices)]
                     all_prediction += this_prediction
 
                 # write to disk
@@ -474,8 +598,8 @@ class TrainWholeModel:
 
                     tsv_writer.writerow(['index', 'prediction'])
                     for (index, pre) in all_prediction:
-                            text_pre = dataset_label_dict[self.dataset_name][pre]
-                            tsv_writer.writerow([index.item(), text_pre])
+                        text_pre = dataset_label_dict[self.dataset_name][pre]
+                        tsv_writer.writerow([index.item(), text_pre])
 
                 print(f"Result is saved to ./output/{output_text_name[self.dataset_name][dataloader_index] + postfix}")
 
@@ -512,7 +636,12 @@ class TrainWholeModel:
         all_dataloader = ()
 
         for now_data in data:
-            now_data.set_format(type='torch')
+            # save by torch.load
+            if self.dataset_name in ['dstc7'] and self.model_class in ['CrossBERT']:
+                pass
+            # save by datasets
+            else:
+                now_data.set_format(type='torch')
 
             if self.data_distribute:
                 sampler = torch.utils.data.distributed.DistributedSampler(now_data, shuffle=shuffle_flag, drop_last=drop_last_flag)
@@ -526,39 +655,49 @@ class TrainWholeModel:
 
     def __get_datasets(self):
         # prepare dataset
-        train_dataset = ()
         # must be tuple
+        train_datasets = ()
         val_datasets = ()
         test_datasets = ()
 
         # add model
+        # Checking whether input is pair or single is important
         if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
-            temp_dataset_process_function = self.__tokenize_qa_classify_data_then_save
+            pair_flag = True
             load_prefix = ""
+            load_suffix = ""
         elif self.model_class in ['CrossBERT']:
-            temp_dataset_process_function = self.__tokenize_cross_classify_data_then_save
+            pair_flag = False
             load_prefix = "cross_"
+            load_suffix = "_" + str(self.train_candidate_num)
         else:
             raise Exception("The dataset for this class is not supported!")
 
         # add dataset
         if self.dataset_name == 'mnli':
+            # choose function to process data
+            if pair_flag is True:
+                temp_dataset_process_function = self.__tokenize_qa_pair_data_then_save
+            else:
+                temp_dataset_process_function = self.__tokenize_cross_classify_data_then_save
+
             # have been processed and saved to disk
             if os.path.exists("./dataset/" + load_prefix + "glue_mnli_train"):
-                train_dataset = (datasets.load_from_disk("./dataset/" + load_prefix + "glue_mnli_train"), )
+                train_datasets = (datasets.load_from_disk("./dataset/" + load_prefix + "glue_mnli_train"), )
                 val_datasets = (datasets.load_from_disk("./dataset/" + load_prefix + "glue_mnli_val_matched"),
                                 datasets.load_from_disk("./dataset/" + load_prefix + "glue_mnli_val_mismatched"), )
                 test_datasets = (datasets.load_from_disk("./dataset/" + load_prefix + "glue_mnli_test_matched"),
                                  datasets.load_from_disk("./dataset/" + load_prefix + "glue_mnli_test_mismatched"),)
             else:
+                # load data from huggingface(online)
                 complete_dataset = datasets.load_dataset("glue", 'mnli')
 
                 # get train dataset
-                train_dataset = (temp_dataset_process_function(data=complete_dataset['train'],
-                                                               save_name="glue_mnli_train",
-                                                               a_column_name="premise",
-                                                               b_column_name="hypothesis",
-                                                               label_column_name='label'),)
+                train_datasets = (temp_dataset_process_function(data=complete_dataset['train'],
+                                                                save_name="glue_mnli_train",
+                                                                a_column_name="premise",
+                                                                b_column_name="hypothesis",
+                                                                label_column_name='label'),)
 
                 # get val dataset
                 validation_matched_dataset = temp_dataset_process_function(data=complete_dataset['validation_matched'],
@@ -577,10 +716,10 @@ class TrainWholeModel:
 
                 # get test dataset
                 test_matched_dataset = temp_dataset_process_function(data=complete_dataset['test_matched'],
-                                                                           save_name="glue_mnli_test_matched",
-                                                                           a_column_name="premise",
-                                                                           b_column_name="hypothesis",
-                                                                           label_column_name='label')
+                                                                     save_name="glue_mnli_test_matched",
+                                                                     a_column_name="premise",
+                                                                     b_column_name="hypothesis",
+                                                                     label_column_name='label')
                 test_mismatched_dataset = temp_dataset_process_function(
                     data=complete_dataset['test_mismatched'],
                     save_name="glue_mnli_test_mismatched",
@@ -589,10 +728,68 @@ class TrainWholeModel:
                     label_column_name='label')
 
                 test_datasets = (test_matched_dataset, test_mismatched_dataset,)
+        elif self.dataset_name == 'dstc7':
+            # check
+            if not pair_flag and self.train_candidate_num < 1:
+                raise Exception("Should designate train_candidate_num if you want train cross model on match task!!")
+
+            # read or process...
+            # read training data. exist? read!--------------------------------------------------
+            if os.path.exists("./dataset/" + load_prefix + "dstc7_train" + load_suffix):
+                train_datasets = (torch.load("./dataset/" + load_prefix + "dstc7_train" + load_suffix)['dataset'],)
+            else:
+                if pair_flag:
+                    string_train_dataset = datasets.load_from_disk(
+                        "./dataset/string_bi_train_dstc7")
+
+                    train_datasets = (self.__tokenize_qa_pair_data_then_save(data=string_train_dataset,
+                                                                             save_name=load_prefix + "dstc7_train",
+                                                                             a_column_name="sentence_a",
+                                                                             b_column_name="sentence_b",
+                                                                         label_column_name='label'),)
+                else:
+                    string_train_dataset = datasets.load_from_disk(
+                        "./dataset/string_cross_train_dstc7")
+
+                    train_datasets = (self.__tokenize_cross_match_data_then_save(data=string_train_dataset,
+                                                                                 save_name=load_prefix + "dstc7_train",
+                                                                                 a_column_name="sentence_a",
+                                                                                 b_column_name="candidates",
+                                                                                 candidate_num=self.train_candidate_num,
+                                                                                 suffix=load_suffix),)
+
+            # read val data. exist? read!--------------------------------------------------
+            if pair_flag:
+                process_val_test_func = self.__tokenize_match_data_then_save
+            else:
+                process_val_test_func = self.__tokenize_cross_match_data_then_save
+
+            if os.path.exists("./dataset/" + load_prefix + "dstc7_val"):
+                val_datasets = (torch.load("./dataset/" + load_prefix + "dstc7_val")['dataset'],)
+            else:
+                string_val_dataset = datasets.load_from_disk("./dataset/string_dev_dstc7")
+
+                val_datasets = (process_val_test_func(data=string_val_dataset,
+                                                      save_name=load_prefix + "dstc7_val",
+                                                      a_column_name="sentence_a",
+                                                      b_column_name="candidates",
+                                                      candidate_num=self.val_candidate_num),)
+
+            # read test data. exist? read!--------------------------------------------------
+            if os.path.exists("./dataset/" + load_prefix + "dstc7_test"):
+                test_datasets = (torch.load("./dataset/" + load_prefix + "dstc7_test")['dataset'],)
+            else:
+                string_test_dataset = datasets.load_from_disk("./dataset/string_test_dstc7")
+
+                test_datasets = (process_val_test_func(data=string_test_dataset,
+                                                      save_name=load_prefix + "dstc7_test",
+                                                      a_column_name="sentence_a",
+                                                      b_column_name="candidates",
+                                                      candidate_num=self.val_candidate_num),)
         else:
             raise_dataset_error()
 
-        return train_dataset, val_datasets, test_datasets
+        return train_datasets, val_datasets, test_datasets
 
     def __create_model(self):
         print("---------------------- create model ----------------------")
@@ -788,7 +985,7 @@ class TrainWholeModel:
             self.model = nn.DataParallel(self.model, device_ids=self.device_ids)
 
     # 输入为QA，而非title.body.answer的模型的训练步
-    def __train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, final_stage_flag):
+    def __classify_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
         cross_entropy_function = nn.CrossEntropyLoss()
 
         # 读取数据
@@ -819,8 +1016,11 @@ class TrainWholeModel:
         if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
             # add model
             # only update memory in embeddings
-            if self.model_class in ['QAMemory'] and not final_stage_flag:
+            if self.model_class in ['QAMemory'] and not kwargs['final_stage_flag']:
                 self.model.embeddings.weight.grad[:self.origin_voc_size] *= 0.0
+
+            # if self.model_class in ['ParallelEncoder']:
+            #     nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
 
             optimizer.step()
             optimizer.zero_grad()
@@ -839,7 +1039,7 @@ class TrainWholeModel:
         return step_loss, step_shoot_num, step_hit_num
 
     # cross模型的训练步
-    def __train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler):
+    def __classify_train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
         cross_entropy_function = nn.CrossEntropyLoss()
 
         # 读取数据
@@ -878,6 +1078,45 @@ class TrainWholeModel:
 
         return step_loss, step_shoot_num, step_hit_num
 
+    # cross模型的训练步
+    def __match_train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
+        cross_entropy_function = nn.CrossEntropyLoss()
+
+        input_ids = batch['input_ids'].to(self.device)
+        token_type_ids = batch['token_type_ids'].to(self.device)
+        attention_mask = batch['attention_mask'].to(self.device)
+
+        batch_num, candidate_num, sequence_len = input_ids.shape
+
+        input_ids = input_ids.reshape(batch_num * candidate_num, -1)
+        token_type_ids = token_type_ids.reshape(batch_num * candidate_num, -1)
+        attention_mask = attention_mask.reshape(batch_num * candidate_num, -1)
+
+        # 得到模型的结果
+        logits = self.model(input_ids=input_ids, token_type_ids=token_type_ids,
+                            attention_mask=attention_mask).reshape(batch_num, candidate_num)
+
+        qa_labels = torch.tensor([self.train_candidate_num-1]*logits.shape[0], dtype=torch.long, device=logits.device)
+        # 计算损失
+        step_loss = cross_entropy_function(logits, qa_labels)
+
+        # 误差反向传播
+        step_loss.backward()
+
+        # 更新模型参数
+        if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+            scheduler.step()
+
+        # 统计R@1
+        step_shoot_num = logits.shape[0]
+        with torch.no_grad():
+            _, row_max_indices = logits.topk(k=1, dim=-1)
+            step_hit_num = (row_max_indices == (self.train_candidate_num-1)).sum().item()
+
+        return step_loss, step_shoot_num, step_hit_num
+
     def __val_step_for_qa_input(self, batch):
         # 读取数据
         a_input_ids = (batch['a_input_ids']).to(self.device)
@@ -898,7 +1137,7 @@ class TrainWholeModel:
 
         return logits
 
-    def __val_step_for_cross(self, batch):
+    def __classify_val_step_for_cross(self, batch):
         # 读取数据
         input_ids = (batch['input_ids']).to(self.device)
         token_type_ids = (batch['token_type_ids']).to(self.device)
@@ -911,7 +1150,26 @@ class TrainWholeModel:
 
         return logits
 
-    def __tokenize_qa_classify_data_then_save(self, data, save_name, a_column_name="premise", b_column_name="hypothesis", label_column_name='label'):
+    def __match_val_step_for_cross(self, batch):
+        # 读取数据
+        # （batch_num, candidate_num, dim)
+        input_ids = batch['input_ids'].to(self.device)
+        token_type_ids = batch['token_type_ids'].to(self.device)
+        attention_mask = batch['attention_mask'].to(self.device)
+
+        batch_num, candidate_num, sequence_len = input_ids.shape
+
+        input_ids = input_ids.reshape(batch_num*candidate_num, -1)
+        token_type_ids = token_type_ids.reshape(batch_num*candidate_num, -1)
+        attention_mask = attention_mask.reshape(batch_num*candidate_num, -1)
+
+        # 得到模型的结果
+        logits = self.model(input_ids=input_ids, token_type_ids=token_type_ids,
+                            attention_mask=attention_mask).reshape(batch_num, candidate_num)
+
+        return logits
+
+    def __tokenize_qa_pair_data_then_save(self, data, save_name, a_column_name="premise", b_column_name="hypothesis", label_column_name='label'):
         # 读取数据到内存
         all_a_text = data[a_column_name]
         all_b_text = data[b_column_name]
@@ -944,6 +1202,7 @@ class TrainWholeModel:
             os.makedirs("./dataset")
 
         dataset.save_to_disk("./dataset/" + save_name)
+        print(f"Processed dataset is saved at ./dataset/{save_name}")
 
         return dataset
 
@@ -978,9 +1237,172 @@ class TrainWholeModel:
             os.makedirs("./dataset/")
 
         dataset.save_to_disk("./dataset/" + "cross_" + save_name)
+        print(f"Processed dataset is saved at ./dataset/cross_{save_name}")
 
         return dataset
 
+    def __tokenize_match_data_then_save(self, data, save_name, a_column_name="sentence_a", b_column_name="candidates", candidate_num=100, suffix=""):
+        # 读取数据到内存
+        all_a_text = data[a_column_name]
+        all_candidates_lists = data[b_column_name]
+        all_index = data['idx']
 
+        # tokenize
+        encoded_a_text = self.tokenizer(
+            all_a_text, padding=True, verbose=False, add_special_tokens=True,
+            truncation=True, max_length=self.text_max_len, return_tensors='pt')
 
+        # tokenize candidates
+        all_candidates = None
+        for this_candidates in all_candidates_lists:
+            # must include best answer
+            if all_candidates is None:
+                all_candidates = this_candidates[-candidate_num:]
+            else:
+                all_candidates += this_candidates[-candidate_num:]
+        assert len(all_candidates) == candidate_num*len(all_a_text)
 
+        encoded_candidates = self.tokenizer(
+            all_candidates, padding=True, verbose=False, add_special_tokens=True,
+            truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+        print(encoded_candidates['input_ids'].shape)
+        raise_dataset_error()
+
+        items_dic = {'a_input_ids': encoded_a_text['input_ids'],
+                     'a_token_type_ids': encoded_a_text['token_type_ids'],
+                     'a_attention_mask': encoded_a_text['attention_mask'],
+                     'candidates_input_ids': encoded_candidates['input_ids'].view(-1, candidate_num, encoded_candidates['input_ids'].shape[-1]),
+                     'candidates_token_type_ids': encoded_candidates['token_type_ids'].view(-1, candidate_num, encoded_candidates['token_type_ids'].shape[-1]),
+                     'candidates_attention_mask': encoded_candidates['attention_mask'].view(-1, candidate_num, encoded_candidates['attention_mask'].shape[-1]),
+                     'idx': torch.tensor(all_index)}
+
+        dataset = Dataset.from_dict(items_dic)
+
+        if not os.path.exists("./dataset"):
+            os.makedirs("./dataset")
+
+        dataset.save_to_disk("./dataset/" + save_name + suffix)
+
+        print(f"Processed dataset is saved at ./dataset/{save_name + suffix}")
+
+        return dataset
+
+    def __tokenize_cross_match_data_then_save(self, data, save_name, a_column_name="sentence_a", b_column_name="candidates", idx_column_name="idx", candidate_num=100, suffix=""):
+        """
+        :param data: (idx, query, candidate_pool)
+        :param save_name:
+        :param a_column_name: query_column_name
+        :param b_column_name: candidate_pool_column_name
+        :param candidate_num: retrieve how many candidates from pool
+        :param suffix:
+        :return: SingleInputDataset: input ids---(query num, candidate num, seq len), attention mask....
+        """
+        # hyper-parameters
+        possible_max_len = 9999999
+        this_dataset_max_len = -2
+        split_num = 100
+
+        # 读取数据到内存
+        all_a_text = data[a_column_name]
+        all_candidates_lists = data[b_column_name]
+        all_index = data[idx_column_name]
+
+        if candidate_num > len(all_candidates_lists[0]):
+            raise Exception(f'Candidate num is larger than {len(all_candidates_lists[0])}')
+
+        # collect cross data
+        all_texts = []
+        for this_a, this_candidates in zip(all_a_text, all_candidates_lists):
+            truncated_candidates = this_candidates[-candidate_num:]
+            for candidate in truncated_candidates:
+                all_texts.append((this_a, candidate))
+
+        assert len(all_texts) == candidate_num*len(all_a_text)
+        print("*"*20 + f"begin encoding {len(all_texts)} texts!" + "*"*20)
+
+        # tokenize block by block
+        query_step = math.ceil(len(all_a_text) / split_num)
+        iter_num = math.ceil(len(all_a_text) / query_step)
+
+        final_input_ids, final_token_type_ids, final_attention_mask = [], [], []
+        for i in trange(iter_num):
+            # tokenize this block
+            this_block = all_texts[i*query_step*candidate_num:(i+1)*query_step*candidate_num]
+
+            encoded_block_texts = self.tokenizer(
+                this_block, padding=True, verbose=False, add_special_tokens=True,
+                truncation=True, max_length=possible_max_len, return_tensors='pt')
+            this_seq_max_len = encoded_block_texts['input_ids'].shape[-1]
+
+            # do check
+            this_dataset_max_len = this_seq_max_len if this_dataset_max_len < this_seq_max_len else this_dataset_max_len
+
+            if this_seq_max_len == possible_max_len:
+                raise Exception("possible_max_len is reached!!!!")
+            elif this_seq_max_len <= self.text_max_len:
+                # re-tokenize to max len
+                encoded_block_texts = self.tokenizer(
+                    this_block, padding='max_length', verbose=False, add_special_tokens=True,
+                    truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+                # read data
+                final_input_ids.append(encoded_block_texts['input_ids'])
+                final_token_type_ids.append(encoded_block_texts['token_type_ids'])
+                final_attention_mask .append(encoded_block_texts['attention_mask'])
+            else:
+                # these should be truncated from head
+                this_input_ids = encoded_block_texts['input_ids']
+                this_token_type_ids = encoded_block_texts['token_type_ids']
+                this_attention_mask = encoded_block_texts['attention_mask']
+
+                pad_id = self.tokenizer.convert_tokens_to_ids('[PAD]')
+
+                # truncate row by row
+                for text_input_ids, text_token_type_ids, text_attention_mask in zip(this_input_ids, this_token_type_ids, this_attention_mask):
+                    pad_len = (text_input_ids == pad_id).sum(-1)
+                    text_len = text_input_ids.shape[0] - pad_len
+
+                    if text_len < self.text_max_len:
+                        temp_input_ids = text_input_ids[:self.text_max_len].unsqueeze(0)
+                        temp_token_type_ids = text_token_type_ids[:self.text_max_len].unsqueeze(0)
+                        temp_attention_mask = text_attention_mask[:self.text_max_len].unsqueeze(0)
+                    else:
+                        begin_index = text_len - self.text_max_len
+                        temp_input_ids = text_input_ids[begin_index:text_len].unsqueeze(0)
+                        temp_token_type_ids = text_token_type_ids[begin_index:text_len].unsqueeze(0)
+                        temp_attention_mask = text_attention_mask[begin_index:text_len].unsqueeze(0)
+
+                    # accumulate
+                    final_input_ids.append(temp_input_ids)
+                    final_token_type_ids.append(temp_token_type_ids)
+                    final_attention_mask.append(temp_attention_mask)
+
+        final_input_ids = torch.cat(final_input_ids, dim=0)
+        final_token_type_ids = torch.cat(final_token_type_ids, dim=0)
+        final_attention_mask = torch.cat(final_attention_mask, dim=0)
+
+        # print max response len
+        max_response_len = torch.max(final_token_type_ids.sum(dim=-1))
+        if max_response_len == self.text_max_len:
+            print("Warning: Longest Response Occupy all input positions!")
+
+        final_input_ids = final_input_ids.reshape(len(all_a_text), candidate_num, self.text_max_len)
+        final_token_type_ids = final_token_type_ids.reshape(len(all_a_text), candidate_num, self.text_max_len)
+        final_attention_mask = final_attention_mask.reshape(len(all_a_text), candidate_num, self.text_max_len)
+
+        # set first token as cls
+        final_input_ids[:, :, 0] = self.tokenizer.convert_tokens_to_ids('[CLS]')
+
+        dataset = SingleInputDataset(input_ids=final_input_ids, token_type_ids=final_token_type_ids, attention_mask=final_attention_mask, idx=torch.tensor(all_index))
+
+        if not os.path.exists("./dataset"):
+            os.makedirs("./dataset")
+
+        torch.save({'dataset': dataset}, "./dataset/" + save_name + suffix)
+
+        print(f"Processed dataset is saved at ./dataset/{save_name + suffix}")
+        print(f'this_dataset_max_len: {this_dataset_max_len}')
+        print("*" * 20 + f"Encoding {final_input_ids.shape} texts finished!" + "*" * 20)
+
+        return dataset

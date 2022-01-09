@@ -1,2 +1,4 @@
 .idea
 /nlp_task/output
+nlp_task/logs
+nlp_task/model
