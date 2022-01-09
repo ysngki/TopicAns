@@ -6,10 +6,14 @@ python -u nlp_main.py -d mnli --model_class QAClassifierModel --composition pool
 # train cross
 python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --pretrained_bert_path bert-base-uncased | tee  logs/mnli/base_cross.log
 # train ParallelEncoder
-python -u nlp_main.py -d mnli --model_class ParallelEncoder -n 0 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage --pretrained_bert_path bert-base-uncased --model_save_prefix c3_one_stage_out_vector_base_ --context_num 3 | tee  logs/mnli/c3_one_stage_out_vector_base.log
+python -u nlp_main.py -d mnli --model_class ParallelEncoder -n 0 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage  --model_save_prefix c10_one_stage_out_vector_base_ --context_num 10 | tee  logs/mnli/c10_one_stage_out_vector.log
 
 Task2: dstc7 ------------------------------------------------------------
 # train cross
 python -u nlp_main.py -d dstc7 --model_class CrossBERT --composition pooler -n 0 --label_num 1 --train_candidate_num 16 --train_batch_size 2 --gradient_accumulation_steps 64 --val_batch_size 2 --no_initial_test | tee  logs/dstc7/cross_candidate_16.log
+
+# train bi.
+python -u nlp_main.py -d dstc7 --model_class QAMatchModel --composition pooler -n 1 --label_num 1 --train_batch_size 48  --val_batch_size 2 | tee  logs/dstc7/bi.log
+
 # train bi. gradient_accumulation_steps must be 1!!!!!!!!
-python -u nlp_main.py -d dstc7 --model_class QAMatchModel --composition pooler -n 1 --label_num 1 --train_candidate_num 16 --train_batch_size 64  --val_batch_size 2 | tee  logs/dstc7/bi.log
+python -u nlp_main.py -d dstc7 --model_class ParallelMatchEncoder -n 0 --label_num 1 --train_batch_size 48  --val_batch_size 2 --one_stage --model_save_prefix c3_one_stage_out_vector_ --context_num 3  --no_initial_test | tee  logs/dstc7/c3_one_stage_out_vector.log

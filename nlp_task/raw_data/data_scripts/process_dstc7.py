@@ -3,6 +3,41 @@ import os
 
 from datasets import Dataset
 
+with open('../dstc7/ubuntu_train_subtask_1_augmented.json') as infile:
+	data = json.load(infile)
+
+# ---------------------------------------------------------------------------
+# process training data for bi models
+bi_train_dict = {}
+bi_train_a = []
+bi_train_b = []
+bi_train_idx = []
+bi_train_label = []
+
+for idx, content in enumerate(data):
+	# get context
+	messages = content['messages-so-far']
+	context = []
+
+	for message in messages:
+		text = message['speaker'].replace('_', ' ') + ': ' + message['utterance']
+		context.append(text)
+
+	joined_context = '\n'.join(context)
+
+	# get best_answer
+	best_answer = content['options-for-correct-answers'][0]['utterance'].strip()
+
+	bi_train_a.append(joined_context)
+	bi_train_b.append(best_answer)
+	bi_train_idx.append(idx)
+	bi_train_label.append(1)
+
+bi_train_dict = {'sentence_a': bi_train_a, 'sentence_b': bi_train_b, 'idx': bi_train_idx, 'label': bi_train_label}
+
+whole_datasets = Dataset.from_dict(bi_train_dict)
+whole_datasets.save_to_disk("/data/yuanhang/memory/nlp_task/dataset/string_bi_train_dstc7")
+print("Datasets is saved at /data/yuanhang/memory/nlp_task/dataset/string_bi_train_dstc7")
 
 # ---------------------------------------------------------------------------
 # process train data for bi models, each record is ( context, its best response)

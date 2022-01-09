@@ -16,8 +16,8 @@ def read_arguments():
 
 	# must set
 	# add model
-	parser.add_argument("--model_class", required=True, type=str, choices=['QAClassifierModel', 'CrossBERT', 'ParallelEncoder', 'PolyEncoder',
-																		   'QAMatchModel'])
+	parser.add_argument("--model_class", required=True, type=str, choices=['CrossBERT', 'QAClassifierModel', 'ParallelEncoder', 'PolyEncoder',
+																		   'QAMatchModel', 'ParallelMatchEncoder'])
 
 	# related to data
 	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli'])
@@ -38,6 +38,7 @@ def read_arguments():
 	parser.add_argument("--one_stage", action="store_true", default=False)
 	parser.add_argument("--no_train", action="store_true", default=False)
 	parser.add_argument("--do_test", action="store_true", default=False)
+	parser.add_argument("--do_val", action="store_true", default=False)
 	parser.add_argument("--use_cpu", action="store_true", default=False)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
 	parser.add_argument("--restore", action="store_true", default=False, help="use restore and only_final together to control which model to read!")
@@ -120,10 +121,10 @@ if __name__ == '__main__':
 		my_train_model.train(train_two_stage_flag=my_train_two_stage_flag,
 							 only_final=my_args.only_final)
 
-	if my_args.do_test:
-		my_train_model.glue_test(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
-												 my_args.model_class + "_" +
-												 my_args.dataset_name)
+	if my_args.do_test or my_args.do_val:
+		my_train_model.do_test(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
+											   my_args.model_class + "_" +
+											   my_args.dataset_name, do_val=my_args.do_val)
 
 	print("*"*100)
 	print("Finish training and take %s", get_elapse_time(begin_time))

@@ -14,12 +14,14 @@ from transformers import AutoTokenizer, AutoConfig, get_linear_schedule_with_war
 import sys
 from tqdm import tqdm, trange
 import csv
+import torch.nn.functional as F
+from torch.cuda.amp import autocast
 
 from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ParallelEncoder, \
-    ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel
+    ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel, ParallelMatchEncoder
 from my_function import sum_average_tuple, raise_dataset_error, print_recall_precise, load_model, print_optimizer, \
     raise_test_error, tokenize_and_truncate_from_head
-from nlp_dataset import SingleInputDataset, DoubleInputDataset
+from nlp_dataset import SingleInputDataset, DoubleInputDataset, DoubleInputLabelDataset, SingleInputLabelDataset
 
 
 class TrainWholeModel:
@@ -31,7 +33,7 @@ class TrainWholeModel:
 
         # 设置gpu-------------------------------------------------------------------
         # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-        # os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["CUDA_VISIBLE_DEVICES"] = args.nvidia_number
 
         # for data_parallel-------------------------------------------------------------------
@@ -91,6 +93,8 @@ class TrainWholeModel:
         # avoid warning
         self.model = None
         self.teacher_model = None
+        self.training_a_embeddings_stack = []
+        self.training_b_embeddings_stack = []
 
     def train(self, train_two_stage_flag, only_final=False):
         # best model save path
@@ -110,6 +114,8 @@ class TrainWholeModel:
             previous_best_performance = 0.0
         else:
             previous_best_performance = -999999
+
+        train_step_function = self.select_train_step_function()
 
         while True:
             # 创建模型
@@ -156,6 +162,9 @@ class TrainWholeModel:
             scheduler = None
 
             for epoch in range(restore_epoch, self.num_train_epochs):
+                self.training_a_embeddings_stack = []
+                self.training_b_embeddings_stack = []
+
                 torch.cuda.empty_cache()
 
                 # whether this epoch get the best model
@@ -198,9 +207,6 @@ class TrainWholeModel:
 
                 # 开始训练
                 for batch in bar:
-                    # add model
-                    train_step_function = self.select_train_step_function()
-
                     step_train_returns = train_step_function(batch=batch,
                                                              optimizer=optimizer,
                                                              now_batch_num=now_batch_num,
@@ -254,7 +260,7 @@ class TrainWholeModel:
                     if self.dataset_name in ['dstc7']:
                         pass
                     else:
-                        self.do_test(test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
+                        self.do_test(test_datasets=test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
 
                 self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
                                 previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
@@ -283,7 +289,7 @@ class TrainWholeModel:
             # 用最好的模型
             self.model = load_model(self.model, model_save_path + postfix)
 
-            self.do_test(test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
+            self.do_test(test_datasets=test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
 
             # 如果只是第一阶段的训练，那么还要继续训练
             if not final_stage_flag:
@@ -302,7 +308,7 @@ class TrainWholeModel:
                 train_step_function = self.__match_train_step_for_cross
             else:
                 raise_dataset_error()
-        elif self.model_class in ['QAMatchModel']:
+        elif self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'ParallelMatchEncoder']:
             if self.dataset_name in ['mnli']:
                 train_step_function = self.__classify_train_step_for_qa_input
             elif self.dataset_name in ['dstc7']:
@@ -343,33 +349,38 @@ class TrainWholeModel:
     def do_val(self, val_datasets, previous_best_performance, **kwargs):
         self.model.eval()
 
-        val_dataloader = self.__get_dataloader(data=val_datasets, batch_size=self.val_batch_size)
-
         if self.dataset_name in ['mnli']:
-            now_best_performance = self.classify_do_val_body(val_dataloader, previous_best_performance)
+            now_best_performance = self.classify_do_val_body(val_datasets, previous_best_performance)
         elif self.dataset_name in ['dstc7']:
-            now_best_performance = self.match_do_val_body(val_dataloader, previous_best_performance, r_k_num=kwargs['r_k_num'])
+            now_best_performance = self.match_val_test_body(this_datasets=val_datasets,
+                                                            previous_best_performance=previous_best_performance,
+                                                            r_k_num=kwargs['r_k_num'], do_test=False)
         else:
             raise Exception("do_val is not supported for this dataset_name!")
 
         self.model.train()
         return now_best_performance
 
-    def do_test(self, test_datasets, **kwargs):
-        self.model.eval()
+    def do_test(self, test_datasets=None, model_save_path=None, postfix="", **kwargs):
+        r_k_num = kwargs.get('r_k_num', (1, 10))
+        previous_best_performance = kwargs.get('previous_best_performance', 0.0)
+        do_val = kwargs.get('do_val', False)
 
         if self.dataset_name in ['mnli']:
-            self.glue_test(test_datasets, postfix=kwargs['postfix'])
+            self.glue_test(test_datasets=test_datasets, model_save_path=model_save_path, postfix=postfix)
         elif self.dataset_name in ['dstc7']:
-            test_dataloader = self.__get_dataloader(data=test_datasets, batch_size=self.val_batch_size)
-            _ = self.match_do_val_body(test_dataloader, previous_best_performance=kwargs['previous_best_performance'], r_k_num=kwargs['r_k_num'], do_test=True)
+            _ = self.match_val_test_body(this_datasets=test_datasets,
+                                         previous_best_performance=previous_best_performance,
+                                         r_k_num=r_k_num, do_test=not do_val, model_save_path=model_save_path, do_val=do_val)
         else:
             raise Exception("do_val is not supported for this dataset_name!")
 
         self.model.train()
         return None
 
-    def classify_do_val_body(self, val_dataloader, previous_best_performance):
+    def classify_do_val_body(self, val_datasets, previous_best_performance):
+        val_dataloader = self.__get_dataloader(data=val_datasets, batch_size=self.val_batch_size)
+
         val_loss_tuple, val_acc_tuple = (), ()
         for dataloader in val_dataloader:
             this_val_loss, this_val_acc = self.classify_validate_model(dataloader)
@@ -385,15 +396,35 @@ class TrainWholeModel:
 
         return avg_val_acc
 
-    def match_do_val_body(self, val_dataloader, previous_best_performance, r_k_num, do_test=False):
+    def match_val_test_body(self, previous_best_performance, r_k_num,  this_datasets=None, model_save_path=None, do_test=False, **kwargs):
         """
         calculate R@K, and loss
+        :param model_save_path:
+        :param this_datasets:
         :param do_test: do test or validation
-        :param val_dataloader:
         :param previous_best_performance: used to print
         :param r_k_num: can be tuple or int
         :return: (loss, R@K, ...)
         """
+
+        if not this_datasets:
+            if kwargs['do_val']:
+                _, test_datasets, _ = self.__get_datasets()
+            else:
+                _, _, test_datasets = self.__get_datasets()
+        else:
+            test_datasets = this_datasets
+
+        val_dataloader = self.__get_dataloader(data=test_datasets, batch_size=self.val_batch_size)
+
+        # create model if necessary
+        if self.model is None:
+            self.model = self.__create_model()
+            self.model = load_model(self.model, model_save_path)
+            self.model.to(self.device)
+
+        self.model.eval()
+
         if len(val_dataloader) > 1:
             raise Exception("Match val_dataloader is more than 1.")
 
@@ -427,7 +458,7 @@ class TrainWholeModel:
 
         print(
             f"Eval on {log_text} Dataset: " + "*" * 30 +
-            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{r_k_num}\tloss:{this_loss}\tprevious best performance:{previous_best_performance}\tfrom rank:{self.local_rank}")
+            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{r_k_num}\tloss:{this_loss}\tprevious best performance:{-previous_best_performance}\tfrom rank:{self.local_rank}")
 
         # in order to use > to reveal priority
         return -this_loss
@@ -555,7 +586,7 @@ class TrainWholeModel:
             for index, batch in enumerate(tqdm(match_dataloader)):
                 # 读取数据
                 # add model
-                if self.model_class in ['QAMatchModel']:
+                if self.model_class in ['QAMatchModel', 'ParallelMatchEncoder']:
                     logits = self.__match_val_step_for_bi(batch)
                 elif self.model_class in ['CrossBERT']:
                     logits = self.__match_val_step_for_cross(batch)
@@ -568,7 +599,7 @@ class TrainWholeModel:
 
         return whole_logits
 
-    def glue_test(self, test_datasets=None, model_save_path=None, postfix=""):
+    def glue_test(self, test_datasets=None, model_save_path=None, postfix=None):
         # add dataset
         dataset_label_dict = {'mnli': ['entailment', 'neutral', 'contradiction']}
         output_text_name = {'mnli': ['MNLI-m.tsv', 'MNLI-mm.tsv']}
@@ -657,13 +688,6 @@ class TrainWholeModel:
         all_dataloader = ()
 
         for now_data in data:
-            # save by torch.load
-            if self.dataset_name in ['dstc7']:
-                pass
-            # save by datasets
-            else:
-                now_data.set_format(type='torch')
-
             if self.data_distribute:
                 sampler = torch.utils.data.distributed.DistributedSampler(now_data, shuffle=shuffle_flag, drop_last=drop_last_flag)
                 dataloader = DataLoader(now_data, batch_size=batch_size, sampler=sampler)
@@ -683,7 +707,7 @@ class TrainWholeModel:
 
         # add model
         # Checking whether input is pair or single is important
-        if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder', 'QAMatchModel']:
+        if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'ParallelMatchEncoder']:
             pair_flag = True
             save_load_prefix = ""
             save_load_suffix = ""
@@ -704,11 +728,14 @@ class TrainWholeModel:
 
             # have been processed and saved to disk
             if os.path.exists("./dataset/" + save_load_prefix + "glue_mnli_train"):
-                train_datasets = (datasets.load_from_disk("./dataset/" + save_load_prefix + "glue_mnli_train"), )
-                val_datasets = (datasets.load_from_disk("./dataset/" + save_load_prefix + "glue_mnli_val_matched"),
-                                datasets.load_from_disk("./dataset/" + save_load_prefix + "glue_mnli_val_mismatched"), )
-                test_datasets = (datasets.load_from_disk("./dataset/" + save_load_prefix + "glue_mnli_test_matched"),
-                                 datasets.load_from_disk("./dataset/" + save_load_prefix + "glue_mnli_test_mismatched"),)
+                train_datasets = (
+                torch.load("./dataset/" + save_load_prefix + "glue_mnli_train")['dataset'],)
+
+                val_datasets = (torch.load("./dataset/" + save_load_prefix + "glue_mnli_val_matched")['dataset'],
+                                torch.load("./dataset/" + save_load_prefix + "glue_mnli_val_mismatched")['dataset'],)
+
+                test_datasets = (torch.load("./dataset/" + save_load_prefix + "glue_mnli_test_matched")['dataset'],
+                                torch.load("./dataset/" + save_load_prefix + "glue_mnli_test_mismatched")['dataset'],)
             else:
                 # load data from huggingface(online)
                 complete_dataset = datasets.load_dataset("glue", 'mnli')
@@ -825,6 +852,8 @@ class TrainWholeModel:
             model = PolyEncoder(config=self.config)
         elif self.model_class in ['QAMatchModel']:
             model = QAMatchModel(config=self.config)
+        elif self.model_class in ['ParallelMatchEncoder']:
+            model = ParallelMatchEncoder(config=self.config)
         else:
             raise Exception("This model class is not supported for creating!!")
 
@@ -904,7 +933,7 @@ class TrainWholeModel:
                                      word_embedding_len=word_embedding_len,
                                      sentence_embedding_len=sentence_embedding_len,
                                      composition=self.composition)
-        elif self.model_class in ['ParallelEncoder']:
+        elif self.model_class in ['ParallelEncoder', 'ParallelMatchEncoder']:
             config = ParallelEncoderConfig(len(self.tokenizer),
                                     pretrained_bert_path=args.pretrained_bert_path,
                                     num_labels=args.label_num,
@@ -957,6 +986,13 @@ class TrainWholeModel:
                 {'params': model.decoder.parameters(), 'lr': 5e-5},
                 {'params': model.classifier.parameters(), 'lr': 5e-5},
             ]
+        elif self.model_class in ['ParallelMatchEncoder']:
+            parameters_dict_list = [
+                # 这几个一样
+                {'params': model.bert_model.parameters(), 'lr': 5e-5},
+                {'params': model.composition_layer.parameters(), 'lr': 5e-5},
+                {'params': model.decoder.parameters(), 'lr': 5e-5},
+            ]
         elif self.model_class == 'PolyEncoder':
             parameters_dict_list = [
                 # 这几个一样
@@ -968,11 +1004,6 @@ class TrainWholeModel:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
-                # 这几个一样
-                {'params': model.self_attention_weight_layer.parameters(), 'lr': 5e-5},
-                {'params': model.value_layer.parameters(), 'lr': 5e-5},
-                # 这个不设定
-                {'params': model.classifier.parameters(), 'lr': 5e-5}
             ]
         else:
             raise Exception("No optimizer supported for this model class!")
@@ -1080,23 +1111,57 @@ class TrainWholeModel:
         b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
         b_attention_mask = (batch['b_attention_mask']).to(self.device)
 
+        # add model
         # 得到模型的结果
-        loss = self.model(
-            a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
-            a_attention_mask=a_attention_mask,
-            b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask, train_flag=True)
+        if self.model in ['QAMatchModel']:
+            this_a_embeddings, this_b_embeddings = self.model(
+                a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+                a_attention_mask=a_attention_mask,
+                b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
+                b_attention_mask=b_attention_mask, train_flag=True)
 
-        # 误差反向传播
-        loss.backward()
+            self.training_a_embeddings_stack.append(this_a_embeddings)
+            self.training_b_embeddings_stack.append(this_b_embeddings)
 
-        # 更新模型参数
-        if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
+            # 更新模型参数
+            if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
+                # aggregate
+                all_a_embeddings = torch.cat(self.training_a_embeddings_stack, dim=0)
+                all_b_embeddings = torch.cat(self.training_b_embeddings_stack, dim=0)
+
+                self.training_a_embeddings_stack = []
+                self.training_b_embeddings_stack = []
+
+                # calculate loss
+                dot_product = torch.matmul(all_a_embeddings, all_b_embeddings.t())  # [bs, bs]
+                mask = torch.eye(all_a_embeddings.size(0)).to(all_a_embeddings.device)
+                loss = F.log_softmax(dot_product, dim=-1) * mask
+                loss = (-loss.sum(dim=1)).mean()
+
+                # 误差反向传播
+                loss.backward()
+
+                optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
+
+                return (loss, )
+            else:
+                return (torch.tensor(0.0), )
+        else:
+            loss = self.model(
+                a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+                a_attention_mask=a_attention_mask,
+                b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
+                b_attention_mask=b_attention_mask, train_flag=True)
+
+            # 误差反向传播
+            loss.backward()
+
             optimizer.step()
             optimizer.zero_grad()
             scheduler.step()
-
-        return (loss, )
+            return (loss,)
 
     # cross模型的训练步
     def __classify_train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
@@ -1266,22 +1331,30 @@ class TrainWholeModel:
             truncation=True, max_length=self.text_max_len, return_tensors='pt')
 
         all_labels = all_labels
+        dataset = DoubleInputLabelDataset(a_input_ids=encoded_a_text['input_ids'],
+                                          a_attention_mask=encoded_a_text['attention_mask'],
+                                          a_token_type_ids=encoded_a_text['token_type_ids'],
+                                          b_input_ids=encoded_b_text['input_ids'],
+                                          b_token_type_ids=encoded_b_text['token_type_ids'],
+                                          b_attention_mask=encoded_b_text['attention_mask'],
+                                          idx=torch.tensor(all_index), label=torch.tensor(all_labels))
 
-        items_dic = {'a_input_ids': encoded_a_text['input_ids'],
-                     'a_token_type_ids': encoded_a_text['token_type_ids'],
-                     'a_attention_mask': encoded_a_text['attention_mask'],
-                     'b_input_ids': encoded_b_text['input_ids'],
-                     'b_token_type_ids': encoded_b_text['token_type_ids'],
-                     'b_attention_mask': encoded_b_text['attention_mask'],
-                     'label': torch.tensor(all_labels),
-                     'idx': torch.tensor(all_index)}
-
-        dataset = Dataset.from_dict(items_dic)
+        # items_dic = {'a_input_ids': encoded_a_text['input_ids'],
+        #              'a_token_type_ids': encoded_a_text['token_type_ids'],
+        #              'a_attention_mask': encoded_a_text['attention_mask'],
+        #              'b_input_ids': encoded_b_text['input_ids'],
+        #              'b_token_type_ids': encoded_b_text['token_type_ids'],
+        #              'b_attention_mask': encoded_b_text['attention_mask'],
+        #              'label': torch.tensor(all_labels),
+        #              'idx': torch.tensor(all_index)}
+        #
+        # dataset = Dataset.from_dict(items_dic)
 
         if not os.path.exists("./dataset"):
             os.makedirs("./dataset")
 
-        dataset.save_to_disk("./dataset/" + save_name)
+        # dataset.save_to_disk("./dataset/" + save_name)
+        torch.save({'dataset': dataset}, "./dataset/" + save_name)
         print(f"Processed dataset is saved at ./dataset/{save_name}")
 
         return dataset
@@ -1305,18 +1378,16 @@ class TrainWholeModel:
 
         all_labels = all_labels
 
-        items_dic = {'input_ids': encoded_texts['input_ids'],
-                     'token_type_ids': encoded_texts['token_type_ids'],
-                     'attention_mask': encoded_texts['attention_mask'],
-                     'label': torch.tensor(all_labels),
-                     'idx': torch.tensor(all_index)}
-
-        dataset = Dataset.from_dict(items_dic)
+        dataset = SingleInputLabelDataset(input_ids=encoded_texts['input_ids'],
+                                          token_type_ids=encoded_texts['token_type_ids'],
+                                          attention_mask=encoded_texts['attention_mask'],
+                                          idx=torch.tensor(all_index), label=torch.tensor(all_labels))
 
         if not os.path.exists("./dataset/"):
             os.makedirs("./dataset/")
 
-        dataset.save_to_disk("./dataset/" + "cross_" + save_name)
+        torch.save({'dataset': dataset}, "./dataset/" + "cross_" + save_name)
+
         print(f"Processed dataset is saved at ./dataset/cross_{save_name}")
 
         return dataset
@@ -1373,7 +1444,7 @@ class TrainWholeModel:
         return dataset
     
     def __tokenize_match_multi_candidate_data_then_save(self, data, save_name, a_column_name="sentence_a", b_column_name="candidates", candidate_num=100):
-        # avoid memory out of ...
+        # avoid out of memory
         split_num = 10
         this_dataset_max_len = -1
 
