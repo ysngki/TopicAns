@@ -11,3 +11,5 @@ python -u nlp_main.py -d mnli --model_class ParallelEncoder -n 0 --label_num 3 -
 Task2: dstc7 ------------------------------------------------------------
 # train cross
 python -u nlp_main.py -d dstc7 --model_class CrossBERT --composition pooler -n 0 --label_num 1 --train_candidate_num 16 --train_batch_size 2 --gradient_accumulation_steps 64 --val_batch_size 2 --no_initial_test | tee  logs/dstc7/cross_candidate_16.log
+# train bi. gradient_accumulation_steps must be 1!!!!!!!!
+python -u nlp_main.py -d dstc7 --model_class QAMatchModel --composition pooler -n 1 --label_num 1 --train_candidate_num 16 --train_batch_size 64  --val_batch_size 2 | tee  logs/dstc7/bi.log

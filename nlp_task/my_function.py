@@ -170,3 +170,57 @@ def set_seed(seed):
 	cudnn.deterministic = True
 	cudnn.benchmark = False
 
+
+def tokenize_and_truncate_from_head(tokenizer, block_data, text_max_len):
+	possible_max_len = 999999
+	encoded_block_texts = tokenizer(
+		block_data, padding=True, verbose=False, add_special_tokens=True,
+		truncation=True, max_length=possible_max_len, return_tensors='pt')
+	this_seq_max_len = encoded_block_texts['input_ids'].shape[-1]
+
+	this_block_input_ids_list = []
+	this_block_token_type_ids_list = []
+	this_block_attention_mask_list = []
+
+	if this_seq_max_len == possible_max_len:
+		raise Exception("possible_max_len is reached!!!!")
+	elif this_seq_max_len <= text_max_len:
+		# re-tokenize to max len
+		encoded_block_texts = tokenizer(
+			block_data, padding='max_length', verbose=False, add_special_tokens=True,
+			truncation=True, max_length=text_max_len, return_tensors='pt')
+
+		# read data
+		this_block_input_ids_list.append(encoded_block_texts['input_ids'])
+		this_block_token_type_ids_list.append(encoded_block_texts['token_type_ids'])
+		this_block_attention_mask_list.append(encoded_block_texts['attention_mask'])
+	else:
+		# these should be truncated from head
+		this_input_ids = encoded_block_texts['input_ids']
+		this_token_type_ids = encoded_block_texts['token_type_ids']
+		this_attention_mask = encoded_block_texts['attention_mask']
+
+		pad_id = tokenizer.convert_tokens_to_ids('[PAD]')
+
+		# truncate row by row
+		for text_input_ids, text_token_type_ids, text_attention_mask in zip(this_input_ids, this_token_type_ids,
+																			this_attention_mask):
+			pad_len = (text_input_ids == pad_id).sum(-1)
+			text_len = text_input_ids.shape[0] - pad_len
+
+			if text_len < text_max_len:
+				temp_input_ids = text_input_ids[:text_max_len].unsqueeze(0)
+				temp_token_type_ids = text_token_type_ids[:text_max_len].unsqueeze(0)
+				temp_attention_mask = text_attention_mask[:text_max_len].unsqueeze(0)
+			else:
+				begin_index = text_len - text_max_len
+				temp_input_ids = text_input_ids[begin_index:text_len].unsqueeze(0)
+				temp_token_type_ids = text_token_type_ids[begin_index:text_len].unsqueeze(0)
+				temp_attention_mask = text_attention_mask[begin_index:text_len].unsqueeze(0)
+
+			this_block_input_ids_list.append(temp_input_ids)
+			this_block_token_type_ids_list.append(temp_token_type_ids)
+			this_block_attention_mask_list.append(temp_attention_mask)
+
+	return this_block_input_ids_list, this_block_token_type_ids_list, this_block_attention_mask_list, this_seq_max_len
+

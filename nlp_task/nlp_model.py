@@ -157,6 +157,142 @@ class QAClassifierModel(nn.Module):
         return logits
 
 
+class QAMatchModel(nn.Module):
+    def __init__(self, config):
+
+        super(QAMatchModel, self).__init__()
+
+        self.config = config
+
+        # 毕竟num_label也算是memory的一部分
+        self.num_labels = config.num_labels
+        self.sentence_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+        self.embeddings = self.bert_model.get_input_embeddings()
+
+        self.value_layer = nn.Sequential(
+            nn.Linear(config.word_embedding_len, 2 * config.sentence_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.sentence_embedding_len, config.sentence_embedding_len),
+            nn.Tanh()
+        )
+
+        self.self_attention_weight_layer = nn.Sequential(
+            nn.Linear(config.word_embedding_len, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, 1),
+            nn.Sigmoid()
+        )
+
+        self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.softmax = torch.nn.Softmax(dim=-2)
+
+    def get_rep_by_self_att(self, input_ids, token_type_ids, attention_mask):
+        out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
+                              token_type_ids=token_type_ids)
+
+        last_hidden_state = out['last_hidden_state']
+
+        # 接下来通过attention汇总信息----------------------------------------
+        # (batch, sequence, output_embedding_len)
+        value = self.value_layer(last_hidden_state)
+
+        # (batch, sequence, 1)
+        weight = self.self_attention_weight_layer(last_hidden_state)
+        weight = weight.squeeze(-1)
+
+        # 创作出score mask
+        with torch.no_grad():
+            # (batch, sequence)
+            mask = token_type_ids.type(dtype=torch.float)
+            mask[mask == 1] = -np.inf
+            mask[mask == 0] = 0.0
+
+        mask_weight = mask + weight
+        final_weight = nn.functional.softmax(mask_weight, dim=-1)
+        # (batch, 1, sequence)
+        final_weight = final_weight.unsqueeze(1)
+
+        # 求和
+        # (batch, 1, output_embedding_len)
+        embedding = final_weight.bmm(value)
+        embedding = embedding.squeeze(1)
+
+        final_embedding = self.relu(embedding)
+
+        return final_embedding
+
+    def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
+        out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
+                              token_type_ids=token_type_ids)
+
+        out = out['pooler_output']
+
+        return out
+
+    # use the average embedding of last layer as sentence representation
+    def get_rep_by_avg(self, input_ids, token_type_ids, attention_mask):
+        out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
+                              token_type_ids=token_type_ids)
+
+        # get the average embeddings of last layer, excluding memory and special token(?)
+        # (batch_size, sequence_length, hidden_size)
+        last_hidden_state = out['last_hidden_state']
+
+        representations = get_rep_by_avg(embeddings=last_hidden_state, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        representations = representations.squeeze(-2)
+
+        return representations
+
+    def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask, train_flag):
+        """
+        :param train_flag:
+        :param a_input_ids: (batch size, sequence len)
+        :param a_token_type_ids: (batch size, sequence len)
+        :param a_attention_mask: (batch size, sequence len)
+        :param b_input_ids: training: (batch size, sequence len) / val: (batch size, candidate num, sequence len)
+        :param b_token_type_ids: training: (batch size, sequence len) / val: (batch size, candidate num, sequence len)
+        :param b_attention_mask: training: (batch size, sequence len) / val: (batch size, candidate num, sequence len)
+        :return: training: (batch size, batch size) / val: (batch size, candidate num)
+        """
+        if self.config.composition == 'avg':
+            composition_function = self.get_rep_by_avg
+        elif self.config.composition == 'pooler':
+            composition_function = self.get_rep_by_pooler
+        else:
+            raise Exception(f"Composition {self.config.composition} is not supported!!")
+
+        # encode context
+        a_embeddings = composition_function(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                            attention_mask=a_attention_mask)
+
+        # reshape and encode candidates
+        candidate_seq_len = b_input_ids.shape[-1]
+        b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
+        b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
+        b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
+        b_embeddings = composition_function(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                            attention_mask=b_attention_mask)
+
+        if train_flag:
+            dot_product = torch.matmul(a_embeddings, b_embeddings.t())  # [bs, bs]
+            mask = torch.eye(a_embeddings.size(0)).to(a_embeddings.device)
+            loss = F.log_softmax(dot_product, dim=-1) * mask
+            loss = (-loss.sum(dim=1)).mean()
+            return loss
+        else:
+            b_embeddings = b_embeddings.reshape(a_embeddings.shape[0], -1, b_embeddings.shape[-1])
+            a_embeddings = a_embeddings.unsqueeze(1)
+            dot_product = torch.matmul(a_embeddings, b_embeddings.permute(0, 2, 1)).squeeze(1)
+            return dot_product
+
+
 # --------------------------------------
 # fen ge xian
 # --------------------------------------

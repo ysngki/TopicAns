@@ -9,44 +9,52 @@ from my_function import get_elapse_time, set_seed
 def read_arguments():
 	parser = argparse.ArgumentParser()
 
+	# default arguments
+	parser.add_argument("--seed", "-s", default=42, type=int)
+	parser.add_argument("--text_max_len", default=512, type=int)
+	parser.add_argument("--num_train_epochs", "-e", type=int, default=50)
+
 	# must set
 	# add model
-	parser.add_argument("--model_class", required=True, type=str, choices=['QAClassifierModel', 'CrossBERT', 'ParallelEncoder', 'PolyEncoder'])
+	parser.add_argument("--model_class", required=True, type=str, choices=['QAClassifierModel', 'CrossBERT', 'ParallelEncoder', 'PolyEncoder',
+																		   'QAMatchModel'])
 
-	parser.add_argument("--memory_num", "-m", default=50, type=int)
+	# related to data
+	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli'])
+	parser.add_argument("--label_num", required=True, type=int, help="for match task, please set as 1")
+
+	# related to model
+	parser.add_argument("--composition", type=str, default='pooler', help = 'control the way to get sentence representation')
 	parser.add_argument("--context_num", "-c", default=1, type=int)
 	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
-	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
-	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli'])
-	parser.add_argument("--label_num", required=True, type=int)  # !!!
-	parser.add_argument("--one_stage", action="store_true", default=False)
 	parser.add_argument("--model_save_prefix", default="", type=str)
-	parser.add_argument("--memory_save_prefix", default="", type=str)
-	parser.add_argument("--dataset_split_num", default=20, type=int)
-	parser.add_argument("--val_batch_size", default=64, type=int)
-	parser.add_argument("--train_batch_size", default=64, type=int)
-	parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
-	parser.add_argument("--val_num_each_epoch", default=3, type=int)
-	parser.add_argument("--save_model_dict", default="./model/", type=str)
-	parser.add_argument("--last_model_dict", default="./last_model/", type=str)
-	parser.add_argument("--first_stage_lr", default=0.3, type=float, help="the lr of memory at first stage")
+
+	parser.add_argument("--hop_num", default=1, type=int, help = 'hop num for pure memory')
+	parser.add_argument("--memory_num", "-m", default=50, type=int)
+	parser.add_argument("--train_candidate_num", default=-1, type=int, help="only need by cross, according to hardware")
+	parser.add_argument("--val_candidate_num", default=100, type=int, help="only need by match task, according to dataset")
+
+	# related to train
+	parser.add_argument("--one_stage", action="store_true", default=False)
 	parser.add_argument("--no_train", action="store_true", default=False)
 	parser.add_argument("--do_test", action="store_true", default=False)
 	parser.add_argument("--use_cpu", action="store_true", default=False)
-
-	# related to model
-	parser.add_argument("--hop_num", default=1, type=int, help = 'hop num for pure memory')
-	parser.add_argument("--composition", type=str, default='pooler', help = 'control the way to get sentence representation')
-
-	# related to train
+	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
 	parser.add_argument("--restore", action="store_true", default=False, help="use restore and only_final together to control which model to read!")
-	parser.add_argument("--train_candidate_num", default=-1, type=int, help="only need by cross")
-	parser.add_argument("--val_candidate_num", default=100, type=int, help="only need by match task")
+
+	parser.add_argument("--val_batch_size", default=64, type=int, help="control the batch size of val as well as test")
+	parser.add_argument("--train_batch_size", default=64, type=int)
+	parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
 
 	parser.add_argument("--no_initial_test", action="store_true", default=False)
+	parser.add_argument("--only_final", action="store_true", default=False,
+						help="using two stage setting but only train last stage")
 
 	parser.add_argument("--load_model", "-l", action="store_true", default=False)
 	parser.add_argument("--load_model_path", type=str, help="load classifier")
+
+	parser.add_argument("--save_model_dict", default="./model/", type=str)
+	parser.add_argument("--last_model_dict", default="./last_model/", type=str)
 
 	parser.add_argument("--load_memory", action="store_true", default=False)
 	parser.add_argument("--load_middle", action="store_true", default=False)
@@ -55,25 +63,20 @@ def read_arguments():
 	parser.add_argument("--distill", action="store_true", default=False)
 	parser.add_argument("--teacher_path", default="./model/teacher", type=str)
 	parser.add_argument("--mlm", action="store_true", default=False)
-	parser.add_argument("--only_final", action="store_true", default=False,
-						help="using two stage setting but only train last stage")
 
 	# 设置并行需要改的
 	parser.add_argument('--local_rank', type=int, default=0, help='node rank for distributed training')
 	parser.add_argument("--data_parallel", action="store_true", default=False)
 	parser.add_argument("--data_distribute", action="store_true", default=False)
 
-	# default arguments
-	parser.add_argument("--seed", "-s", default=42, type=int)
-	parser.add_argument("--text_max_len", default=512, type=int)
-	parser.add_argument("--ranking_candidate_num", default=5, type=int)
-	parser.add_argument("--num_train_epochs", "-e",type=int, default=50)
-
 	# outdated
 	parser.add_argument("--print_num_each_epoch", default=20, type=int)
 	parser.add_argument("--latent_dim", default=100, type=int)
 	parser.add_argument("--train_vae", action="store_true", default=False)
-
+	parser.add_argument("--memory_save_prefix", default="", type=str)
+	parser.add_argument("--dataset_split_num", default=20, type=int)
+	parser.add_argument("--val_num_each_epoch", default=3, type=int)
+	parser.add_argument("--first_stage_lr", default=0.3, type=float, help="the lr of memory at first stage")
 
 	args = parser.parse_args()
 	print("args:", args)
