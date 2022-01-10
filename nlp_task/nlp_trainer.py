@@ -15,7 +15,14 @@ import sys
 from tqdm import tqdm, trange
 import csv
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
+try:
+    from apex import amp
+    APEX_FLAG = True
+    print("*"*50)
+    print("Using Apex")
+    print("*"*50)
+except:
+    APEX_FLAG = False
 
 from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ParallelEncoder, \
     ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel, ParallelMatchEncoder
@@ -33,7 +40,7 @@ class TrainWholeModel:
 
         # 设置gpu-------------------------------------------------------------------
         # os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        # os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["CUDA_VISIBLE_DEVICES"] = args.nvidia_number
 
         # for data_parallel-------------------------------------------------------------------
@@ -115,8 +122,6 @@ class TrainWholeModel:
         else:
             previous_best_performance = -999999
 
-        train_step_function = self.select_train_step_function()
-
         while True:
             # 创建模型
             self.model = self.__create_model()
@@ -136,6 +141,7 @@ class TrainWholeModel:
 
             # 优化器
             optimizer = self.__get_model_optimizer(final_stage_flag=final_stage_flag)
+            train_step_function = self.select_train_step_function()
 
             if train_two_stage_flag:
                 if final_stage_flag:
@@ -200,6 +206,8 @@ class TrainWholeModel:
                 # 获取scheduler
                 if epoch == restore_epoch:
                     scheduler = self.get_scheduler(optimizer, scheduler_last_epoch, train_dataloader)
+                    if APEX_FLAG:
+                        self.model, optimizer = amp.initialize(self.model, optimizer, opt_level="O1")
 
                 # 开始训练----------------------------------------------------------------------------------------
                 # 进度条
@@ -392,7 +400,7 @@ class TrainWholeModel:
 
         print(
             f"Eval on Validation Dataset: " + "*" * 30 +
-            f"\nval_loss:{avg_val_loss}\tval_acc:{avg_val_acc}%\tprevious best performance:{previous_best_performance}\tfrom rank:{self.local_rank}")
+            f"\nval_loss:{avg_val_loss}\tval_acc:{avg_val_acc}%\tprevious best performance:{previous_best_performance}%\tfrom rank:{self.local_rank}")
 
         return avg_val_acc
 
@@ -1072,7 +1080,11 @@ class TrainWholeModel:
         step_loss = cross_entropy_function(logits, qa_labels)
 
         # 误差反向传播
-        step_loss.backward()
+        if not APEX_FLAG:
+            step_loss.backward()
+        else:
+            with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
 
         # 更新模型参数
         if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
@@ -1136,32 +1148,40 @@ class TrainWholeModel:
                 dot_product = torch.matmul(all_a_embeddings, all_b_embeddings.t())  # [bs, bs]
                 mask = torch.eye(all_a_embeddings.size(0)).to(all_a_embeddings.device)
                 loss = F.log_softmax(dot_product, dim=-1) * mask
-                loss = (-loss.sum(dim=1)).mean()
+                step_loss = (-loss.sum(dim=1)).mean()
 
                 # 误差反向传播
-                loss.backward()
+                if not APEX_FLAG:
+                    step_loss.backward()
+                else:
+                    with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
 
                 optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
 
-                return (loss, )
+                return (step_loss, )
             else:
                 return (torch.tensor(0.0), )
         else:
-            loss = self.model(
+            step_loss = self.model(
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
                 b_attention_mask=b_attention_mask, train_flag=True)
 
             # 误差反向传播
-            loss.backward()
+            if not APEX_FLAG:
+                step_loss.backward()
+            else:
+                with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
 
             optimizer.step()
             optimizer.zero_grad()
             scheduler.step()
-            return (loss,)
+            return (step_loss,)
 
     # cross模型的训练步
     def __classify_train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
@@ -1183,7 +1203,11 @@ class TrainWholeModel:
         step_loss = cross_entropy_function(logits, qa_labels)
 
         # 误差反向传播
-        step_loss.backward()
+        if not APEX_FLAG:
+            step_loss.backward()
+        else:
+            with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
 
         # 更新模型参数
         if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
@@ -1226,7 +1250,11 @@ class TrainWholeModel:
         step_loss = cross_entropy_function(logits, qa_labels)
 
         # 误差反向传播
-        step_loss.backward()
+        if not APEX_FLAG:
+            step_loss.backward()
+        else:
+            with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
 
         # 更新模型参数
         if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
@@ -1519,7 +1547,7 @@ class TrainWholeModel:
         """
         # hyper-parameters
         this_dataset_max_len = -2
-        split_num = 100
+        split_num = 1000
 
         # 读取数据到内存
         all_a_text = data[a_column_name]
