@@ -4,7 +4,6 @@ import math
 import time
 
 import datasets
-from datasets import Dataset
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch
@@ -166,6 +165,7 @@ class TrainWholeModel:
             scheduler = None
 
             for epoch in range(restore_epoch, self.num_train_epochs):
+                # used for support accumulate for QAMatchModel
                 self.training_a_embeddings_stack = []
                 self.training_b_embeddings_stack = []
 
@@ -774,7 +774,7 @@ class TrainWholeModel:
             for index, batch in enumerate(tqdm(match_dataloader)):
                 # 读取数据
                 # add model
-                if self.model_class in ['QAMatchModel', 'ParallelMatchEncoder']:
+                if self.model_class in ['QAMatchModel', 'ParallelMatchEncoder', 'PolyEncoder']:
                     logits = self.__match_val_step_for_bi(batch)
                 elif self.model_class in ['CrossBERT']:
                     logits = self.__match_val_step_for_cross(batch)
@@ -1301,18 +1301,18 @@ class TrainWholeModel:
 
     # 输入为QA，而非title.body.answer的模型的训练步
     def __match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
-        # 读取数据
-        a_input_ids = (batch['a_input_ids']).to(self.device)
-        a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
-        a_attention_mask = (batch['a_attention_mask']).to(self.device)
-
-        b_input_ids = (batch['b_input_ids']).to(self.device)
-        b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
-        b_attention_mask = (batch['b_attention_mask']).to(self.device)
-
         # add model
         # 得到模型的结果
         if self.model in ['QAMatchModel']:
+            # 读取数据
+            a_input_ids = (batch['a_input_ids']).to(self.device)
+            a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
+            a_attention_mask = (batch['a_attention_mask']).to(self.device)
+
+            b_input_ids = (batch['b_input_ids']).to(self.device)
+            b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
+            b_attention_mask = (batch['b_attention_mask']).to(self.device)
+
             this_a_embeddings, this_b_embeddings = self.model(
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
@@ -1351,7 +1351,80 @@ class TrainWholeModel:
                 return (step_loss, )
             else:
                 return (torch.tensor(0.0), )
+        # elif self.model_class in ['ParallelMatchEncoder']:
+        #     b_input_ids = (batch['b_input_ids'])
+        #     b_token_type_ids = (batch['b_token_type_ids'])
+        #     b_attention_mask = (batch['b_attention_mask'])
+        #
+        #     batch_size = self.train_batch_size
+        #     encoding_batch_num = kwargs.get('encoding_batch_num', 16)
+        #
+        #     # encoding candidates
+        #     encoded_batch_count = 0
+        #     whole_candidate_embeddings = []
+        #     while encoded_batch_count < batch_size:
+        #         this_input_ids = b_input_ids[encoded_batch_count:encoded_batch_count + encoding_batch_num].to(self.device)
+        #         this_token_type_ids = b_token_type_ids[encoded_batch_count:encoded_batch_count + encoding_batch_num].to(self.device)
+        #         this_attention_mask = b_attention_mask[encoded_batch_count:encoded_batch_count + encoding_batch_num].to(self.device)
+        #
+        #         encoded_batch_count += encoding_batch_num
+        #         this_candidate_embeddings = self.model.prepare_candidates(input_ids=this_input_ids,
+        #                                                                   token_type_ids=this_token_type_ids,
+        #                                                                   attention_mask=this_attention_mask)
+        #         whole_candidate_embeddings.append(this_candidate_embeddings)
+        #     whole_candidate_embeddings = torch.cat(whole_candidate_embeddings, dim=0)
+        #
+        #     # encoding queries
+        #     a_input_ids = (batch['a_input_ids'])
+        #     a_token_type_ids = (batch['a_token_type_ids'])
+        #     a_attention_mask = (batch['a_attention_mask'])
+        #
+        #     whole_dot_products = []
+        #     processed_query_count = 0
+        #     encoding_batch_num = 1
+        #     while processed_query_count < batch_size:
+        #         this_input_ids = a_input_ids[processed_query_count:processed_query_count + encoding_batch_num].to(
+        #             self.device)
+        #         this_token_type_ids = a_token_type_ids[processed_query_count:processed_query_count + encoding_batch_num].to(
+        #             self.device)
+        #         this_attention_mask = a_attention_mask[processed_query_count:processed_query_count + encoding_batch_num].to(
+        #             self.device)
+        #
+        #         dot_products = self.model.do_queries_match(input_ids=this_input_ids,
+        #                                                    token_type_ids=this_token_type_ids,
+        #                                                    attention_mask=this_attention_mask,
+        #                                                    candidate_context_embeddings=whole_candidate_embeddings,
+        #                                                    train_flag=True)
+        #         whole_dot_products.append(dot_products)
+        #         processed_query_count += encoding_batch_num
+        #
+        #     whole_dot_products = torch.cat(whole_dot_products, dim=0)
+        #
+        #     mask = torch.eye(whole_dot_products.size(0)).to(whole_dot_products.device)
+        #     step_loss = F.log_softmax(whole_dot_products, dim=-1) * mask
+        #     step_loss = (-step_loss.sum(dim=1)).mean()
+        #
+        #     if not APEX_FLAG:
+        #         step_loss.backward()
+        #     else:
+        #         with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+        #             scaled_loss.backward()
+        #
+        #     optimizer.step()
+        #     optimizer.zero_grad()
+        #     scheduler.step()
+        #     return (step_loss,)
+
         else:
+            # 读取数据
+            a_input_ids = (batch['a_input_ids']).to(self.device)
+            a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
+            a_attention_mask = (batch['a_attention_mask']).to(self.device)
+
+            b_input_ids = (batch['b_input_ids']).to(self.device)
+            b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
+            b_attention_mask = (batch['b_attention_mask']).to(self.device)
+
             step_loss = self.model(
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,

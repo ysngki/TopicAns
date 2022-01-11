@@ -624,7 +624,17 @@ class ParallelMatchEncoder(nn.Module):
 
         return candidate_embeddings
 
-    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
+        # train_flag = kwargs.get('train_flag', False)
+        # if train_flag:
+        #     candidate_num = candidate_context_embeddings.shape[0]
+        #     candidate_context_embeddings = candidate_context_embeddings.reshape(-1,
+        #                                                                         candidate_context_embeddings.shape[-1]).expand(input_ids.shape[0], -1, -1)
+        # else:
+        #     candidate_num = candidate_context_embeddings.shape[1]
+        #     candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
+        #                                                                         -1, candidate_context_embeddings.shape[-1])
+
         candidate_num = candidate_context_embeddings.shape[1]
         candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
                                                                             -1, candidate_context_embeddings.shape[-1])
@@ -898,8 +908,7 @@ class PolyEncoder(nn.Module):
 
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
-                b_input_ids, b_token_type_ids, b_attention_mask):
-
+                b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
         batch_size = a_token_type_ids.shape[0]
 
         # encoding candidate texts
@@ -925,10 +934,15 @@ class PolyEncoder(nn.Module):
         if self.config.num_labels > 0:
             pass
         else:
-            # (batch_size, dim)
-            candidate_context_vectors = candidate_context_vectors.squeeze(-2)
+            train_flag = kwargs['train_flag']
+            if train_flag:
+                # (batch_size, dim)
+                candidate_context_vectors = candidate_context_vectors.squeeze(-2)
+            else:
+                # (batch_size, candidate_num, dim)
+                candidate_context_vectors = candidate_context_vectors.squeeze(-2).reshape(batch_size, -1, candidate_context_vectors.shape[-1])
 
-        # (batch_size, 1, dim) or (batch_size, batch_size, dim)
+        # (batch_size, 1, dim) or (batch_size, batch_size, dim) or (batch_size, candidate_num, dim)
         final_query_context_vec = dot_attention(q=candidate_context_vectors, k=query_context_vectors,
                                                 v=query_context_vectors)
 
@@ -945,11 +959,15 @@ class PolyEncoder(nn.Module):
             # (batch size, batch size)
             # first is query, second is candidate
             dot_product = torch.sum(final_query_context_vec * candidate_context_vectors, -1)
-            mask = torch.eye(batch_size).to(dot_product.device)
-            loss = F.log_softmax(dot_product, dim=-1) * mask
-            loss = (-loss.sum(dim=1)).mean()
 
-            return loss
+            if train_flag:
+                mask = torch.eye(batch_size).to(dot_product.device)
+                loss = F.log_softmax(dot_product, dim=-1) * mask
+                loss = (-loss.sum(dim=1)).mean()
+
+                return loss
+            else:
+                return dot_product
 
 
 # --------------------------------------

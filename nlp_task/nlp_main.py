@@ -115,16 +115,18 @@ if __name__ == '__main__':
 	if not os.path.exists(my_args.last_model_dict):
 		os.makedirs(my_args.last_model_dict)
 
-	my_train_model.match_cross_real_test()
-
+	# 训练
 	if not my_args.no_train:
 		my_train_model.train(train_two_stage_flag=my_train_two_stage_flag,
 							 only_final=my_args.only_final)
 
+	# 普通的评测，即将被淘汰
 	if my_args.do_test or my_args.do_val:
 		my_train_model.do_test(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 											   my_args.model_class + "_" +
 											   my_args.dataset_name, do_val=my_args.do_val)
+
+	# 测速
 	if my_args.do_real_test:
 		if my_args.model_class in ['QAMatchModel', 'ParallelMatchEncoder', 'PolyEncoder']:
 			my_train_model.match_bi_real_test(
