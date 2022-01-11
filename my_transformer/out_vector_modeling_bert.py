@@ -242,9 +242,9 @@ class MyBertSelfAttention(nn.Module):
 				# (batch size, head num, candidate_context_num, question_sequence_len + candidate_context_num)
 				new_attention_mask = new_attention_mask.repeat(1, candidate_attention_scores.shape[1],
 															   candidate_attention_scores.shape[2], 1)
-				# (batch size, head num, candidate_num, context_num, question_sequence_len + candidate_context_num)
 				previous_shape = new_attention_mask.size()
 
+				# (batch size, head num, candidate_num, context_num, question_sequence_len + candidate_context_num)
 				new_attention_mask = new_attention_mask.reshape(previous_shape[0], previous_shape[1], candidate_num, -1,
 																previous_shape[-1])
 				context_num = new_attention_mask.shape[-2]
@@ -255,8 +255,6 @@ class MyBertSelfAttention(nn.Module):
 					new_attention_mask[:, :, -inner_index, :,
 					-inner_index * context_num: all_sequence_len - ((inner_index - 1) * context_num)] = 0.0
 				new_attention_mask = new_attention_mask.reshape(*previous_shape)
-				if candidate_num > 1:
-					raise Exception("Please check here whether new_attention_mask is correct!")
 				# now candidate can see itself and question, while question can only see itself
 				candidate_attention_scores = candidate_attention_scores + new_attention_mask
 

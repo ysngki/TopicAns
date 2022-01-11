@@ -157,10 +157,12 @@ def get_elapse_time(t0):
 	if elapse_time > 3600:
 		hour = int(elapse_time // 3600)
 		minute = int((elapse_time % 3600) // 60)
-		return "{}h{}m".format(hour, minute)
-	else:
+		return "{}h{}m{}s".format(hour, minute, elapse_time)
+	elif elapse_time > 60:
 		minute = int((elapse_time % 3600) // 60)
-		return "{}m".format(minute)
+		return "{}m{}s".format(minute, elapse_time)
+	else:
+		return "{}s".format(elapse_time)
 
 
 def set_seed(seed):

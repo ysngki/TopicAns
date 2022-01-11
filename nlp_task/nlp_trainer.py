@@ -1,6 +1,7 @@
 # %%
 import gc
 import math
+import time
 
 import datasets
 from datasets import Dataset
@@ -27,7 +28,7 @@ except:
 from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ParallelEncoder, \
     ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel, ParallelMatchEncoder
 from my_function import sum_average_tuple, raise_dataset_error, print_recall_precise, load_model, print_optimizer, \
-    raise_test_error, tokenize_and_truncate_from_head
+    raise_test_error, tokenize_and_truncate_from_head, get_elapse_time
 from nlp_dataset import SingleInputDataset, DoubleInputDataset, DoubleInputLabelDataset, SingleInputLabelDataset
 
 
@@ -117,10 +118,7 @@ class TrainWholeModel:
         if only_final:
             final_stage_flag = True
 
-        if self.dataset_name in ['mnli']:
-            previous_best_performance = 0.0
-        else:
-            previous_best_performance = -999999
+        previous_best_performance = 0.0
 
         while True:
             # 创建模型
@@ -386,6 +384,188 @@ class TrainWholeModel:
         self.model.train()
         return None
 
+    def match_bi_real_test(self, test_datasets: DoubleInputDataset = None, model_save_path=None, **kwargs):
+        print("*" * 40 + " Begin Real Testing " + "*" * 40)
+        r_k_num = kwargs.get('r_k_num', (1, 10))
+
+        # prepare data
+        if not test_datasets:
+                _, _, this_datasets = self.__get_datasets(get_train=False, get_val=False)
+        else:
+            this_datasets = test_datasets
+        if len(this_datasets) > 1:
+            raise Exception("Test Datasets is more than 1 for match task!")
+
+        this_datasets = this_datasets[0]
+
+        # (query_num, candidate_num, seq_len)
+        # dstc: (1000, 100, 327)
+        candidate_input_ids = this_datasets.b_input_ids
+        candidate_attention_mask = this_datasets.b_attention_mask
+        candidate_token_type_ids = this_datasets.b_token_type_ids
+        query_input_ids = this_datasets.a_input_ids
+        query_attention_mask = this_datasets.a_attention_mask
+        query_token_type_ids = this_datasets.a_token_type_ids
+
+        query_num = candidate_input_ids.shape[0]
+        candidate_num = candidate_input_ids.shape[1]
+
+        # create model if necessary
+        if self.model is None:
+            self.model = self.__create_model()
+            self.model = load_model(self.model, model_save_path)
+            self.model.to(self.device)
+
+        self.model.eval()
+
+        # pre-compute candidates
+        with torch.no_grad():
+            whole_candidate_embeddings = []
+            # encoding one by one
+            for query_index in trange(query_num):
+                # (candidate_num, seq_len)
+                this_input_ids = candidate_input_ids[query_index]
+                this_attention_mask = candidate_attention_mask[query_index]
+                this_token_type_ids = candidate_token_type_ids[query_index]
+
+                # encoding block by block
+                split_num = 1
+                each_split_candidate_num = math.ceil(candidate_num / split_num)
+                real_split_num = math.ceil(candidate_num / each_split_candidate_num)
+
+                this_query_candidate_embeddings = []
+                for split_index in range(real_split_num):
+                    # calculate vectors of candidates
+                    batch_input_ids = this_input_ids[split_index * each_split_candidate_num:(
+                                                                                                    split_index + 1) * each_split_candidate_num,
+                                      :].to(self.device)
+                    batch_attention_mask = this_attention_mask[split_index * each_split_candidate_num:(
+                                                                                                              split_index + 1) * each_split_candidate_num,
+                                           :].to(self.device)
+                    batch_token_type_ids = this_token_type_ids[split_index * each_split_candidate_num:(
+                                                                                                              split_index + 1) * each_split_candidate_num,
+                                           :].to(self.device)
+
+                    batch_embeddings = self.model.prepare_candidates(input_ids=batch_input_ids,
+                                                                     token_type_ids=batch_token_type_ids,
+                                                                     attention_mask=batch_attention_mask)
+
+                    this_query_candidate_embeddings.append(batch_embeddings)
+
+                # (candidate_num(, context_num), dim)
+                this_query_candidate_embeddings = torch.cat(this_query_candidate_embeddings, dim=0).unsqueeze(0)
+                whole_candidate_embeddings.append(this_query_candidate_embeddings)
+
+            # (query_num, candidate_num(, context_num), dim)
+            whole_candidate_embeddings = torch.cat(whole_candidate_embeddings, dim=0).to("cpu")
+
+            # begin time
+            begin_time = time.time()
+
+            whole_dot_products = []
+            # calculate queries with or without candidates
+            processed_query_count = 0
+
+            # do match block by block
+            while processed_query_count < query_num:
+                this_block_query_input_ids = query_input_ids[
+                                             processed_query_count:processed_query_count + self.query_block_size,
+                                             :].to(self.device)
+                this_block_query_attention_mask = query_attention_mask[
+                                                  processed_query_count:processed_query_count + self.query_block_size,
+                                                  :].to(self.device)
+                this_block_query_token_type_ids = query_token_type_ids[
+                                                  processed_query_count:processed_query_count + self.query_block_size,
+                                                  :].to(self.device)
+                # get corresponding candidates
+                this_block_candidate_embeddings = whole_candidate_embeddings[
+                                                  processed_query_count:processed_query_count + self.query_block_size].to(
+                    self.device)
+                dot_products = self.model.do_queries_match(input_ids=this_block_query_input_ids,
+                                                           token_type_ids=this_block_query_token_type_ids,
+                                                           attention_mask=this_block_query_attention_mask,
+                                                           candidate_context_embeddings=this_block_candidate_embeddings)
+                whole_dot_products.append(dot_products)
+                processed_query_count += self.query_block_size
+
+            whole_dot_products = torch.cat(whole_dot_products, dim=0)
+
+            # calculate R@K
+            r_k_result = ()
+
+            for k in r_k_num:
+                _, indices = torch.topk(whole_dot_products, k, dim=-1)
+                hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
+                r_k_result += (hit_num / whole_dot_products.shape[0],)
+                print(f"R@" + str(k) + f": {r_k_result[-1]}", end="\t")
+
+            _, avg_r_k_result = sum_average_tuple(r_k_result)
+            print(f"Avg: {avg_r_k_result}")
+            print(f"Query Num is {query_num}, Candidate Num is {candidate_num}")
+            print(f"Model is {self.model_class}, Real scene testing takes", get_elapse_time(begin_time))
+            print("*" * 100)
+            raise_test_error()
+
+    def match_cross_real_test(self, test_datasets: SingleInputDataset = None, model_save_path=None, **kwargs):
+        print("*" * 40 + " Begin Real Testing " + "*" * 40)
+        r_k_num = kwargs.get('r_k_num', (1, 10))
+
+        # prepare data
+        if not test_datasets:
+            _, _, this_datasets = self.__get_datasets(get_train=False, get_val=False)
+        else:
+            this_datasets = test_datasets
+        if len(this_datasets) > 1:
+            raise Exception("Test Datasets is more than 1 for match task!")
+
+        val_dataloader = self.__get_dataloader(data=this_datasets, batch_size=self.val_batch_size)
+        val_dataloader = val_dataloader[0]
+
+        if self.model is None:
+            self.model = self.__create_model()
+            self.model = load_model(self.model, model_save_path)
+            self.model.to(self.device)
+
+        self.model.eval()
+
+        # begin time
+        begin_time = time.time()
+
+        with torch.no_grad():
+            whole_logits = []
+            for index, batch in enumerate(tqdm(val_dataloader)):
+                input_ids = batch['input_ids'].to(self.device)
+                token_type_ids = batch['token_type_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+
+                batch_num, candidate_num, sequence_len = input_ids.shape
+
+                input_ids = input_ids.reshape(batch_num * candidate_num, -1)
+                token_type_ids = token_type_ids.reshape(batch_num * candidate_num, -1)
+                attention_mask = attention_mask.reshape(batch_num * candidate_num, -1)
+
+                # 得到模型的结果
+                logits = self.model(input_ids=input_ids, token_type_ids=token_type_ids,
+                                    attention_mask=attention_mask).reshape(batch_num, candidate_num)
+                whole_logits.append(logits)
+
+            whole_logits = torch.cat(whole_logits, dim=0)
+            # calculate R@K
+            r_k_result = ()
+
+            for k in r_k_num:
+                _, indices = torch.topk(whole_logits, k, dim=-1)
+                hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
+                r_k_result += (hit_num / whole_logits.shape[0],)
+                print(f"R@" + str(k) + f": {r_k_result[-1]}", end="\t")
+
+            _, avg_r_k_result = sum_average_tuple(r_k_result)
+            print(f"Avg: {avg_r_k_result}")
+            print(f"Query Num is {whole_logits.shape[0]}, Candidate Num is {candidate_num}")
+            print(f"Model is {self.model_class}, Real scene testing takes", get_elapse_time(begin_time))
+            print("*" * 100)
+            raise_test_error()
+
     def classify_do_val_body(self, val_datasets, previous_best_performance):
         val_dataloader = self.__get_dataloader(data=val_datasets, batch_size=self.val_batch_size)
 
@@ -417,9 +597,9 @@ class TrainWholeModel:
 
         if not this_datasets:
             if kwargs['do_val']:
-                _, test_datasets, _ = self.__get_datasets()
+                _, test_datasets, _ = self.__get_datasets(get_train=False, get_test=False)
             else:
-                _, _, test_datasets = self.__get_datasets()
+                _, _, test_datasets = self.__get_datasets(get_train=False, get_val=False)
         else:
             test_datasets = this_datasets
 
@@ -466,10 +646,10 @@ class TrainWholeModel:
 
         print(
             f"Eval on {log_text} Dataset: " + "*" * 30 +
-            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{r_k_num}\tloss:{this_loss}\tprevious best performance:{-previous_best_performance}\tfrom rank:{self.local_rank}")
+            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{r_k_num}\tAvg R:{avg_r_k_result}\tprevious best performance:{previous_best_performance}\tfrom rank:{self.local_rank}")
 
         # in order to use > to reveal priority
-        return -this_loss
+        return avg_r_k_result
 
     def restore_settings(self, optimizer, restore_path, previous_best_performance):
         early_stop_count = 0
@@ -500,7 +680,7 @@ class TrainWholeModel:
             restore_epoch = restore_data['epoch']
 
             print("model is restored from", restore_path)
-            print(f'Restore epoch: {restore_epoch}, Previous best R@1: {new_previous_best_performance}')
+            print(f'Restore epoch: {restore_epoch}, Previous best performance: {new_previous_best_performance}')
             print("*" * 100)
 
         return early_stop_count, restore_epoch, scheduler_last_epoch, new_previous_best_performance
@@ -706,7 +886,7 @@ class TrainWholeModel:
 
         return all_dataloader
 
-    def __get_datasets(self):
+    def __get_datasets(self, get_train=True, get_val=True, get_test=True):
         # prepare dataset
         # must be tuple
         train_datasets = ()
@@ -791,7 +971,9 @@ class TrainWholeModel:
 
             # read or process...
             # read training data. exist? read!--------------------------------------------------
-            if os.path.exists("./dataset/" + save_load_prefix + "dstc7_train" + save_load_suffix):
+            if not get_train:
+                pass
+            elif os.path.exists("./dataset/" + save_load_prefix + "dstc7_train" + save_load_suffix):
                 train_datasets = (torch.load("./dataset/" + save_load_prefix + "dstc7_train" + save_load_suffix)['dataset'],)
             else:
                 if pair_flag:
@@ -819,7 +1001,9 @@ class TrainWholeModel:
             else:
                 process_val_test_func = self.__tokenize_match_cross_data_then_save
 
-            if os.path.exists("./dataset/" + save_load_prefix + "dstc7_val"):
+            if not get_val:
+                pass
+            elif os.path.exists("./dataset/" + save_load_prefix + "dstc7_val"):
                 val_datasets = (torch.load("./dataset/" + save_load_prefix + "dstc7_val")['dataset'],)
             else:
                 string_val_dataset = datasets.load_from_disk("./dataset/string_dev_dstc7")
@@ -831,7 +1015,9 @@ class TrainWholeModel:
                                                       candidate_num=self.val_candidate_num),)
 
             # read test data. exist? read!--------------------------------------------------
-            if os.path.exists("./dataset/" + save_load_prefix + "dstc7_test"):
+            if not get_test:
+                pass
+            elif os.path.exists("./dataset/" + save_load_prefix + "dstc7_test"):
                 test_datasets = (torch.load("./dataset/" + save_load_prefix + "dstc7_test")['dataset'],)
             else:
                 string_test_dataset = datasets.load_from_disk("./dataset/string_test_dstc7")
@@ -910,6 +1096,7 @@ class TrainWholeModel:
         self.save_model_dict = args.save_model_dict
         self.last_model_dict = args.last_model_dict
         self.context_num = args.context_num
+        self.query_block_size = args.query_block_size
 
     # 读取命令行传入的有关config的参数
     def __read_args_for_config(self, args):

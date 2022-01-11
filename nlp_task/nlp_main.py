@@ -38,6 +38,8 @@ def read_arguments():
 	parser.add_argument("--one_stage", action="store_true", default=False)
 	parser.add_argument("--no_train", action="store_true", default=False)
 	parser.add_argument("--do_test", action="store_true", default=False)
+	parser.add_argument("--do_real_test", action="store_true", default=False)
+	parser.add_argument("--query_block_size", default=200, type=int, help="only need by match task")
 	parser.add_argument("--do_val", action="store_true", default=False)
 	parser.add_argument("--use_cpu", action="store_true", default=False)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
@@ -113,9 +115,7 @@ if __name__ == '__main__':
 	if not os.path.exists(my_args.last_model_dict):
 		os.makedirs(my_args.last_model_dict)
 
-	# 如果读取memory，或者不训练mlm，就要train
-	if not os.path.exists(my_args.save_model_dict):
-		os.makedirs(my_args.save_model_dict)
+	my_train_model.match_cross_real_test()
 
 	if not my_args.no_train:
 		my_train_model.train(train_two_stage_flag=my_train_two_stage_flag,
@@ -125,8 +125,21 @@ if __name__ == '__main__':
 		my_train_model.do_test(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 											   my_args.model_class + "_" +
 											   my_args.dataset_name, do_val=my_args.do_val)
+	if my_args.do_real_test:
+		if my_args.model_class in ['QAMatchModel', 'ParallelMatchEncoder', 'PolyEncoder']:
+			my_train_model.match_bi_real_test(
+				model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
+								my_args.model_class + "_" +
+								my_args.dataset_name)
+		elif my_args.model_class in ['CrossBERT']:
+			my_train_model.match_cross_real_test(
+				model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
+								my_args.model_class + "_" +
+								my_args.dataset_name)
+		else:
+			raise Exception(f"{my_args.model_class} is not supported for real test yer!")
 
 	print("*"*100)
-	print("Finish training and take %s", get_elapse_time(begin_time))
+	print("Finish training and take", get_elapse_time(begin_time))
 	print("*" * 100)
 

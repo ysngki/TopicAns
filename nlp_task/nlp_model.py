@@ -197,9 +197,27 @@ class QAMatchModel(nn.Module):
         out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
                               token_type_ids=token_type_ids)
 
-        out = out['pooler_output']
+        out = out['last_hidden_state'][:, 0, :]
 
         return out
+
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+        candidate_seq_len = input_ids.shape[-1]
+
+        input_ids = input_ids.reshape(-1, candidate_seq_len)
+        token_type_ids = token_type_ids.reshape(-1, candidate_seq_len)
+        attention_mask = attention_mask.reshape(-1, candidate_seq_len)
+
+        candidate_embeddings = self.get_rep_by_pooler(input_ids=input_ids, token_type_ids=token_type_ids,
+                                                      attention_mask=attention_mask)
+        return candidate_embeddings
+
+    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+        query_embeddings = self.get_rep_by_pooler(input_ids=input_ids, token_type_ids=token_type_ids,
+                                                  attention_mask=attention_mask)
+        query_embeddings = query_embeddings.unsqueeze(1)
+        dot_product = torch.matmul(query_embeddings, candidate_context_embeddings.permute(0, 2, 1)).squeeze(1)
+        return dot_product
 
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, train_flag):
@@ -589,6 +607,57 @@ class ParallelMatchEncoder(nn.Module):
         value_static.update(updating_value_static)
         self.decoder['candidate_value'].load_state_dict(value_static)
 
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+        # reshape and encode candidates
+        # (all_candidate_num, dim)
+        candidate_seq_len = input_ids.shape[-1]
+        input_ids = input_ids.reshape(-1, candidate_seq_len)
+        token_type_ids = token_type_ids.reshape(-1, candidate_seq_len)
+        attention_mask = attention_mask.reshape(-1, candidate_seq_len)
+
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
+                              enrich_candidate_by_question=False)
+        last_hidden_state = out['last_hidden_state']
+
+        # get (all_candidate_num, context_num, dim)
+        candidate_embeddings = self.composition_layer(last_hidden_state, attention_mask=attention_mask)
+
+        return candidate_embeddings
+
+    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+        candidate_num = candidate_context_embeddings.shape[1]
+        candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
+                                                                            -1, candidate_context_embeddings.shape[-1])
+
+        lstm_initial_state = torch.zeros(candidate_context_embeddings.shape[0], candidate_num, candidate_context_embeddings.shape[-1],
+                                         device=candidate_context_embeddings.device)
+
+        # (query_num, candidate_context_num + candidate_num, dim)
+        candidate_context_embeddings = torch.cat((candidate_context_embeddings, lstm_initial_state), dim=1)
+
+        a_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
+                                enrich_candidate_by_question=True, candidate_embeddings=candidate_context_embeddings,
+                                decoder=self.decoder, candidate_num=candidate_num)
+
+        a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
+
+        # get final representations
+        # (query_num, candidate_num, context_num, dim)
+        candidate_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0],
+                                                                                     candidate_num,
+                                                                                     self.config.context_num,
+                                                                                     decoder_output.shape[-1])
+        # (query_num, candidate_num, dim)
+        candidate_embeddings = self.decoder['candidate_composition_layer'](candidate_context_embeddings).squeeze(-2)
+
+        # (query_num, candidate_num, dim)
+        query_embeddings = decoder_output[:, -candidate_num:, :]
+
+        # (query_num, candidate_num)
+        dot_product = torch.mul(query_embeddings, candidate_embeddings).sum(-1)
+
+        return dot_product
+
     # 如果不把a传进q，就会退化成最普通的QAModel，已经被验证过了
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
@@ -796,7 +865,37 @@ class PolyEncoder(nn.Module):
 
         torch.nn.init.normal_(self.query_composition_layer.query, self.this_bert_config.hidden_size ** -0.5)
 
-    # 如果不把a传进q，就会退化成最普通的QAModel，已经被验证过了
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+        # encoding candidate texts
+        # (batch_size, sequence len, dim)
+        candidate_seq_len = input_ids.shape[-1]
+
+        input_ids = input_ids.reshape(-1, candidate_seq_len)
+        token_type_ids = token_type_ids.reshape(-1, candidate_seq_len)
+        attention_mask = attention_mask.reshape(-1, candidate_seq_len)
+
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask)
+        candidate_embeddings = out['last_hidden_state']
+        # (batch_size, 1, dim) ---- pooler
+        candidate_embeddings = candidate_embeddings[:, 0, :]
+
+        return candidate_embeddings
+
+    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+        query_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
+                                           attention_mask=attention_mask)
+        query_last_hidden_state = query_out['last_hidden_state']
+        # (query_num, context_num, dim)
+        query_embeddings = self.query_composition_layer(query_last_hidden_state, attention_mask)
+
+        # candidate_context_embeddings = (query_num, candidate_num, dim)
+        # final_query_context_vec = (query_num, candidate_num, dim)
+        final_query_context_vec = dot_attention(q=candidate_context_embeddings, k=query_embeddings,
+                                                v=query_embeddings)
+
+        dot_product = torch.sum(final_query_context_vec * candidate_context_embeddings, -1)
+        return dot_product
+
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
@@ -805,6 +904,12 @@ class PolyEncoder(nn.Module):
 
         # encoding candidate texts
         # (batch_size, sequence len, dim)
+        candidate_seq_len = b_input_ids.shape[-1]
+
+        b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
+        b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
+        b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
+
         b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
         b_last_hidden_state = b_out['last_hidden_state']
         # (batch_size, 1, dim) ---- pooler
@@ -820,11 +925,10 @@ class PolyEncoder(nn.Module):
         if self.config.num_labels > 0:
             pass
         else:
-            # (batch_size, batch_size, dim)
-            candidate_context_vectors = candidate_context_vectors.squeeze(-2).unsqueeze(0).repeat(batch_size, batch_size, query_context_vectors.shape[-1])
+            # (batch_size, dim)
+            candidate_context_vectors = candidate_context_vectors.squeeze(-2)
 
         # (batch_size, 1, dim) or (batch_size, batch_size, dim)
-        # i,j,k ---> i means different query, j means different candidate
         final_query_context_vec = dot_attention(q=candidate_context_vectors, k=query_context_vectors,
                                                 v=query_context_vectors)
 
