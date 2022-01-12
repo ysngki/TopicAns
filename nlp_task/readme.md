@@ -3,7 +3,7 @@ All datasets are saved in ./dataset/, this dictionary can be created by scripts 
 ### dstc7
 download data (include augmented) and put them into ./raw_data/dstc， then
 ```shell
-cd ./data_scripts
+cd ./raw_data/data_scripts
 python process_dstc.py
 ```
 ### mnli
