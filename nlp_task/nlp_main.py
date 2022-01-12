@@ -114,6 +114,8 @@ if __name__ == '__main__':
 		os.makedirs(my_args.save_model_dict)
 	if not os.path.exists(my_args.last_model_dict):
 		os.makedirs(my_args.last_model_dict)
+	if not os.path.exists("./dataset/"):
+		os.makedirs("./dataset/")
 
 	# 训练
 	if not my_args.no_train:

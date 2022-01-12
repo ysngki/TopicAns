@@ -1,10 +1,15 @@
 ## Prepare data
+All datasets are saved in ./dataset/, this dictionary can be created by scripts automatically.
 ### dstc7
-download data (include augmented) and put them into ./raw_data/dstc， then run ./data_scripts/process_dsct7.py
+download data (include augmented) and put them into ./raw_data/dstc， then
+```shell
+cd ./data_scripts
+python process_dstc.py
+```
 ### mnli
-Data will be downloaded by scripts automatically
+Data will be downloaded by scripts automatically.
 ## Training
-Commands vary with tasks and models. Some examples are provided in run_command. Readers can also refer to nlp_main.py to make clear what arguments mean.
+Commands vary with tasks and models. Some examples are provided in run_command. Readers can refer to nlp_main.py to make clear what arguments mean.
 
 ---
 There are something should be paid attention to.
@@ -22,4 +27,9 @@ If you want to do test but not train, appending following arguments to the comma
 do_val means using dev data while do_test means using test data.
 
 If you want to measure the running time of models' doing match in the way like real worlds, please replace `do_test` 
-with `do_real_test`
+with `do_real_test`, like
+```shell
+--no_train --do_real_test --query_block_size 100
+```
+Arg: `query_block_size` controls the number of simultaneously processed queries. This should be set according to cuda 
+memory. Our experiments show that this argument has little influence on testing time.
