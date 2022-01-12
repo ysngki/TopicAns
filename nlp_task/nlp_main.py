@@ -20,7 +20,7 @@ def read_arguments():
 																		   'QAMatchModel', 'ParallelMatchEncoder'])
 
 	# related to data
-	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli'])
+	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli', 'ubuntu'])
 	parser.add_argument("--label_num", required=True, type=int, help="for match task, please set as 1")
 
 	# related to model

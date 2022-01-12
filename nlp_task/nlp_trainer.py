@@ -263,9 +263,7 @@ class TrainWholeModel:
                     self.save_model(model_save_path=model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
                                     previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
 
-                    if self.dataset_name in ['dstc7']:
-                        pass
-                    else:
+                    if self.dataset_name == 'mnli':
                         self.do_test(test_datasets=test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
 
                 self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
@@ -310,14 +308,14 @@ class TrainWholeModel:
         if self.model_class == "CrossBERT":
             if self.dataset_name in ['mnli']:
                 train_step_function = self.__classify_train_step_for_cross
-            elif self.dataset_name in ['dstc7']:
+            elif self.dataset_name in ['dstc7', 'ubuntu']:
                 train_step_function = self.__match_train_step_for_cross
             else:
                 raise_dataset_error()
         elif self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'ParallelMatchEncoder']:
             if self.dataset_name in ['mnli']:
                 train_step_function = self.__classify_train_step_for_qa_input
-            elif self.dataset_name in ['dstc7']:
+            elif self.dataset_name in ['dstc7', 'ubuntu']:
                 train_step_function = self.__match_train_step_for_qa_input
             else:
                 raise_dataset_error()
@@ -361,7 +359,7 @@ class TrainWholeModel:
 
         if self.dataset_name in ['mnli']:
             now_best_performance = self.classify_do_val_body(val_datasets, previous_best_performance)
-        elif self.dataset_name in ['dstc7']:
+        elif self.dataset_name in ['dstc7', 'ubuntu']:
             now_best_performance = self.match_val_test_body(this_datasets=val_datasets,
                                                             previous_best_performance=previous_best_performance,
                                                             r_k_num=kwargs['r_k_num'], do_test=False)
@@ -382,7 +380,7 @@ class TrainWholeModel:
 
         if self.dataset_name in ['mnli']:
             self.glue_test(test_datasets=test_datasets, model_save_path=model_save_path, postfix=postfix)
-        elif self.dataset_name in ['dstc7']:
+        elif self.dataset_name in ['dstc7', 'ubuntu']:
             _ = self.match_val_test_body(this_datasets=test_datasets,
                                          previous_best_performance=previous_best_performance,
                                          r_k_num=r_k_num, do_test=not do_val, model_save_path=model_save_path, do_val=do_val)
@@ -831,7 +829,7 @@ class TrainWholeModel:
             f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{r_k_num}\tAvg R:{avg_r_k_result}\tprevious best performance:{previous_best_performance}\tfrom rank:{self.local_rank}")
 
         # in order to use > to reveal priority
-        return avg_r_k_result
+        return r_k_result[0]
 
     def restore_settings(self, optimizer, restore_path, previous_best_performance):
         early_stop_count = 0
@@ -1146,7 +1144,7 @@ class TrainWholeModel:
                     label_column_name='label')
 
                 test_datasets = (test_matched_dataset, test_mismatched_dataset,)
-        elif self.dataset_name == 'dstc7':
+        elif self.dataset_name in ['dstc7', 'ubuntu']:
             # check
             if not pair_flag and self.train_candidate_num < 1:
                 raise Exception("Should designate train_candidate_num if you want train cross model on match task!!")
@@ -1155,23 +1153,23 @@ class TrainWholeModel:
             # read training data. exist? read!--------------------------------------------------
             if not get_train:
                 pass
-            elif os.path.exists("./dataset/" + save_load_prefix + "dstc7_train" + save_load_suffix):
-                train_datasets = (torch.load("./dataset/" + save_load_prefix + "dstc7_train" + save_load_suffix)['dataset'],)
+            elif os.path.exists("./dataset/" + save_load_prefix + self.dataset_name + "_train" + save_load_suffix):
+                train_datasets = (torch.load("./dataset/" + save_load_prefix + self.dataset_name + "_train" + save_load_suffix)['dataset'],)
             else:
                 if pair_flag:
                     string_train_dataset = datasets.load_from_disk(
-                        "./dataset/string_bi_train_dstc7")
+                        "./dataset/string_bi_train_" + self.dataset_name)
 
                     train_datasets = (self.__tokenize_match_bi_data_then_save(data=string_train_dataset,
-                                                                              save_name=save_load_prefix + "dstc7_train",
+                                                                              save_name=save_load_prefix + self.dataset_name + "_train",
                                                                               a_column_name="sentence_a",
                                                                               b_column_name="sentence_b"),)
                 else:
                     string_train_dataset = datasets.load_from_disk(
-                        "./dataset/string_cross_train_dstc7")
+                        "./dataset/string_cross_train_" + self.dataset_name)
 
                     train_datasets = (self.__tokenize_match_cross_data_then_save(data=string_train_dataset,
-                                                                                 save_name=save_load_prefix + "dstc7_train",
+                                                                                 save_name=save_load_prefix + self.dataset_name + "_train",
                                                                                  a_column_name="sentence_a",
                                                                                  b_column_name="candidates",
                                                                                  candidate_num=self.train_candidate_num,
@@ -1185,13 +1183,13 @@ class TrainWholeModel:
 
             if not get_val:
                 pass
-            elif os.path.exists("./dataset/" + save_load_prefix + "dstc7_val"):
-                val_datasets = (torch.load("./dataset/" + save_load_prefix + "dstc7_val")['dataset'],)
+            elif os.path.exists("./dataset/" + save_load_prefix + self.dataset_name + "_val"):
+                val_datasets = (torch.load("./dataset/" + save_load_prefix + self.dataset_name + "_val")['dataset'],)
             else:
-                string_val_dataset = datasets.load_from_disk("./dataset/string_dev_dstc7")
+                string_val_dataset = datasets.load_from_disk("./dataset/string_dev_" + self.dataset_name)
 
                 val_datasets = (process_val_test_func(data=string_val_dataset,
-                                                      save_name=save_load_prefix + "dstc7_val",
+                                                      save_name=save_load_prefix + self.dataset_name + "_val",
                                                       a_column_name="sentence_a",
                                                       b_column_name="candidates",
                                                       candidate_num=self.val_candidate_num),)
@@ -1199,13 +1197,13 @@ class TrainWholeModel:
             # read test data. exist? read!--------------------------------------------------
             if not get_test:
                 pass
-            elif os.path.exists("./dataset/" + save_load_prefix + "dstc7_test"):
-                test_datasets = (torch.load("./dataset/" + save_load_prefix + "dstc7_test")['dataset'],)
+            elif os.path.exists("./dataset/" + save_load_prefix + self.dataset_name + "_test"):
+                test_datasets = (torch.load("./dataset/" + save_load_prefix + self.dataset_name + "_test")['dataset'],)
             else:
-                string_test_dataset = datasets.load_from_disk("./dataset/string_test_dstc7")
+                string_test_dataset = datasets.load_from_disk("./dataset/string_test_" + self.dataset_name)
 
                 test_datasets = (process_val_test_func(data=string_test_dataset,
-                                                      save_name=save_load_prefix + "dstc7_test",
+                                                      save_name=save_load_prefix + self.dataset_name + "_test",
                                                       a_column_name="sentence_a",
                                                       b_column_name="candidates",
                                                       candidate_num=self.val_candidate_num),)
