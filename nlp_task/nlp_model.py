@@ -135,6 +135,37 @@ class QAClassifierModel(nn.Module):
 
         return representations
 
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+        if self.config.composition == 'avg':
+            composition_function = self.get_rep_by_avg
+        elif self.config.composition == 'pooler':
+            composition_function = self.get_rep_by_pooler
+        else:
+            raise Exception(f"Composition {self.config.composition} is not supported!!")
+
+        candidate_seq_len = input_ids.shape[-1]
+
+        input_ids = input_ids.reshape(-1, candidate_seq_len)
+        token_type_ids = token_type_ids.reshape(-1, candidate_seq_len)
+        attention_mask = attention_mask.reshape(-1, candidate_seq_len)
+
+        candidate_embeddings = composition_function(input_ids=input_ids, token_type_ids=token_type_ids,
+                                                    attention_mask=attention_mask)
+        return candidate_embeddings
+
+    def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+        if self.config.composition == 'avg':
+            composition_function = self.get_rep_by_avg
+        elif self.config.composition == 'pooler':
+            composition_function = self.get_rep_by_pooler
+        else:
+            raise Exception(f"Composition {self.config.composition} is not supported!!")
+
+        query_embeddings = composition_function(input_ids=input_ids, token_type_ids=token_type_ids,
+                                                attention_mask=attention_mask)
+        logits = self.classifier(a_embedding=query_embeddings, b_embedding=candidate_context_embeddings)
+        return logits
+
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
 
@@ -451,6 +482,51 @@ class ParallelEncoder(nn.Module):
 
         value_static.update(updating_value_static)
         self.decoder['candidate_value'].load_state_dict(value_static)
+
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+        # reshape and encode candidates
+        # (all_candidate_num, dim)
+        candidate_seq_len = input_ids.shape[-1]
+        input_ids = input_ids.reshape(-1, candidate_seq_len)
+        token_type_ids = token_type_ids.reshape(-1, candidate_seq_len)
+        attention_mask = attention_mask.reshape(-1, candidate_seq_len)
+
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
+                              enrich_candidate_by_question=False)
+        last_hidden_state = out['last_hidden_state']
+
+        # get (all_candidate_num, context_num, dim)
+        candidate_embeddings = self.composition_layer(last_hidden_state, attention_mask=attention_mask)
+
+        return candidate_embeddings
+
+    def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
+        candidate_context_embeddings = candidate_context_embeddings.reshape(input_ids.shape[0], self.config.context_num,
+                                                                            candidate_context_embeddings.shape[-1])
+
+        lstm_initial_state = torch.zeros(candidate_context_embeddings.shape[0], 1, candidate_context_embeddings.shape[-1],
+                                         device=candidate_context_embeddings.device)
+
+        # (query_num, candidate_context_num + candidate_num, dim)
+        candidate_context_embeddings = torch.cat((candidate_context_embeddings, lstm_initial_state), dim=1)
+
+        a_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
+                                enrich_candidate_by_question=True, candidate_embeddings=candidate_context_embeddings,
+                                decoder=self.decoder, candidate_num=1)
+
+        a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
+
+        b_context_embeddings = decoder_output[:, :-1, :].reshape(decoder_output.shape[0], 1,
+                                                                 self.config.context_num,
+                                                                 decoder_output.shape[-1])
+        # (query_num, candidate_num, dim)
+        b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
+
+        a_embeddings = decoder_output[:, -1:, :]
+
+        logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings).squeeze(1)
+
+        return logits
 
     # 如果不把a传进q，就会退化成最普通的QAModel，已经被验证过了
     # b_text can be pre-computed
@@ -905,6 +981,27 @@ class PolyEncoder(nn.Module):
 
         dot_product = torch.sum(final_query_context_vec * candidate_context_embeddings, -1)
         return dot_product
+
+    def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+        query_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
+                                           attention_mask=attention_mask)
+        query_last_hidden_state = query_out['last_hidden_state']
+        # (query_num, context_num, dim)
+        query_embeddings = self.query_composition_layer(query_last_hidden_state, attention_mask)
+        # (query_num, 1, dim)
+        candidate_context_embeddings = candidate_context_embeddings.unsqueeze(-2)
+
+        # candidate_context_embeddings = (query_num, 1, dim)
+        # final_query_context_vec = (query_num, 1, dim)
+        final_query_context_vec = dot_attention(q=candidate_context_embeddings, k=query_embeddings,
+                                                v=query_embeddings)
+
+        final_query_context_vec = final_query_context_vec.squeeze(-2)
+        candidate_context_embeddings = candidate_context_embeddings.squeeze(-2)
+
+        logits = self.classifier(a_embedding=final_query_context_vec, b_embedding=candidate_context_embeddings)
+
+        return logits
 
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,

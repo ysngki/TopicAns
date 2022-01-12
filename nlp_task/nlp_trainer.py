@@ -19,7 +19,7 @@ try:
     from apex import amp
     APEX_FLAG = True
     print("*"*50)
-    print("Using Apex")
+    print("Apex Available")
     print("*"*50)
 except:
     APEX_FLAG = False
@@ -204,7 +204,7 @@ class TrainWholeModel:
                 # 获取scheduler
                 if epoch == restore_epoch:
                     scheduler = self.get_scheduler(optimizer, scheduler_last_epoch, train_dataloader)
-                    if APEX_FLAG:
+                    if APEX_FLAG and not self.no_apex:
                         self.model, optimizer = amp.initialize(self.model, optimizer, opt_level="O1")
 
                 # 开始训练----------------------------------------------------------------------------------------
@@ -512,7 +512,6 @@ class TrainWholeModel:
             print(f"Query Num is {query_num}, Candidate Num is {candidate_num}")
             print(f"Model is {self.model_class}, Real scene testing takes", get_elapse_time(begin_time))
             print("*" * 100)
-            raise_test_error()
 
     def match_cross_real_test(self, test_datasets: SingleInputDataset = None, model_save_path=None, **kwargs):
         print("*" * 40 + " Begin Real Testing " + "*" * 40)
@@ -570,6 +569,181 @@ class TrainWholeModel:
             _, avg_r_k_result = sum_average_tuple(r_k_result)
             print(f"Avg: {avg_r_k_result}")
             print(f"Query Num is {whole_logits.shape[0]}, Candidate Num is {candidate_num}")
+            print(f"Model is {self.model_class}, Real scene testing takes", get_elapse_time(begin_time))
+            print("*" * 100)
+
+    def classify_bi_real_test(self, test_datasets: DoubleInputLabelDataset = None, model_save_path=None, **kwargs):
+        print("*" * 40 + " Begin Real Testing " + "*" * 40)
+
+        # prepare data
+        if not test_datasets:
+                _, _, this_datasets = self.__get_datasets(get_train=False, get_val=False)
+        else:
+            this_datasets = test_datasets
+
+        this_datasets = this_datasets[0]
+
+        # (query_num, candidate_num, seq_len)
+        # mnli: (9796, 55)
+        candidate_input_ids = this_datasets.b_input_ids
+        candidate_attention_mask = this_datasets.b_attention_mask
+        candidate_token_type_ids = this_datasets.b_token_type_ids
+
+        # mnli: [9796, 234]
+        query_input_ids = this_datasets.a_input_ids
+        query_attention_mask = this_datasets.a_attention_mask
+        query_token_type_ids = this_datasets.a_token_type_ids
+
+        qa_labels = this_datasets.label
+        # create model if necessary
+        if self.model is None:
+            self.model = self.__create_model()
+            self.model = load_model(self.model, model_save_path)
+            self.model.to(self.device)
+
+        self.model.eval()
+
+        # pre-compute candidates
+        with torch.no_grad():
+            candidate_num = candidate_input_ids.shape[0]
+            processed_candidate_count = 0
+            encoding_batch_size = 200
+
+            # encoding one by one
+            whole_candidate_embeddings = []
+            while processed_candidate_count < candidate_num:
+                # calculate vectors of candidates
+                batch_input_ids = candidate_input_ids[
+                                  processed_candidate_count:processed_candidate_count + encoding_batch_size].to(
+                    self.device)
+                batch_attention_mask = candidate_attention_mask[
+                                       processed_candidate_count:processed_candidate_count + encoding_batch_size].to(
+                    self.device)
+                batch_token_type_ids = candidate_token_type_ids[
+                                       processed_candidate_count:processed_candidate_count + encoding_batch_size].to(
+                    self.device)
+
+                batch_embeddings = self.model.prepare_candidates(input_ids=batch_input_ids,
+                                                                 token_type_ids=batch_token_type_ids,
+                                                                 attention_mask=batch_attention_mask)
+                whole_candidate_embeddings.append(batch_embeddings)
+
+                processed_candidate_count += encoding_batch_size
+
+            # (query_num, candidate_num(, context_num), dim)
+            whole_candidate_embeddings = torch.cat(whole_candidate_embeddings, dim=0).to("cpu")
+
+            # begin time
+            begin_time = time.time()
+
+            whole_logits = []
+            # calculate queries with or without candidates
+            processed_query_count = 0
+            query_num = query_input_ids.shape[0]
+            # do match block by block
+            while processed_query_count < query_num:
+                this_block_query_input_ids = query_input_ids[
+                                             processed_query_count:processed_query_count + self.query_block_size,
+                                             :].to(self.device)
+                this_block_query_attention_mask = query_attention_mask[
+                                                  processed_query_count:processed_query_count + self.query_block_size,
+                                                  :].to(self.device)
+                this_block_query_token_type_ids = query_token_type_ids[
+                                                  processed_query_count:processed_query_count + self.query_block_size,
+                                                  :].to(self.device)
+                # get corresponding candidates
+                this_block_candidate_embeddings = whole_candidate_embeddings[
+                                                  processed_query_count:processed_query_count + self.query_block_size].to(
+                    self.device)
+                logits = self.model.do_queries_classify(input_ids=this_block_query_input_ids,
+                                                        token_type_ids=this_block_query_token_type_ids,
+                                                        attention_mask=this_block_query_attention_mask,
+                                                        candidate_context_embeddings=this_block_candidate_embeddings)
+                whole_logits.append(logits)
+                processed_query_count += self.query_block_size
+
+            whole_logits = torch.cat(whole_logits, dim=0)
+
+            # 统计命中率
+            label_target_num, label_shoot_num, label_hit_num = [], [], []
+            for i in range(0, self.label_num):
+                label_target_num.append((qa_labels == i).sum().item())
+                label_shoot_num.append(0)
+                label_hit_num.append(0)
+
+            _, row_max_indices = whole_logits.topk(k=1, dim=-1)
+
+            for i, max_index in enumerate(row_max_indices):
+                inner_index = max_index[0]
+                label_shoot_num[inner_index] += 1
+                if inner_index == qa_labels[i]:
+                    label_hit_num[inner_index] += 1
+
+            accuracy = print_recall_precise(label_hit_num=label_hit_num, label_shoot_num=label_shoot_num,
+                                            label_target_num=label_target_num, label_num=self.label_num)
+
+            print(f"Avg: {accuracy}")
+            print(f"Query Num is {query_num}, Candidate Num is {candidate_num}")
+            print(f"Model is {self.model_class}, Real scene testing takes", get_elapse_time(begin_time))
+            print("*" * 100)
+
+    def classify_cross_real_test(self, test_datasets: SingleInputLabelDataset = None, model_save_path=None, **kwargs):
+        print("*" * 40 + " Begin Real Testing " + "*" * 40)
+
+        # prepare data
+        if not test_datasets:
+            _, _, this_datasets = self.__get_datasets(get_train=False, get_val=False)
+        else:
+            this_datasets = test_datasets
+
+        val_dataloader = self.__get_dataloader(data=this_datasets, batch_size=self.val_batch_size)
+        val_dataloader = val_dataloader[0]
+
+        if self.model is None:
+            self.model = self.__create_model()
+            # self.model = load_model(self.model, model_save_path)
+            self.model.to(self.device)
+
+        self.model.eval()
+
+        # begin time
+        begin_time = time.time()
+
+        with torch.no_grad():
+            whole_logits = []
+            for index, batch in enumerate(tqdm(val_dataloader)):
+                input_ids = batch['input_ids'].to(self.device)
+                token_type_ids = batch['token_type_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+
+                # 得到模型的结果
+                logits = self.model(input_ids=input_ids, token_type_ids=token_type_ids,
+                                    attention_mask=attention_mask)
+                whole_logits.append(logits)
+
+            whole_logits = torch.cat(whole_logits, dim=0)
+
+            # 统计命中率
+            qa_labels = this_datasets[0].label
+
+            label_target_num, label_shoot_num, label_hit_num = [], [], []
+            for i in range(0, self.label_num):
+                label_target_num.append((qa_labels == i).sum().item())
+                label_shoot_num.append(0)
+                label_hit_num.append(0)
+
+            _, row_max_indices = whole_logits.topk(k=1, dim=-1)
+
+            for i, max_index in enumerate(row_max_indices):
+                inner_index = max_index[0]
+                label_shoot_num[inner_index] += 1
+                if inner_index == qa_labels[i]:
+                    label_hit_num[inner_index] += 1
+
+            accuracy = print_recall_precise(label_hit_num=label_hit_num, label_shoot_num=label_shoot_num,
+                                            label_target_num=label_target_num, label_num=self.label_num)
+
+            print(f"Avg: {accuracy}")
             print(f"Model is {self.model_class}, Real scene testing takes", get_elapse_time(begin_time))
             print("*" * 100)
             raise_test_error()
@@ -1070,6 +1244,7 @@ class TrainWholeModel:
     # 读取命令行传入的参数
     def __read_args_for_train(self, args):
         self.val_num_each_epoch = args.val_num_each_epoch
+        self.no_apex = args.no_apex
         self.val_candidate_num = args.val_candidate_num
         self.val_batch_size = args.val_batch_size
         self.text_max_len = args.text_max_len
@@ -1275,7 +1450,7 @@ class TrainWholeModel:
         step_loss = cross_entropy_function(logits, qa_labels)
 
         # 误差反向传播
-        if not APEX_FLAG:
+        if not APEX_FLAG or self.no_apex:
             step_loss.backward()
         else:
             with amp.scale_loss(step_loss, optimizer) as scaled_loss:
@@ -1346,7 +1521,7 @@ class TrainWholeModel:
                 step_loss = (-loss.sum(dim=1)).mean()
 
                 # 误差反向传播
-                if not APEX_FLAG:
+                if not APEX_FLAG or self.no_apex:
                     step_loss.backward()
                 else:
                     with amp.scale_loss(step_loss, optimizer) as scaled_loss:
@@ -1440,7 +1615,7 @@ class TrainWholeModel:
                 b_attention_mask=b_attention_mask, train_flag=True)
 
             # 误差反向传播
-            if not APEX_FLAG:
+            if not APEX_FLAG or self.no_apex:
                 step_loss.backward()
             else:
                 with amp.scale_loss(step_loss, optimizer) as scaled_loss:
@@ -1471,7 +1646,7 @@ class TrainWholeModel:
         step_loss = cross_entropy_function(logits, qa_labels)
 
         # 误差反向传播
-        if not APEX_FLAG:
+        if not APEX_FLAG or self.no_apex:
             step_loss.backward()
         else:
             with amp.scale_loss(step_loss, optimizer) as scaled_loss:
@@ -1518,7 +1693,7 @@ class TrainWholeModel:
         step_loss = cross_entropy_function(logits, qa_labels)
 
         # 误差反向传播
-        if not APEX_FLAG:
+        if not APEX_FLAG or self.no_apex:
             step_loss.backward()
         else:
             with amp.scale_loss(step_loss, optimizer) as scaled_loss:

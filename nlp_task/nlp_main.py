@@ -36,6 +36,7 @@ def read_arguments():
 
 	# related to train
 	parser.add_argument("--one_stage", action="store_true", default=False)
+	parser.add_argument("--no_apex", action="store_true", default=False)
 	parser.add_argument("--no_train", action="store_true", default=False)
 	parser.add_argument("--do_test", action="store_true", default=False)
 	parser.add_argument("--do_real_test", action="store_true", default=False)
@@ -130,18 +131,21 @@ if __name__ == '__main__':
 
 	# 测速
 	if my_args.do_real_test:
-		if my_args.model_class in ['QAMatchModel', 'ParallelMatchEncoder', 'PolyEncoder']:
-			my_train_model.match_bi_real_test(
-				model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
-								my_args.model_class + "_" +
-								my_args.dataset_name)
-		elif my_args.model_class in ['CrossBERT']:
-			my_train_model.match_cross_real_test(
-				model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
-								my_args.model_class + "_" +
-								my_args.dataset_name)
+		if my_args.dataset_name in ['dstc7']:
+			if my_args.model_class in ['QAMatchModel', 'ParallelMatchEncoder', 'PolyEncoder']:
+				my_train_model.match_bi_real_test(
+					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
+									my_args.model_class + "_" +
+									my_args.dataset_name)
+			elif my_args.model_class in ['CrossBERT']:
+				my_train_model.match_cross_real_test(
+					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
+									my_args.model_class + "_" +
+									my_args.dataset_name)
+			else:
+				raise Exception(f"{my_args.model_class} is not supported for real test yet!")
 		else:
-			raise Exception(f"{my_args.model_class} is not supported for real test yer!")
+			print(f"Warning: {my_args.dataset_name} is not supported for real test yet!")
 
 	print("*"*100)
 	print("Finish training and take", get_elapse_time(begin_time))
