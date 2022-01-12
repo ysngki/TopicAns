@@ -355,6 +355,10 @@ class TrainWholeModel:
     def do_val(self, val_datasets, previous_best_performance, **kwargs):
         self.model.eval()
 
+        # clean cuda memory
+        torch.cuda.empty_cache()
+        gc.collect()
+
         if self.dataset_name in ['mnli']:
             now_best_performance = self.classify_do_val_body(val_datasets, previous_best_performance)
         elif self.dataset_name in ['dstc7']:
@@ -368,6 +372,10 @@ class TrainWholeModel:
         return now_best_performance
 
     def do_test(self, test_datasets=None, model_save_path=None, postfix="", **kwargs):
+        # clean cuda memory
+        torch.cuda.empty_cache()
+        gc.collect()
+
         r_k_num = kwargs.get('r_k_num', (1, 10))
         previous_best_performance = kwargs.get('previous_best_performance', 0.0)
         do_val = kwargs.get('do_val', False)
@@ -1303,7 +1311,7 @@ class TrainWholeModel:
     def __match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
         # add model
         # 得到模型的结果
-        if self.model in ['QAMatchModel']:
+        if self.model_class in ['QAMatchModel']:
             # 读取数据
             a_input_ids = (batch['a_input_ids']).to(self.device)
             a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
