@@ -391,6 +391,13 @@ class TrainWholeModel:
         return None
 
     def match_bi_real_test(self, test_datasets: DoubleInputDataset = None, model_save_path=None, **kwargs):
+        """
+
+        :param test_datasets: contain queries: (query_num, query_seq_len), contain candidates: (query_num, val_candidate_num, candidate_seq_len)
+        :param model_save_path: use to load model if model is not created
+        :param kwargs: placeholder
+        :return: None
+        """
         print("*" * 40 + " Begin Real Testing " + "*" * 40)
         r_k_num = kwargs.get('r_k_num', (1, 10))
 
@@ -416,10 +423,12 @@ class TrainWholeModel:
         query_num = candidate_input_ids.shape[0]
         candidate_num = candidate_input_ids.shape[1]
 
+        print(f"Query shape {query_input_ids.shape}, Candidate shape {candidate_input_ids.shape}")
+
         # create model if necessary
         if self.model is None:
             self.model = self.__create_model()
-            self.model = load_model(self.model, model_save_path)
+            # self.model = load_model(self.model, model_save_path)
             self.model.to(self.device)
 
         self.model.eval()
@@ -528,7 +537,7 @@ class TrainWholeModel:
 
         if self.model is None:
             self.model = self.__create_model()
-            self.model = load_model(self.model, model_save_path)
+            # self.model = load_model(self.model, model_save_path)
             self.model.to(self.device)
 
         self.model.eval()
@@ -592,11 +601,13 @@ class TrainWholeModel:
         query_attention_mask = this_datasets.a_attention_mask
         query_token_type_ids = this_datasets.a_token_type_ids
 
+        print(f"Query shape {query_input_ids.shape}, Candidate shape {candidate_input_ids.shape}")
+
         qa_labels = this_datasets.label
         # create model if necessary
         if self.model is None:
             self.model = self.__create_model()
-            self.model = load_model(self.model, model_save_path)
+            # self.model = load_model(self.model, model_save_path)
             self.model.to(self.device)
 
         self.model.eval()

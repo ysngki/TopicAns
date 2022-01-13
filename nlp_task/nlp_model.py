@@ -154,12 +154,12 @@ class QAClassifierModel(nn.Module):
         return candidate_embeddings
 
     def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
-        if self.config.composition == 'avg':
-            composition_function = self.get_rep_by_avg
-        elif self.config.composition == 'pooler':
-            composition_function = self.get_rep_by_pooler
-        else:
-            raise Exception(f"Composition {self.config.composition} is not supported!!")
+        # if self.config.composition == 'avg':
+        #     composition_function = self.get_rep_by_avg
+        # elif self.config.composition == 'pooler':
+        composition_function = self.get_rep_by_pooler
+        # else:
+        #     raise Exception(f"Composition {self.config.composition} is not supported!!")
 
         query_embeddings = composition_function(input_ids=input_ids, token_type_ids=token_type_ids,
                                                 attention_mask=attention_mask)

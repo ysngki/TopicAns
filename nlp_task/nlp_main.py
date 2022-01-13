@@ -131,7 +131,7 @@ if __name__ == '__main__':
 
 	# 测速
 	if my_args.do_real_test:
-		if my_args.dataset_name in ['dstc7']:
+		if my_args.dataset_name in ['dstc7', 'ubuntu']:
 			if my_args.model_class in ['QAMatchModel', 'ParallelMatchEncoder', 'PolyEncoder']:
 				my_train_model.match_bi_real_test(
 					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
@@ -139,6 +139,19 @@ if __name__ == '__main__':
 									my_args.dataset_name)
 			elif my_args.model_class in ['CrossBERT']:
 				my_train_model.match_cross_real_test(
+					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
+									my_args.model_class + "_" +
+									my_args.dataset_name)
+			else:
+				raise Exception(f"{my_args.model_class} is not supported for real test yet!")
+		elif my_args.dataset_name in ['mnli']:
+			if my_args.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
+				my_train_model.classify_bi_real_test(
+					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
+									my_args.model_class + "_" +
+									my_args.dataset_name)
+			elif my_args.model_class in ['CrossBERT']:
+				my_train_model.classify_cross_real_test(
 					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 									my_args.model_class + "_" +
 									my_args.dataset_name)
