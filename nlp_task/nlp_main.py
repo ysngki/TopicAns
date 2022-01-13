@@ -16,8 +16,8 @@ def read_arguments():
 
 	# must set
 	# add model
-	parser.add_argument("--model_class", required=True, type=str, choices=['CrossBERT', 'QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder',
-																		   'QAMatchModel', 'MatchParallelEncoder'])
+	parser.add_argument("--model_class", required=True, type=str, choices=['CrossBERT', 'QAClassifierModel', 'ParallelEncoder', 'PolyEncoder',
+																		   'QAMatchModel', 'ParallelMatchEncoder', 'Deformer'])
 
 	# related to data
 	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli', 'ubuntu'])
@@ -102,7 +102,7 @@ if __name__ == '__main__':
 	# 设置训练参数
 	my_train_two_stage_flag = False
 	# add model
-	if my_args.model_class in ['ClassifyParallelEncoder']:
+	if my_args.model_class in ['ParallelEncoder']:
 		my_train_two_stage_flag = True
 
 	if my_args.one_stage:
@@ -132,7 +132,7 @@ if __name__ == '__main__':
 	# 测速
 	if my_args.do_real_test:
 		if my_args.dataset_name in ['dstc7', 'ubuntu']:
-			if my_args.model_class in ['QAMatchModel', 'MatchParallelEncoder', 'PolyEncoder']:
+			if my_args.model_class in ['QAMatchModel', 'ParallelMatchEncoder', 'PolyEncoder']:
 				my_train_model.match_bi_real_test(
 					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 									my_args.model_class + "_" +
@@ -145,7 +145,7 @@ if __name__ == '__main__':
 			else:
 				raise Exception(f"{my_args.model_class} is not supported for real test yet!")
 		elif my_args.dataset_name in ['mnli']:
-			if my_args.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder']:
+			if my_args.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder']:
 				my_train_model.classify_bi_real_test(
 					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 									my_args.model_class + "_" +

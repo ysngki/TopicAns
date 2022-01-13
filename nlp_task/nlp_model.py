@@ -10,12 +10,18 @@ import torch.nn.functional as F
 from my_function import get_rep_by_avg, dot_attention
 
 # model list
-# 1. QAModel
-#       basic bi-encoder, support mem
-# 2. CrossBERT
-#       basic cross-encoder
-# 3. ClassifyParallelEncoder
-#       my model
+# 1. QAClassifierModel
+#       basic bi-encoder for 1-1 classification, support mem
+# 2. QAMatchModel
+#       basic bi-encoder for 1-n match tasks, support mem
+# 3. CrossBERT
+#       basic cross-encoder for both classification and matching
+# 4. ClassifyParallelEncoder
+#       my model for 1-1 classification
+# 5. MatchParallelEncoder
+#       my model for 1-n match tasks
+# 6. PolyEncoder
+#       for both classification and matching
 
 
 # --------------------------------------
@@ -1098,6 +1104,157 @@ class QAClassifier(nn.Module):
         x = self.linear2(x)
 
         return x
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class DeformerConfig:
+    def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
+                 word_embedding_len=512, sentence_embedding_len=512, top_layer_num=2, text_max_len=512):
+
+        self.tokenizer_len = tokenizer_len
+        self.pretrained_bert_path = pretrained_bert_path
+        self.num_labels = num_labels
+        self.word_embedding_len = word_embedding_len
+        self.sentence_embedding_len = sentence_embedding_len
+        self.top_layer_num = top_layer_num
+        self.text_max_len = text_max_len
+
+    def __str__(self):
+        print("*"*20 + "config" + "*"*20)
+        print("tokenizer_len:", self.tokenizer_len)
+        print("pretrained_bert_path:", self.pretrained_bert_path)
+        print("num_labels:", self.num_labels)
+        print("word_embedding_len:", self.word_embedding_len)
+        print("sentence_embedding_len:", self.sentence_embedding_len)
+        print("top_layer_numL:", self.top_layer_num)
+        print("text_max_len:", self.text_max_len)
+
+
+class Deformer(nn.Module):
+    def __init__(self, config: DeformerConfig):
+
+        super(Deformer, self).__init__()
+
+        self.config = config
+
+        # 毕竟num_label也算是memory的一部分
+        self.num_labels = config.num_labels
+        self.sentence_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
+        this_bert_config.num_labels = self.num_labels
+
+        self.bert_model = BertForSequenceClassification.from_pretrained(config.pretrained_bert_path, config=this_bert_config)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        whole_encoder = self.bert_model.bert.encoder
+
+        self.embeddings = self.bert_model.bert.embeddings
+        self.lower_encoder = whole_encoder.layer[:this_bert_config.num_hidden_layers - self.config.top_layer_num]
+        self.upper_encoder = whole_encoder.layer[this_bert_config.num_hidden_layers - self.config.top_layer_num:]
+        # take cls in and out a new vector
+        self.pooler_layer = self.bert_model.bert.pooler
+        # take a vector in and out a logits
+        self.classifier = self.bert_model.classifier
+
+    def lower_encoding(self, input_ids, attention_mask, token_type_id):
+        embeddings = self.embeddings(input_ids=input_ids,
+                                     token_type_ids=token_type_id)
+        hidden_states = embeddings
+
+        # process attention mask
+        input_shape = input_ids.size()
+        device = input_ids.device
+        extended_attention_mask = self.bert_model.get_extended_attention_mask(attention_mask, input_shape, device)
+
+        for layer_module in self.lower_encoder:
+            layer_outputs = layer_module(
+                hidden_states,
+                extended_attention_mask
+            )
+            hidden_states = layer_outputs[0]
+        return hidden_states, extended_attention_mask
+
+    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, truncate_from_head):
+        b_seq_len = b_embeddings.shape[-1]
+        a_seq_len = a_embeddings.shape[-1]
+
+        if (a_seq_len + b_seq_len) <= self.config.text_max_len:
+            final_attention_mask = torch.cat((a_attention_mask, b_attention_mask), dim=-1)
+            final_hidden_states = torch.cat((a_embeddings, b_embeddings), dim=-2)
+        else:
+            # input_ids (batch, sequence)
+            for index, batch_attention_mask in enumerate(attention_mask):
+                input_embeddings = temp_embeddings[index][batch_attention_mask == 1]
+                pad_embeddings = temp_embeddings[index][batch_attention_mask == 0]
+
+                if is_question:
+                    whole_embeddings = torch.cat((input_embeddings, self.memory_for_question, pad_embeddings), dim=0)
+                else:
+                    whole_embeddings = torch.cat((input_embeddings, self.memory_for_answer, pad_embeddings), dim=0)
+
+                # 处理attention_mask
+                whole_attention_mask = torch.cat(
+                    (batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
+                     batch_attention_mask[batch_attention_mask == 0]), dim=-1)
+
+                # 处理token_type_id
+                remain_token_type_ids_len = batch_attention_mask.shape[0] + self.memory_num - input_embeddings.shape[0]
+                whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
+                                                  one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
+
+                whole_embeddings = whole_embeddings.unsqueeze(0)
+                whole_attention_mask = whole_attention_mask.unsqueeze(0)
+                whole_token_type_ids = whole_token_type_ids.unsqueeze(0)
+
+                if final_embeddings is None:
+                    final_embeddings = whole_embeddings
+                    final_attention_mask = whole_attention_mask
+                    final_token_type_ids = whole_token_type_ids
+                else:
+                    final_embeddings = torch.cat((final_embeddings, whole_embeddings), dim=0)
+                    final_attention_mask = torch.cat((final_attention_mask, whole_attention_mask), dim=0)
+                    final_token_type_ids = torch.cat((final_token_type_ids, whole_token_type_ids), dim=0)
+
+        for layer_module in self.lower_encoder:
+            layer_outputs = layer_module(
+                final_hidden_states,
+                final_attention_mask
+            )
+            final_hidden_states = layer_outputs[0]
+        return final_hidden_states
+
+    def concatenate2max_len(self):
+        return embeddings, attention_mask
+
+    def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
+
+        # encoding a
+        a_lower_encoded_embeddings, a_extended_attention_mask = self.lower_encoding(input_ids=a_input_ids,
+                                                                                    attention_mask=a_attention_mask,
+                                                                                    token_type_id=a_token_type_ids)
+
+        # encoding b
+        candidate_seq_len = b_input_ids.shape[-1]
+
+        b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
+        b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
+        b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
+
+        assert b_token_type_ids.sum() == 0
+        b_token_type_ids = b_token_type_ids + 1
+
+        b_lower_encoded_embeddings, b_extended_attention_mask = self.lower_encoding(input_ids=b_input_ids,
+                                                                                    attention_mask=b_attention_mask,
+                                                                                    token_type_id=b_token_type_ids)
+
+        truncate_from_head = kwargs.get('truncate_from_head', False)
+        print(a_extended_attention_mask.shape, b_extended_attention_mask.shape)
+        raise_test_exception()
 
 
 def raise_test_exception():

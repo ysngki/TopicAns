@@ -1,3 +1,6 @@
+## Prepare my model
+move ./my_transformer/out_vector_modeling_bert.py to 
+`~/your_username//anaconda3/envs/prompt/lib/python3.8/site-packages/transformers/models/bert`
 ## Prepare data
 All datasets are saved in ./dataset/, this dictionary can be created by scripts automatically.
 ### dstc7
