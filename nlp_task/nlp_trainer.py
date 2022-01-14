@@ -25,7 +25,8 @@ except:
     APEX_FLAG = False
 
 from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ClassifyParallelEncoder, \
-    ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel, MatchParallelEncoder, Deformer, DeformerConfig
+    ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel, MatchParallelEncoder, ClassifyDeformer, \
+    DeformerConfig, MatchDeformer
 from my_function import sum_average_tuple, raise_dataset_error, print_recall_precise, load_model, print_optimizer, \
     raise_test_error, tokenize_and_truncate_from_head, get_elapse_time
 from nlp_dataset import SingleInputDataset, DoubleInputDataset, DoubleInputLabelDataset, SingleInputLabelDataset
@@ -312,7 +313,8 @@ class TrainWholeModel:
                 train_step_function = self.__match_train_step_for_cross
             else:
                 raise_dataset_error()
-        elif self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'MatchParallelEncoder', 'Deformer']:
+        elif self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel',
+                                  'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer']:
             if self.dataset_name in ['mnli']:
                 train_step_function = self.__classify_train_step_for_qa_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
@@ -906,7 +908,7 @@ class TrainWholeModel:
             for index, batch in enumerate(classify_dataloader):
                 # 读取数据
                 # add model
-                if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'Deformer']:
+                if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'ClassifyDeformer']:
                     logits = self.__val_step_for_qa_input(batch)
                 elif self.model_class in ['CrossBERT']:
                     logits = self.__classify_val_step_for_cross(batch)
@@ -965,7 +967,7 @@ class TrainWholeModel:
             for index, batch in enumerate(tqdm(match_dataloader)):
                 # 读取数据
                 # add model
-                if self.model_class in ['QAMatchModel', 'MatchParallelEncoder', 'PolyEncoder', 'Deformer']:
+                if self.model_class in ['QAMatchModel', 'MatchParallelEncoder', 'PolyEncoder', 'MatchDeformer']:
                     logits = self.__match_val_step_for_bi(batch)
                 elif self.model_class in ['CrossBERT']:
                     logits = self.__match_val_step_for_cross(batch)
@@ -1009,7 +1011,7 @@ class TrainWholeModel:
 
                     # 读取数据
                     # add model
-                    if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'Deformer']:
+                    if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'ClassifyDeformer']:
                         logits = self.__val_step_for_qa_input(batch)
                     elif self.model_class in ['CrossBERT']:
                         logits = self.__classify_val_step_for_cross(batch)
@@ -1086,7 +1088,8 @@ class TrainWholeModel:
 
         # add model
         # Checking whether input is pair or single is important
-        if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'MatchParallelEncoder', 'Deformer']:
+        if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel',
+                                'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer']:
             pair_flag = True
             save_load_prefix = ""
             save_load_suffix = ""
@@ -1239,8 +1242,10 @@ class TrainWholeModel:
             model = QAMatchModel(config=self.config)
         elif self.model_class in ['MatchParallelEncoder']:
             model = MatchParallelEncoder(config=self.config)
-        elif self.model_class in ['Deformer']:
-            model = Deformer(config=self.config)
+        elif self.model_class in ['ClassifyDeformer']:
+            model = ClassifyDeformer(config=self.config)
+        elif self.model_class in ['MatchDeformer']:
+            model = MatchDeformer(config=self.config)
         else:
             raise Exception("This model class is not supported for creating!!")
 
@@ -1254,6 +1259,7 @@ class TrainWholeModel:
 
     # 读取命令行传入的参数
     def __read_args_for_train(self, args):
+        self.top_layer_num = args.top_layer_num
         self.val_num_each_epoch = args.val_num_each_epoch
         self.no_apex = args.no_apex
         self.val_candidate_num = args.val_candidate_num
@@ -1342,13 +1348,13 @@ class TrainWholeModel:
                                        word_embedding_len=word_embedding_len,
                                        sentence_embedding_len=sentence_embedding_len,
                                        context_num=self.context_num)
-        elif self.model_class == 'Deformer':
+        elif self.model_class in ['ClassifyDeformer', 'MatchDeformer']:
             config = DeformerConfig(len(self.tokenizer),
                                     pretrained_bert_path=args.pretrained_bert_path,
                                     num_labels=args.label_num,
                                     word_embedding_len=word_embedding_len,
                                     sentence_embedding_len=sentence_embedding_len,
-                                    top_layer_num=2)
+                                    top_layer_num=self.top_layer_num)
         else:
             raise Exception("No config for this class!")
 
@@ -1406,7 +1412,7 @@ class TrainWholeModel:
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
             ]
-        elif self.model_class == 'Deformer':
+        elif self.model_class in ['ClassifyDeformer', 'MatchDeformer']:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
@@ -1562,70 +1568,6 @@ class TrainWholeModel:
                 return (step_loss, )
             else:
                 return (torch.tensor(0.0), )
-        # elif self.model_class in ['MatchParallelEncoder']:
-        #     b_input_ids = (batch['b_input_ids'])
-        #     b_token_type_ids = (batch['b_token_type_ids'])
-        #     b_attention_mask = (batch['b_attention_mask'])
-        #
-        #     batch_size = self.train_batch_size
-        #     encoding_batch_num = kwargs.get('encoding_batch_num', 16)
-        #
-        #     # encoding candidates
-        #     encoded_batch_count = 0
-        #     whole_candidate_embeddings = []
-        #     while encoded_batch_count < batch_size:
-        #         this_input_ids = b_input_ids[encoded_batch_count:encoded_batch_count + encoding_batch_num].to(self.device)
-        #         this_token_type_ids = b_token_type_ids[encoded_batch_count:encoded_batch_count + encoding_batch_num].to(self.device)
-        #         this_attention_mask = b_attention_mask[encoded_batch_count:encoded_batch_count + encoding_batch_num].to(self.device)
-        #
-        #         encoded_batch_count += encoding_batch_num
-        #         this_candidate_embeddings = self.model.prepare_candidates(input_ids=this_input_ids,
-        #                                                                   token_type_ids=this_token_type_ids,
-        #                                                                   attention_mask=this_attention_mask)
-        #         whole_candidate_embeddings.append(this_candidate_embeddings)
-        #     whole_candidate_embeddings = torch.cat(whole_candidate_embeddings, dim=0)
-        #
-        #     # encoding queries
-        #     a_input_ids = (batch['a_input_ids'])
-        #     a_token_type_ids = (batch['a_token_type_ids'])
-        #     a_attention_mask = (batch['a_attention_mask'])
-        #
-        #     whole_dot_products = []
-        #     processed_query_count = 0
-        #     encoding_batch_num = 1
-        #     while processed_query_count < batch_size:
-        #         this_input_ids = a_input_ids[processed_query_count:processed_query_count + encoding_batch_num].to(
-        #             self.device)
-        #         this_token_type_ids = a_token_type_ids[processed_query_count:processed_query_count + encoding_batch_num].to(
-        #             self.device)
-        #         this_attention_mask = a_attention_mask[processed_query_count:processed_query_count + encoding_batch_num].to(
-        #             self.device)
-        #
-        #         dot_products = self.model.do_queries_match(input_ids=this_input_ids,
-        #                                                    token_type_ids=this_token_type_ids,
-        #                                                    attention_mask=this_attention_mask,
-        #                                                    candidate_context_embeddings=whole_candidate_embeddings,
-        #                                                    train_flag=True)
-        #         whole_dot_products.append(dot_products)
-        #         processed_query_count += encoding_batch_num
-        #
-        #     whole_dot_products = torch.cat(whole_dot_products, dim=0)
-        #
-        #     mask = torch.eye(whole_dot_products.size(0)).to(whole_dot_products.device)
-        #     step_loss = F.log_softmax(whole_dot_products, dim=-1) * mask
-        #     step_loss = (-step_loss.sum(dim=1)).mean()
-        #
-        #     if not APEX_FLAG:
-        #         step_loss.backward()
-        #     else:
-        #         with amp.scale_loss(step_loss, optimizer) as scaled_loss:
-        #             scaled_loss.backward()
-        #
-        #     optimizer.step()
-        #     optimizer.zero_grad()
-        #     scheduler.step()
-        #     return (step_loss,)
-
         else:
             # 读取数据
             a_input_ids = (batch['a_input_ids']).to(self.device)

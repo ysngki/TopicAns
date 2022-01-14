@@ -1134,10 +1134,10 @@ class DeformerConfig:
         print("text_max_len:", self.text_max_len)
 
 
-class Deformer(nn.Module):
+class ClassifyDeformer(nn.Module):
     def __init__(self, config: DeformerConfig):
 
-        super(Deformer, self).__init__()
+        super(ClassifyDeformer, self).__init__()
 
         self.config = config
 
@@ -1184,23 +1184,10 @@ class Deformer(nn.Module):
     # concatenate embeddings of two texts and encoding them using top layers
     # dims of a_embeddings, b_embeddings are both 3, (batch size, seq len, dim)
     # dims of a_attention_mask, b_attention_mask are both 2, (batch size, seq len)
-    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, truncate_from_head, match_train):
+    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, truncate_from_head):
         device = a_embeddings.device
         b_max_seq_len = b_embeddings.shape[-2]
         a_max_seq_len = a_embeddings.shape[-2]
-
-        # match testing, each query has more than 1 candidate
-        if b_embeddings.shape[0] != a_embeddings.shape[0]:
-            candidate_num = int(b_embeddings.shape[0] / a_embeddings.shape[0])
-            # expand to same shape
-            a_embeddings = a_embeddings.unsqueeze(1)
-            a_embeddings = a_embeddings.repeat(1, candidate_num, 1, 1).reshape(-1, a_max_seq_len, a_embeddings.shape[-1])
-
-            a_attention_mask = a_attention_mask.unsqueeze(1)
-            a_attention_mask = a_attention_mask.repeat(1, candidate_num, 1).reshape(-1, a_max_seq_len)
-
-            assert b_embeddings[0] == b_embeddings[1] and a_attention_mask[0] == a_attention_mask[1]
-            raise_assert_exception()
 
         # simplest case
         if (a_max_seq_len + b_max_seq_len) <= self.config.text_max_len:
@@ -1210,51 +1197,28 @@ class Deformer(nn.Module):
             # input_ids (batch, sequence)
             final_attention_mask = []
             final_hidden_states = []
-            # classify test/train, match test
-            if not match_train:
-                for index, (this_a_attention_mask, this_b_attention_mask) in enumerate(zip(a_attention_mask, b_attention_mask)):
-                    # training case
-                    this_a_embedding = a_embeddings[index]
-                    this_b_embedding = b_embeddings[index]
-    
-                    this_final_embeddings, this_final_attention_mask = self.concatenate_two_seq(
-                        this_a_embedding=this_a_embedding,
-                        this_b_embedding=this_b_embedding,
-                        this_a_attention_mask=this_a_attention_mask,
-                        this_b_attention_mask=this_b_attention_mask,
-                        truncate_from_head=truncate_from_head)
-    
-                    final_attention_mask.append(this_final_attention_mask)
-                    final_hidden_states.append(this_final_embeddings)
-            # match train
-            else:
-                for index0, this_a_embedding in enumerate(a_embeddings):
-                    this_a_attention_mask = a_attention_mask[index0]
-                    for index1, this_b_attention_mask in enumerate(b_attention_mask):
-                        this_b_embedding = b_embeddings[index1]
+            # classify test/train
+            for index, (this_a_attention_mask, this_b_attention_mask) in enumerate(zip(a_attention_mask, b_attention_mask)):
+                # training case
+                this_a_embedding = a_embeddings[index]
+                this_b_embedding = b_embeddings[index]
 
-                        this_final_embeddings, this_final_attention_mask = self.concatenate_two_seq(
-                            this_a_embedding=this_a_embedding,
-                            this_b_embedding=this_b_embedding,
-                            this_a_attention_mask=this_a_attention_mask,
-                            this_b_attention_mask=this_b_attention_mask,
-                            truncate_from_head=truncate_from_head)
+                this_final_embeddings, this_final_attention_mask = self.concatenate_two_seq(
+                    this_a_embedding=this_a_embedding,
+                    this_b_embedding=this_b_embedding,
+                    this_a_attention_mask=this_a_attention_mask,
+                    this_b_attention_mask=this_b_attention_mask,
+                    truncate_from_head=truncate_from_head)
 
-                        final_attention_mask.append(this_final_attention_mask)
-                        final_hidden_states.append(this_final_embeddings)
+                final_attention_mask.append(this_final_attention_mask)
+                final_hidden_states.append(this_final_embeddings)
 
             final_attention_mask = torch.cat(final_attention_mask, dim=0)
             final_hidden_states = torch.cat(final_hidden_states, dim=0)
 
-            print(final_attention_mask.shape)
-            print(final_hidden_states.shape)
-            raise_test_exception()
-
         # process attention mask
         input_shape = final_attention_mask.size()
         final_attention_mask = self.bert_model.get_extended_attention_mask(final_attention_mask, input_shape, device)
-        print(final_attention_mask.shape)
-        raise_test_exception()
 
         for layer_module in self.upper_encoder:
             layer_outputs = layer_module(
@@ -1267,7 +1231,6 @@ class Deformer(nn.Module):
     def concatenate_two_seq(self, this_a_embedding, this_b_embedding, this_a_attention_mask, this_b_attention_mask, truncate_from_head):
         device = this_a_embedding.device
 
-        # training case
         a_this_input_embeddings = this_a_embedding[this_a_attention_mask == 1]
         a_this_pad_embeddings = this_a_embedding[this_a_attention_mask == 0]
 
@@ -1275,7 +1238,7 @@ class Deformer(nn.Module):
         b_this_pad_embeddings = this_b_embedding[this_b_attention_mask == 0]
 
         a_input_len = a_this_input_embeddings.shape[0]
-        b_input_len = b_this_input_embeddings[0]
+        b_input_len = b_this_input_embeddings.shape[0]
 
         # should be padding to max len
         need_pad_len = self.config.text_max_len - a_input_len - b_input_len
@@ -1328,6 +1291,221 @@ class Deformer(nn.Module):
                                                          token_type_id=a_token_type_ids)
 
         # encoding b
+        b_token_type_ids = b_token_type_ids + 1
+
+        b_lower_encoded_embeddings = self.lower_encoding(input_ids=b_input_ids,
+                                                         attention_mask=b_attention_mask,
+                                                         token_type_id=b_token_type_ids)
+
+        truncate_from_head = kwargs.get('truncate_from_head', False)
+        # encoding together
+        joint_embeddings = self.joint_encoding(a_embeddings=a_lower_encoded_embeddings,
+                                               b_embeddings=b_lower_encoded_embeddings,
+                                               a_attention_mask=a_attention_mask,
+                                               b_attention_mask=b_attention_mask,
+                                               truncate_from_head=truncate_from_head)
+
+        pooler = self.pooler_layer(joint_embeddings)
+        logits = self.classifier(pooler)
+
+        return logits
+
+
+class MatchDeformer(nn.Module):
+    def __init__(self, config: DeformerConfig):
+
+        super(MatchDeformer, self).__init__()
+
+        self.config = config
+
+        # 毕竟num_label也算是memory的一部分
+        self.num_labels = config.num_labels
+        self.sentence_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
+        this_bert_config.num_labels = self.num_labels
+
+        self.bert_model = BertForSequenceClassification.from_pretrained(config.pretrained_bert_path,
+                                                                        config=this_bert_config)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        whole_encoder = self.bert_model.bert.encoder
+
+        self.embeddings = self.bert_model.bert.embeddings
+        self.lower_encoder = whole_encoder.layer[:this_bert_config.num_hidden_layers - self.config.top_layer_num]
+        self.upper_encoder = whole_encoder.layer[this_bert_config.num_hidden_layers - self.config.top_layer_num:]
+        # take cls in and out a new vector
+        self.pooler_layer = self.bert_model.bert.pooler
+        # take a vector in and out a logits
+        self.classifier = self.bert_model.classifier
+
+    # encode a text using lower layers
+    def lower_encoding(self, input_ids, attention_mask, token_type_id):
+        embeddings = self.embeddings(input_ids=input_ids,
+                                     token_type_ids=token_type_id)
+        hidden_states = embeddings
+
+        # process attention mask
+        input_shape = input_ids.size()
+        device = input_ids.device
+        extended_attention_mask = self.bert_model.get_extended_attention_mask(attention_mask, input_shape, device)
+
+        for layer_module in self.lower_encoder:
+            layer_outputs = layer_module(
+                hidden_states,
+                extended_attention_mask
+            )
+            hidden_states = layer_outputs[0]
+        return hidden_states
+
+    # concatenate embeddings of two texts and encoding them using top layers
+    # dims of a_embeddings, b_embeddings are both 3, (batch size, seq len, dim)
+    # dims of a_attention_mask, b_attention_mask are both 2, (batch size, seq len)
+    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, truncate_from_head):
+        device = a_embeddings.device
+        b_max_seq_len = b_embeddings.shape[-2]
+        a_max_seq_len = a_embeddings.shape[-2]
+
+        # simplest case
+        if (a_max_seq_len + b_max_seq_len) <= self.config.text_max_len:
+            simple_concatenate = True
+        else:
+            # need truncate
+            simple_concatenate = False
+
+        # expand query for training or testing
+        candidate_num = a_embeddings.shape[0]
+        match_train = True
+        # testing
+        if b_embeddings.shape[0] != candidate_num:
+            match_train = False
+            candidate_num = int(b_embeddings.shape[0] / a_embeddings.shape[0])
+            # (batch size, candidate num, seq len, dim)
+            b_embeddings = b_embeddings.reshape(a_embeddings.shape[0], candidate_num, b_max_seq_len, b_embeddings.shape[-1])
+            # (batch size, candidate num, seq len)
+            b_attention_mask = b_attention_mask.reshape(a_embeddings.shape[0], candidate_num, b_max_seq_len)
+
+        # repeat A
+        # (batch size * candidate num, seq_len, dim)
+        a_embeddings = a_embeddings.unsqueeze(1)
+        a_embeddings = a_embeddings.repeat(1, candidate_num, 1, 1).reshape(-1, a_embeddings.shape[-2],
+                                                                           a_embeddings.shape[-1])
+
+        a_attention_mask = a_attention_mask.unsqueeze(1)
+        a_attention_mask = a_attention_mask.repeat(1, candidate_num, 1).reshape(-1, a_max_seq_len)
+
+        # input_ids (batch, sequence)
+        final_attention_mask = []
+        final_hidden_states = []
+
+        # combine each query with its candidate
+        for index, (this_a_embedding, this_a_attention_mask) in enumerate(zip(a_embeddings, a_attention_mask)):
+            last_index = index % candidate_num
+            first_index = index // candidate_num
+
+            # reuse candidates while training
+            if match_train:
+                this_b_embedding = b_embeddings[last_index]
+                this_b_attention_mask = b_attention_mask[last_index]
+            else:
+                this_b_embedding = b_embeddings[first_index][index]
+                this_b_attention_mask = b_attention_mask[first_index][index]
+
+            if simple_concatenate:
+                this_final_attention_mask = torch.cat((this_a_attention_mask, this_b_attention_mask), dim=-1).unsequeeze(0)
+                this_final_embeddings = torch.cat((this_a_embedding, this_b_embedding), dim=-2).unsequeeze(0)
+            else:
+                this_final_embeddings, this_final_attention_mask = self.concatenate_two_seq(
+                    this_a_embedding=this_a_embedding,
+                    this_b_embedding=this_b_embedding,
+                    this_a_attention_mask=this_a_attention_mask,
+                    this_b_attention_mask=this_b_attention_mask,
+                    truncate_from_head=truncate_from_head)
+
+            final_attention_mask.append(this_final_attention_mask)
+            final_hidden_states.append(this_final_embeddings)
+
+        final_attention_mask = torch.cat(final_attention_mask, dim=0)
+        final_hidden_states = torch.cat(final_hidden_states, dim=0)
+
+        # process attention mask
+        input_shape = final_attention_mask.size()
+        final_attention_mask = self.bert_model.get_extended_attention_mask(final_attention_mask, input_shape, device)
+
+        for layer_module in self.upper_encoder:
+            layer_outputs = layer_module(
+                final_hidden_states,
+                final_attention_mask
+            )
+            final_hidden_states = layer_outputs[0]
+        return final_hidden_states
+
+    def concatenate_two_seq(self, this_a_embedding, this_b_embedding, this_a_attention_mask, this_b_attention_mask,
+                            truncate_from_head):
+        device = this_a_embedding.device
+
+        # training case
+        a_this_input_embeddings = this_a_embedding[this_a_attention_mask == 1]
+        a_this_pad_embeddings = this_a_embedding[this_a_attention_mask == 0]
+
+        b_this_input_embeddings = this_b_embedding[this_b_attention_mask == 1]
+        b_this_pad_embeddings = this_b_embedding[this_b_attention_mask == 0]
+
+        a_input_len = a_this_input_embeddings.shape[0]
+        b_input_len = b_this_input_embeddings.shape[0]
+
+        # should be padding to max len
+        need_pad_len = self.config.text_max_len - a_input_len - b_input_len
+        available_pad_embeddings = torch.cat((a_this_pad_embeddings, b_this_pad_embeddings), dim=0)
+
+        # simple case
+        if need_pad_len > 0:
+            this_final_embeddings = torch.cat(
+                (a_this_input_embeddings, b_this_input_embeddings, available_pad_embeddings[:need_pad_len]),
+                dim=0).unsqueeze(0)
+            this_final_attention_mask = torch.cat((torch.ones(a_input_len + b_input_len, device=device),
+                                                   torch.zeros(need_pad_len, device=device))).unsqueeze(0)
+        # should do truncate
+        else:
+            # In chatting bot task, context always too long, so we should truncate from its early utterance
+            # rather than response
+            if truncate_from_head:
+                this_final_embeddings = torch.cat(
+                    (a_this_input_embeddings, b_this_input_embeddings),
+                    dim=0)[-self.config.text_max_len:].unsqueeze(0)
+            else:
+                # truncate from longest sequence
+                avg_allowable_len = math.ceil(self.config.text_max_len / 2)
+
+                if a_input_len >= avg_allowable_len and b_input_len >= avg_allowable_len:
+                    b_final_len = avg_allowable_len
+                    a_final_len = self.config.text_max_len - b_final_len
+                elif a_input_len < avg_allowable_len:
+                    a_final_len = a_input_len
+                    b_final_len = self.config.text_max_len - a_final_len
+                elif b_input_len < avg_allowable_len:
+                    b_final_len = b_input_len
+                    a_final_len = self.config.text_max_len - b_final_len
+                else:
+                    raise Exception("Impossible")
+
+                this_final_embeddings = torch.cat(
+                    (a_this_input_embeddings[:a_final_len], b_this_input_embeddings[:b_final_len]),
+                    dim=0).unsqueeze(0)
+            this_final_attention_mask = torch.ones(self.config.text_max_len, device=device).unsqueeze(0)
+
+        return this_final_embeddings, this_final_attention_mask
+
+    def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask, train_flag, **kwargs):
+
+        # encoding a
+        a_lower_encoded_embeddings = self.lower_encoding(input_ids=a_input_ids,
+                                                         attention_mask=a_attention_mask,
+                                                         token_type_id=a_token_type_ids)
+
+        # encoding b
         candidate_seq_len = b_input_ids.shape[-1]
 
         b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
@@ -1342,15 +1520,23 @@ class Deformer(nn.Module):
 
         # encoding together
         truncate_from_head = kwargs.get('truncate_from_head', False)
-        match_train = kwargs.get('match_train', False)
         joint_embeddings = self.joint_encoding(a_embeddings=a_lower_encoded_embeddings,
                                                b_embeddings=b_lower_encoded_embeddings,
                                                a_attention_mask=a_attention_mask,
                                                b_attention_mask=b_attention_mask,
-                                               truncate_from_head=truncate_from_head,
-                                               match_train=match_train)
-        print(joint_embeddings.shape)
-        raise_test_exception()
+                                               truncate_from_head=truncate_from_head)
+        pooler = self.pooler_layer(joint_embeddings)
+        logits = self.classifier(pooler)
+
+        if train_flag:
+            logits = logits.reshape(a_input_ids.shape[0], a_input_ids.shape[0])
+            mask = torch.eye(logits.size(0)).to(logits.device)
+            loss = F.log_softmax(logits, dim=-1) * mask
+            loss = (-loss.sum(dim=1)).mean()
+            return loss
+        else:
+            logits = logits.reshape(a_input_ids.shape[0], -1)
+            return logits
 
 
 def raise_test_exception():

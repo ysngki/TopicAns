@@ -18,7 +18,7 @@ def read_arguments():
 	# add model
 	parser.add_argument("--model_class", required=True, type=str,
 						choices=['CrossBERT', 'QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder',
-								 'QAMatchModel', 'MatchParallelEncoder', 'Deformer'])
+								 'QAMatchModel', 'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer'])
 
 	# related to data
 	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli', 'ubuntu'])
@@ -30,6 +30,7 @@ def read_arguments():
 	parser.add_argument("--context_num", "-c", default=1, type=int)
 	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
 	parser.add_argument("--model_save_prefix", default="", type=str)
+	parser.add_argument("--top_layer_num", default=2, type=int, help='used for deformer')
 
 	parser.add_argument("--hop_num", default=1, type=int, help='hop num for pure memory')
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
@@ -106,8 +107,8 @@ if __name__ == '__main__':
 	# 设置训练参数
 	my_train_two_stage_flag = False
 	# add model
-	if my_args.model_class in ['ClassifyParallelEncoder']:
-		my_train_two_stage_flag = True
+	# if my_args.model_class in ['ClassifyParallelEncoder']:
+	# 	my_train_two_stage_flag = True
 
 	if my_args.one_stage:
 		my_train_two_stage_flag = False

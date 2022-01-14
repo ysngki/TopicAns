@@ -1,13 +1,31 @@
 /home/yuanhang/anaconda3/envs/prompt/lib/python3.8/site-packages/transformers/
-
+------------------------------------------------------------------------------------------------------------------------
 Task1: mnli ------------------------------------------------------------
 # train bi
 python -u nlp_main.py -d mnli --model_class QAClassifierModel --composition pooler -n 0 --label_num 3 --train_batch_size 128 | tee  logs/mnli/bi.log
+
 # train cross
 python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --pretrained_bert_path bert-base-uncased | tee  logs/mnli/base_cross.log
+
 # train ClassifyParallelEncoder
 python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder -n 0 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage  --model_save_prefix c10_one_stage_out_vector_base_ --context_num 10 | tee  logs/mnli/c10_one_stage_out_vector.log
 
+# train Deformer
+python -u nlp_main.py -d mnli --model_class ClassifyDeformer --composition pooler -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --no_apex --one_stage | tee -a logs/mnli/test.log
+
+
+------------------------------------------------------------------------------------------------------------------------
+Task2: ubuntu ------------------------------------------------------------
+python -u nlp_main.py -d ubuntu --val_candidate_num 10 --train_candidate_num 2 --model_class ParallelMatchEncoder --composition pooler -n 1 --label_num 0 --train_batch_size 48  --val_batch_size 2 --no_apex --context_num 3 | tee logs/ubuntu/c3_my.log
+
+python -u nlp_main.py -d ubuntu --val_candidate_num 10  --model_class PolyEncoder --composition pooler -n 0 --label_num 0 --train_batch_size 48  --val_batch_size 2  --context_num 16 | tee  -a logs/ubuntu/poly_16.log
+
+python -u nlp_main.py --val_candidate_num 10  -d ubuntu --model_class MatchParallelEncoder --composition pooler -n 1 --label_num 0 --train_batch_size 48 --no_apex  --val_batch_size 4  --context_num 10 --no_initial_test | tee -a logs/ubuntu/c10_my.log
+
+python -u nlp_main.py --label_num 1 --val_candidate_num 10  -d ubuntu --model_class MatchDeformer --no_apex  --val_batch_size 4  -n 0  --train_batch_size 2  --no_initial_test | tee -a logs/ubuntu/deformer.log
+
+
+------------------------------------------------------------------------------------------------------------------------
 Task2: dstc7 ------------------------------------------------------------
 # train cross
 python -u nlp_main.py -d dstc7 --model_class CrossBERT --composition pooler -n 0 --label_num 1 --train_candidate_num 16 --train_batch_size 2 --gradient_accumulation_steps 64 --val_batch_size 2 --no_initial_test | tee  logs/dstc7/cross_candidate_16.log
@@ -16,16 +34,10 @@ python -u nlp_main.py -d dstc7 --model_class CrossBERT --composition pooler -n 0
 python -u nlp_main.py -d dstc7 --model_class QAMatchModel --composition pooler -n 1 --label_num 0 --train_batch_size 48  --val_batch_size 2 --no_apex | tee  -a logs/ubuntu/bi.log
 
 # train mine. gradient_accumulation_steps must be 1!!!!!!!!
-python -u nlp_main.py -d dstc7 --model_class ParallelMatchEncoder -n 0 --label_num 0 --train_batch_size 128  --val_batch_size 2 --one_stage --model_save_prefix c3_one_stage_out_vector_128_ --context_num 3  --no_initial_test | tee -a logs/dstc7/mine_context3_size_128.log
+python -u nlp_main.py -d dstc7 --model_class MatchParallelEncoder -n 0 --label_num 0 --train_batch_size 128  --val_batch_size 2 --one_stage --model_save_prefix c3_one_stage_out_vector_128_ --context_num 3  --no_initial_test | tee -a logs/dstc7/mine_context3_size_128.log
 
 python -u nlp_main.py -d dstc7 --model_class PolyEncoder -n 0 --label_num 0 --train_batch_size 48  --val_batch_size 2 --one_stage --model_save_prefix c16_ --context_num 16 --no_initial_test | tee -a logs/dstc7/poly_encoder_candidate_16.log
 
 # 进行测速
 --no_train --do_real_test --query_block_size
 
-Task2: dstc7 ------------------------------------------------------------
-python -u nlp_main.py -d ubuntu --val_candidate_num 10 --train_candidate_num 2 --model_class ParallelMatchEncoder --composition pooler -n 1 --label_num 0 --train_batch_size 48  --val_batch_size 2 --no_apex --context_num 3 | tee logs/ubuntu/c3_my.log
-
-python -u nlp_main.py -d ubuntu --val_candidate_num 10  --model_class PolyEncoder --composition pooler -n 0 --label_num 0 --train_batch_size 48  --val_batch_size 2  --context_num 16 | tee  -a logs/ubuntu/poly_16.log
-
-python -u nlp_main.py --val_candidate_num 10  -d ubuntu --model_class ParallelMatchEncoder --composition pooler -n 1 --label_num 0 --train_batch_size 48 --no_apex  --val_batch_size 4  --context_num 10 --no_initial_test | tee -a logs/ubuntu/c10_my.log
