@@ -16,23 +16,26 @@ def read_arguments():
 
 	# must set
 	# add model
-	parser.add_argument("--model_class", required=True, type=str, choices=['CrossBERT', 'QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder',
-																		   'QAMatchModel', 'MatchParallelEncoder', 'Deformer'])
+	parser.add_argument("--model_class", required=True, type=str,
+						choices=['CrossBERT', 'QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder',
+								 'QAMatchModel', 'MatchParallelEncoder', 'Deformer'])
 
 	# related to data
 	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli', 'ubuntu'])
 	parser.add_argument("--label_num", required=True, type=int, help="for match task, please set as 1")
 
 	# related to model
-	parser.add_argument("--composition", type=str, default='pooler', help = 'control the way to get sentence representation')
+	parser.add_argument("--composition", type=str, default='pooler',
+						help='control the way to get sentence representation')
 	parser.add_argument("--context_num", "-c", default=1, type=int)
 	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
 	parser.add_argument("--model_save_prefix", default="", type=str)
 
-	parser.add_argument("--hop_num", default=1, type=int, help = 'hop num for pure memory')
+	parser.add_argument("--hop_num", default=1, type=int, help='hop num for pure memory')
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
 	parser.add_argument("--train_candidate_num", default=-1, type=int, help="only need by cross, according to hardware")
-	parser.add_argument("--val_candidate_num", default=100, type=int, help="only need by match task, according to dataset")
+	parser.add_argument("--val_candidate_num", default=100, type=int,
+						help="only need by match task, according to dataset")
 
 	# related to train
 	parser.add_argument("--one_stage", action="store_true", default=False)
@@ -44,7 +47,8 @@ def read_arguments():
 	parser.add_argument("--do_val", action="store_true", default=False)
 	parser.add_argument("--use_cpu", action="store_true", default=False)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
-	parser.add_argument("--restore", action="store_true", default=False, help="use restore and only_final together to control which model to read!")
+	parser.add_argument("--restore", action="store_true", default=False,
+						help="use restore and only_final together to control which model to read!")
 
 	parser.add_argument("--val_batch_size", default=64, type=int, help="control the batch size of val as well as test")
 	parser.add_argument("--train_batch_size", default=64, type=int)
@@ -160,7 +164,6 @@ if __name__ == '__main__':
 		else:
 			print(f"Warning: {my_args.dataset_name} is not supported for real test yet!")
 
-	print("*"*100)
+	print("*" * 100)
 	print("Finish training and take", get_elapse_time(begin_time))
 	print("*" * 100)
-

@@ -1472,7 +1472,7 @@ class TrainWholeModel:
             a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask, truncate_from_head=self.truncate_from_head)
+            b_attention_mask=b_attention_mask)
 
         # 计算损失
         step_loss = cross_entropy_function(logits, qa_labels)
@@ -1640,7 +1640,8 @@ class TrainWholeModel:
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-                b_attention_mask=b_attention_mask, train_flag=True)
+                b_attention_mask=b_attention_mask, train_flag=True, match_train=True,
+                truncate_from_head=self.truncate_from_head)
 
             # 误差反向传播
             if not APEX_FLAG or self.no_apex:
