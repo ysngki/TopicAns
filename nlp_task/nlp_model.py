@@ -1,5 +1,3 @@
-import math
-
 from transformers import BertModel, BertForSequenceClassification, BertConfig
 from transformers.models.bert.out_vector_modeling_bert import MyBertModel, DecoderLayerChunk
 import torch
@@ -1184,37 +1182,20 @@ class ClassifyDeformer(nn.Module):
     # concatenate embeddings of two texts and encoding them using top layers
     # dims of a_embeddings, b_embeddings are both 3, (batch size, seq len, dim)
     # dims of a_attention_mask, b_attention_mask are both 2, (batch size, seq len)
-    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, truncate_from_head):
+    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask):
         device = a_embeddings.device
-        b_max_seq_len = b_embeddings.shape[-2]
-        a_max_seq_len = a_embeddings.shape[-2]
+        b_max_seq_len = torch.max(b_attention_mask.sum(-1))
+        a_max_seq_len = torch.max(a_attention_mask.sum(-1))
+
+        a_embeddings = a_embeddings[:, :a_max_seq_len, :]
+        a_attention_mask = a_attention_mask[:, :a_max_seq_len]
+
+        b_embeddings = b_embeddings[:, :b_max_seq_len, :]
+        b_attention_mask = b_attention_mask[:, :b_max_seq_len]
 
         # simplest case
-        if (a_max_seq_len + b_max_seq_len) <= self.config.text_max_len:
-            final_attention_mask = torch.cat((a_attention_mask, b_attention_mask), dim=-1)
-            final_hidden_states = torch.cat((a_embeddings, b_embeddings), dim=-2)
-        else:
-            # input_ids (batch, sequence)
-            final_attention_mask = []
-            final_hidden_states = []
-            # classify test/train
-            for index, (this_a_attention_mask, this_b_attention_mask) in enumerate(zip(a_attention_mask, b_attention_mask)):
-                # training case
-                this_a_embedding = a_embeddings[index]
-                this_b_embedding = b_embeddings[index]
-
-                this_final_embeddings, this_final_attention_mask = self.concatenate_two_seq(
-                    this_a_embedding=this_a_embedding,
-                    this_b_embedding=this_b_embedding,
-                    this_a_attention_mask=this_a_attention_mask,
-                    this_b_attention_mask=this_b_attention_mask,
-                    truncate_from_head=truncate_from_head)
-
-                final_attention_mask.append(this_final_attention_mask)
-                final_hidden_states.append(this_final_embeddings)
-
-            final_attention_mask = torch.cat(final_attention_mask, dim=0)
-            final_hidden_states = torch.cat(final_hidden_states, dim=0)
+        final_attention_mask = torch.cat((a_attention_mask, b_attention_mask), dim=-1)
+        final_hidden_states = torch.cat((a_embeddings, b_embeddings), dim=-2)
 
         # process attention mask
         input_shape = final_attention_mask.size()
@@ -1227,60 +1208,6 @@ class ClassifyDeformer(nn.Module):
             )
             final_hidden_states = layer_outputs[0]
         return final_hidden_states
-
-    def concatenate_two_seq(self, this_a_embedding, this_b_embedding, this_a_attention_mask, this_b_attention_mask, truncate_from_head):
-        device = this_a_embedding.device
-
-        a_this_input_embeddings = this_a_embedding[this_a_attention_mask == 1]
-        a_this_pad_embeddings = this_a_embedding[this_a_attention_mask == 0]
-
-        b_this_input_embeddings = this_b_embedding[this_b_attention_mask == 1]
-        b_this_pad_embeddings = this_b_embedding[this_b_attention_mask == 0]
-
-        a_input_len = a_this_input_embeddings.shape[0]
-        b_input_len = b_this_input_embeddings.shape[0]
-
-        # should be padding to max len
-        need_pad_len = self.config.text_max_len - a_input_len - b_input_len
-        available_pad_embeddings = torch.cat((a_this_pad_embeddings, b_this_pad_embeddings), dim=0)
-
-        # simple case
-        if need_pad_len > 0:
-            this_final_embeddings = torch.cat(
-                (a_this_input_embeddings, b_this_input_embeddings, available_pad_embeddings[:need_pad_len]),
-                dim=0).unsqueeze(0)
-            this_final_attention_mask = torch.cat((torch.ones(a_input_len + b_input_len, device=device),
-                                                   torch.zeros(need_pad_len, device=device))).unsqueeze(0)
-        # should do truncate
-        else:
-            # In chatting bot task, context always too long, so we should truncate from its early utterance
-            # rather than response
-            if truncate_from_head:
-                this_final_embeddings = torch.cat(
-                    (a_this_input_embeddings, b_this_input_embeddings),
-                    dim=0)[-self.config.text_max_len:].unsqueeze(0)
-            else:
-                # truncate from longest sequence
-                avg_allowable_len = math.ceil(self.config.text_max_len / 2)
-
-                if a_input_len >= avg_allowable_len and b_input_len >= avg_allowable_len:
-                    b_final_len = avg_allowable_len
-                    a_final_len = self.config.text_max_len - b_final_len
-                elif a_input_len < avg_allowable_len:
-                    a_final_len = a_input_len
-                    b_final_len = self.config.text_max_len - a_final_len
-                elif b_input_len < avg_allowable_len:
-                    b_final_len = b_input_len
-                    a_final_len = self.config.text_max_len - b_final_len
-                else:
-                    raise Exception("Impossible")
-
-                this_final_embeddings = torch.cat(
-                    (a_this_input_embeddings[:a_final_len], b_this_input_embeddings[:b_final_len]),
-                    dim=0).unsqueeze(0)
-            this_final_attention_mask = torch.ones(self.config.text_max_len, device=device).unsqueeze(0)
-
-        return this_final_embeddings, this_final_attention_mask
 
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
@@ -1297,13 +1224,11 @@ class ClassifyDeformer(nn.Module):
                                                          attention_mask=b_attention_mask,
                                                          token_type_id=b_token_type_ids)
 
-        truncate_from_head = kwargs.get('truncate_from_head', False)
         # encoding together
         joint_embeddings = self.joint_encoding(a_embeddings=a_lower_encoded_embeddings,
                                                b_embeddings=b_lower_encoded_embeddings,
                                                a_attention_mask=a_attention_mask,
-                                               b_attention_mask=b_attention_mask,
-                                               truncate_from_head=truncate_from_head)
+                                               b_attention_mask=b_attention_mask)
 
         pooler = self.pooler_layer(joint_embeddings)
         logits = self.classifier(pooler)
@@ -1362,72 +1287,40 @@ class MatchDeformer(nn.Module):
     # concatenate embeddings of two texts and encoding them using top layers
     # dims of a_embeddings, b_embeddings are both 3, (batch size, seq len, dim)
     # dims of a_attention_mask, b_attention_mask are both 2, (batch size, seq len)
-    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, truncate_from_head):
+    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask):
         device = a_embeddings.device
-        b_max_seq_len = b_embeddings.shape[-2]
-        a_max_seq_len = a_embeddings.shape[-2]
 
-        # simplest case
-        if (a_max_seq_len + b_max_seq_len) <= self.config.text_max_len:
-            simple_concatenate = True
-        else:
-            # need truncate
-            simple_concatenate = False
+        b_max_seq_len = torch.max(b_attention_mask.sum(-1))
+        a_max_seq_len = torch.max(a_attention_mask.sum(-1))
 
-        # expand query for training or testing
+        # truncate roughly to save memory
+        a_embeddings = a_embeddings[:, :a_max_seq_len, :]
+        a_attention_mask = a_attention_mask[:, :a_max_seq_len]
+
+        b_embeddings = b_embeddings[:, :b_max_seq_len, :]
+        b_attention_mask = b_attention_mask[:, :b_max_seq_len]
+
         candidate_num = a_embeddings.shape[0]
         match_train = True
         # testing
         if b_embeddings.shape[0] != candidate_num:
             match_train = False
             candidate_num = int(b_embeddings.shape[0] / a_embeddings.shape[0])
-            # (batch size, candidate num, seq len, dim)
-            b_embeddings = b_embeddings.reshape(a_embeddings.shape[0], candidate_num, b_max_seq_len, b_embeddings.shape[-1])
-            # (batch size, candidate num, seq len)
-            b_attention_mask = b_attention_mask.reshape(a_embeddings.shape[0], candidate_num, b_max_seq_len)
 
         # repeat A
-        # (batch size * candidate num, seq_len, dim)
         a_embeddings = a_embeddings.unsqueeze(1)
-        a_embeddings = a_embeddings.repeat(1, candidate_num, 1, 1).reshape(-1, a_embeddings.shape[-2],
+        a_embeddings = a_embeddings.repeat(1, candidate_num, 1, 1).reshape(-1, a_max_seq_len,
                                                                            a_embeddings.shape[-1])
-
         a_attention_mask = a_attention_mask.unsqueeze(1)
         a_attention_mask = a_attention_mask.repeat(1, candidate_num, 1).reshape(-1, a_max_seq_len)
 
-        # input_ids (batch, sequence)
-        final_attention_mask = []
-        final_hidden_states = []
+        # need repeat candidate
+        if match_train:
+            b_embeddings = b_embeddings.repeat(candidate_num, 1, 1)
+            b_attention_mask = b_attention_mask.repeat(candidate_num, 1)
 
-        # combine each query with its candidate
-        for index, (this_a_embedding, this_a_attention_mask) in enumerate(zip(a_embeddings, a_attention_mask)):
-            last_index = index % candidate_num
-            first_index = index // candidate_num
-
-            # reuse candidates while training
-            if match_train:
-                this_b_embedding = b_embeddings[last_index]
-                this_b_attention_mask = b_attention_mask[last_index]
-            else:
-                this_b_embedding = b_embeddings[first_index][index]
-                this_b_attention_mask = b_attention_mask[first_index][index]
-
-            if simple_concatenate:
-                this_final_attention_mask = torch.cat((this_a_attention_mask, this_b_attention_mask), dim=-1).unsequeeze(0)
-                this_final_embeddings = torch.cat((this_a_embedding, this_b_embedding), dim=-2).unsequeeze(0)
-            else:
-                this_final_embeddings, this_final_attention_mask = self.concatenate_two_seq(
-                    this_a_embedding=this_a_embedding,
-                    this_b_embedding=this_b_embedding,
-                    this_a_attention_mask=this_a_attention_mask,
-                    this_b_attention_mask=this_b_attention_mask,
-                    truncate_from_head=truncate_from_head)
-
-            final_attention_mask.append(this_final_attention_mask)
-            final_hidden_states.append(this_final_embeddings)
-
-        final_attention_mask = torch.cat(final_attention_mask, dim=0)
-        final_hidden_states = torch.cat(final_hidden_states, dim=0)
+        final_attention_mask = torch.cat((a_attention_mask, b_attention_mask), dim=-1)
+        final_hidden_states = torch.cat((a_embeddings, b_embeddings), dim=1)
 
         # process attention mask
         input_shape = final_attention_mask.size()
@@ -1440,62 +1333,6 @@ class MatchDeformer(nn.Module):
             )
             final_hidden_states = layer_outputs[0]
         return final_hidden_states
-
-    def concatenate_two_seq(self, this_a_embedding, this_b_embedding, this_a_attention_mask, this_b_attention_mask,
-                            truncate_from_head):
-        device = this_a_embedding.device
-
-        # training case
-        a_this_input_embeddings = this_a_embedding[this_a_attention_mask == 1]
-        a_this_pad_embeddings = this_a_embedding[this_a_attention_mask == 0]
-
-        b_this_input_embeddings = this_b_embedding[this_b_attention_mask == 1]
-        b_this_pad_embeddings = this_b_embedding[this_b_attention_mask == 0]
-
-        a_input_len = a_this_input_embeddings.shape[0]
-        b_input_len = b_this_input_embeddings.shape[0]
-
-        # should be padding to max len
-        need_pad_len = self.config.text_max_len - a_input_len - b_input_len
-        available_pad_embeddings = torch.cat((a_this_pad_embeddings, b_this_pad_embeddings), dim=0)
-
-        # simple case
-        if need_pad_len > 0:
-            this_final_embeddings = torch.cat(
-                (a_this_input_embeddings, b_this_input_embeddings, available_pad_embeddings[:need_pad_len]),
-                dim=0).unsqueeze(0)
-            this_final_attention_mask = torch.cat((torch.ones(a_input_len + b_input_len, device=device),
-                                                   torch.zeros(need_pad_len, device=device))).unsqueeze(0)
-        # should do truncate
-        else:
-            # In chatting bot task, context always too long, so we should truncate from its early utterance
-            # rather than response
-            if truncate_from_head:
-                this_final_embeddings = torch.cat(
-                    (a_this_input_embeddings, b_this_input_embeddings),
-                    dim=0)[-self.config.text_max_len:].unsqueeze(0)
-            else:
-                # truncate from longest sequence
-                avg_allowable_len = math.ceil(self.config.text_max_len / 2)
-
-                if a_input_len >= avg_allowable_len and b_input_len >= avg_allowable_len:
-                    b_final_len = avg_allowable_len
-                    a_final_len = self.config.text_max_len - b_final_len
-                elif a_input_len < avg_allowable_len:
-                    a_final_len = a_input_len
-                    b_final_len = self.config.text_max_len - a_final_len
-                elif b_input_len < avg_allowable_len:
-                    b_final_len = b_input_len
-                    a_final_len = self.config.text_max_len - b_final_len
-                else:
-                    raise Exception("Impossible")
-
-                this_final_embeddings = torch.cat(
-                    (a_this_input_embeddings[:a_final_len], b_this_input_embeddings[:b_final_len]),
-                    dim=0).unsqueeze(0)
-            this_final_attention_mask = torch.ones(self.config.text_max_len, device=device).unsqueeze(0)
-
-        return this_final_embeddings, this_final_attention_mask
 
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, train_flag, **kwargs):
@@ -1519,12 +1356,10 @@ class MatchDeformer(nn.Module):
                                                          token_type_id=b_token_type_ids)
 
         # encoding together
-        truncate_from_head = kwargs.get('truncate_from_head', False)
         joint_embeddings = self.joint_encoding(a_embeddings=a_lower_encoded_embeddings,
                                                b_embeddings=b_lower_encoded_embeddings,
                                                a_attention_mask=a_attention_mask,
-                                               b_attention_mask=b_attention_mask,
-                                               truncate_from_head=truncate_from_head)
+                                               b_attention_mask=b_attention_mask)
         pooler = self.pooler_layer(joint_embeddings)
         logits = self.classifier(pooler)
 

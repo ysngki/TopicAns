@@ -11,7 +11,7 @@ python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 1 
 python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder -n 0 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage  --model_save_prefix c10_one_stage_out_vector_base_ --context_num 10 | tee  logs/mnli/c10_one_stage_out_vector.log
 
 # train Deformer
-python -u nlp_main.py -d mnli --model_class ClassifyDeformer --composition pooler -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --no_apex --one_stage | tee -a logs/mnli/test.log
+python -u nlp_main.py -d mnli --model_class ClassifyDeformer --top_layer_num 2 --first_seq_max_len 256 -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --no_apex --one_stage | tee -a logs/mnli/deformer.log
 
 
 ------------------------------------------------------------------------------------------------------------------------
@@ -24,6 +24,7 @@ python -u nlp_main.py --val_candidate_num 10  -d ubuntu --model_class MatchParal
 
 python -u nlp_main.py --label_num 1 --val_candidate_num 10  -d ubuntu --model_class MatchDeformer --no_apex  --val_batch_size 4  -n 0  --train_batch_size 2  --no_initial_test | tee -a logs/ubuntu/deformer.log
 
+python -u nlp_main.py  -d ubuntu --model_class MatchDeformer --label_num 1 --val_candidate_num 10 --top_layer_num 2 --first_seq_max_len 256 -n 0 --train_batch_size 2 --gradient_accumulation_steps 24  --no_apex  --val_batch_size 4  --no_initial_test | tee logs/ubuntu/deformer.log
 
 ------------------------------------------------------------------------------------------------------------------------
 Task2: dstc7 ------------------------------------------------------------

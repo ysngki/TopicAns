@@ -1006,7 +1006,9 @@ class TrainWholeModel:
             with torch.no_grad():
                 print(f"------- begin test {self.val_batch_size * len(this_dataloader)} data--------")
 
-                for index, batch in enumerate(this_dataloader):
+                bar = tqdm(this_dataloader, total=len(this_dataloader))
+
+                for index, batch in enumerate(bar):
                     this_batch_index = batch['idx']
 
                     # 读取数据
@@ -1100,6 +1102,9 @@ class TrainWholeModel:
         else:
             raise_dataset_error()
 
+        if self.model_class in ['MatchDeformer', 'ClassifyDeformer']:
+            save_load_prefix = "deformer_" + str(self.first_seq_max_len) + "_" + save_load_prefix
+
         # add dataset
         if self.dataset_name == 'mnli':
             # choose function to process data
@@ -1124,20 +1129,20 @@ class TrainWholeModel:
 
                 # get train dataset
                 train_datasets = (temp_dataset_process_function(data=complete_dataset['train'],
-                                                                save_name="glue_mnli_train",
+                                                                save_name=save_load_prefix + "glue_mnli_train",
                                                                 a_column_name="premise",
                                                                 b_column_name="hypothesis",
                                                                 label_column_name='label'),)
 
                 # get val dataset
                 validation_matched_dataset = temp_dataset_process_function(data=complete_dataset['validation_matched'],
-                                                                           save_name="glue_mnli_val_matched",
+                                                                           save_name=save_load_prefix + "glue_mnli_val_matched",
                                                                            a_column_name="premise",
                                                                            b_column_name="hypothesis",
                                                                            label_column_name='label')
                 validation_mismatched_dataset = temp_dataset_process_function(
                     data=complete_dataset['validation_mismatched'],
-                    save_name="glue_mnli_val_mismatched",
+                    save_name=save_load_prefix + "glue_mnli_val_mismatched",
                     a_column_name="premise",
                     b_column_name="hypothesis",
                     label_column_name='label')
@@ -1146,13 +1151,13 @@ class TrainWholeModel:
 
                 # get test dataset
                 test_matched_dataset = temp_dataset_process_function(data=complete_dataset['test_matched'],
-                                                                     save_name="glue_mnli_test_matched",
+                                                                     save_name=save_load_prefix + "glue_mnli_test_matched",
                                                                      a_column_name="premise",
                                                                      b_column_name="hypothesis",
                                                                      label_column_name='label')
                 test_mismatched_dataset = temp_dataset_process_function(
                     data=complete_dataset['test_mismatched'],
-                    save_name="glue_mnli_test_mismatched",
+                    save_name=save_load_prefix + "glue_mnli_test_mismatched",
                     a_column_name="premise",
                     b_column_name="hypothesis",
                     label_column_name='label')
@@ -1297,11 +1302,7 @@ class TrainWholeModel:
         self.last_model_dict = args.last_model_dict
         self.context_num = args.context_num
         self.query_block_size = args.query_block_size
-
-        if self.dataset_name in ['ubuntu', 'dstc7']:
-            self.truncate_from_head = True
-        else:
-            self.truncate_from_head = False
+        self.first_seq_max_len = args.first_seq_max_len
 
     # 读取命令行传入的有关config的参数
     def __read_args_for_config(self, args):
@@ -1582,8 +1583,7 @@ class TrainWholeModel:
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-                b_attention_mask=b_attention_mask, train_flag=True, match_train=True,
-                truncate_from_head=self.truncate_from_head)
+                b_attention_mask=b_attention_mask, train_flag=True, match_train=True)
 
             # 误差反向传播
             if not APEX_FLAG or self.no_apex:
@@ -1763,14 +1763,20 @@ class TrainWholeModel:
         all_labels = data[label_column_name]
         all_index = data['idx']
 
+        if self.model_class in ['MatchDeformer', 'ClassifyDeformer']:
+            first_seq_max_len = self.first_seq_max_len
+            second_seq_max_len = self.text_max_len - self.first_seq_max_len
+        else:
+            first_seq_max_len, second_seq_max_len = self.text_max_len, self.text_max_len
+
         # tokenize
         encoded_a_text = self.tokenizer(
             all_a_text, padding=True, verbose=False, add_special_tokens=True,
-            truncation=True, max_length=self.text_max_len, return_tensors='pt')
+            truncation=True, max_length=first_seq_max_len, return_tensors='pt')
 
         encoded_b_text = self.tokenizer(
             all_b_text, padding=True, verbose=False, add_special_tokens=True,
-            truncation=True, max_length=self.text_max_len, return_tensors='pt')
+            truncation=True, max_length=second_seq_max_len, return_tensors='pt')
 
         all_labels = all_labels
         dataset = DoubleInputLabelDataset(a_input_ids=encoded_a_text['input_ids'],
@@ -1780,17 +1786,6 @@ class TrainWholeModel:
                                           b_token_type_ids=encoded_b_text['token_type_ids'],
                                           b_attention_mask=encoded_b_text['attention_mask'],
                                           idx=torch.tensor(all_index), label=torch.tensor(all_labels))
-
-        # items_dic = {'a_input_ids': encoded_a_text['input_ids'],
-        #              'a_token_type_ids': encoded_a_text['token_type_ids'],
-        #              'a_attention_mask': encoded_a_text['attention_mask'],
-        #              'b_input_ids': encoded_b_text['input_ids'],
-        #              'b_token_type_ids': encoded_b_text['token_type_ids'],
-        #              'b_attention_mask': encoded_b_text['attention_mask'],
-        #              'label': torch.tensor(all_labels),
-        #              'idx': torch.tensor(all_index)}
-        #
-        # dataset = Dataset.from_dict(items_dic)
 
         if not os.path.exists("./dataset"):
             os.makedirs("./dataset")
@@ -1828,9 +1823,9 @@ class TrainWholeModel:
         if not os.path.exists("./dataset/"):
             os.makedirs("./dataset/")
 
-        torch.save({'dataset': dataset}, "./dataset/" + "cross_" + save_name)
+        torch.save({'dataset': dataset}, "./dataset/" + save_name)
 
-        print(f"Processed dataset is saved at ./dataset/cross_{save_name}")
+        print(f"Processed dataset is saved at ./dataset/{save_name}")
 
         return dataset
     
@@ -1838,12 +1833,18 @@ class TrainWholeModel:
         split_num = 100
         this_dataset_max_len = -1
 
+        if self.model_class in ['MatchDeformer', 'ClassifyDeformer']:
+            first_seq_max_len = self.first_seq_max_len
+            second_seq_max_len = self.text_max_len - self.first_seq_max_len
+        else:
+            first_seq_max_len, second_seq_max_len = self.text_max_len, self.text_max_len
+
         # 读取数据到内存
         all_a_text = data[a_column_name]
         all_b_text = data[b_column_name]
         all_index = data['idx']
 
-        # tokenize block by block, context should be truncated from head
+        # tokenize query block by block, context should be truncated from head
         query_step = math.ceil(len(all_a_text) / split_num)
         iter_num = math.ceil(len(all_a_text) / query_step)
 
@@ -1853,7 +1854,7 @@ class TrainWholeModel:
             this_block = all_a_text[i * query_step:(i + 1) * query_step]
 
             this_block_input_ids_list, this_block_token_type_ids_list, this_block_attention_mask_list, this_seq_max_len \
-                = tokenize_and_truncate_from_head(self.tokenizer, this_block, self.text_max_len)
+                = tokenize_and_truncate_from_head(self.tokenizer, this_block, first_seq_max_len)
 
             # update
             this_dataset_max_len = this_seq_max_len if this_dataset_max_len < this_seq_max_len else this_dataset_max_len
@@ -1868,7 +1869,7 @@ class TrainWholeModel:
         # tokenize response in common practice
         encoded_b_text = self.tokenizer(
             all_b_text, padding=True, verbose=False, add_special_tokens=True,
-            truncation=True, max_length=self.text_max_len, return_tensors='pt')
+            truncation=True, max_length=second_seq_max_len, return_tensors='pt')
 
         dataset = DoubleInputDataset(a_input_ids=final_a_input_ids, a_attention_mask=final_a_attention_mask, a_token_type_ids=final_a_token_type_ids,
                                      b_input_ids=encoded_b_text['input_ids'],  b_token_type_ids=encoded_b_text['token_type_ids'],
@@ -1886,6 +1887,12 @@ class TrainWholeModel:
         return dataset
     
     def __tokenize_match_multi_candidate_data_then_save(self, data, save_name, a_column_name="sentence_a", b_column_name="candidates", candidate_num=100):
+        if self.model_class in ['MatchDeformer', 'ClassifyDeformer']:
+            first_seq_max_len = self.first_seq_max_len
+            second_seq_max_len = self.text_max_len - self.first_seq_max_len
+        else:
+            first_seq_max_len, second_seq_max_len = self.text_max_len, self.text_max_len
+
         # avoid out of memory
         split_num = 10
         this_dataset_max_len = -1
@@ -1905,7 +1912,7 @@ class TrainWholeModel:
             this_block = all_a_text[i * query_step:(i + 1) * query_step]
 
             this_block_input_ids_list, this_block_token_type_ids_list, this_block_attention_mask_list, this_seq_max_len \
-                = tokenize_and_truncate_from_head(self.tokenizer, this_block, self.text_max_len)
+                = tokenize_and_truncate_from_head(self.tokenizer, this_block, first_seq_max_len)
 
             # update
             this_dataset_max_len = this_seq_max_len if this_dataset_max_len < this_seq_max_len else this_dataset_max_len
@@ -1929,7 +1936,7 @@ class TrainWholeModel:
 
         encoded_candidates = self.tokenizer(
             all_candidates, padding=True, verbose=False, add_special_tokens=True,
-            truncation=True, max_length=self.text_max_len, return_tensors='pt')
+            truncation=True, max_length=second_seq_max_len, return_tensors='pt')
 
         dataset = DoubleInputDataset(a_input_ids=final_a_input_ids, a_attention_mask=final_a_attention_mask,
                                      a_token_type_ids=final_a_token_type_ids,

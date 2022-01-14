@@ -30,7 +30,9 @@ def read_arguments():
 	parser.add_argument("--context_num", "-c", default=1, type=int)
 	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
 	parser.add_argument("--model_save_prefix", default="", type=str)
+
 	parser.add_argument("--top_layer_num", default=2, type=int, help='used for deformer')
+	parser.add_argument("--first_seq_max_len", default=256, type=int, help="only need by deformer")
 
 	parser.add_argument("--hop_num", default=1, type=int, help='hop num for pure memory')
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
