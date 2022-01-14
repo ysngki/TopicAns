@@ -24,8 +24,8 @@ try:
 except:
     APEX_FLAG = False
 
-from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ParallelEncoder, \
-    ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel, ParallelMatchEncoder, Deformer, DeformerConfig
+from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ClassifyParallelEncoder, \
+    ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel, MatchParallelEncoder, Deformer, DeformerConfig
 from my_function import sum_average_tuple, raise_dataset_error, print_recall_precise, load_model, print_optimizer, \
     raise_test_error, tokenize_and_truncate_from_head, get_elapse_time
 from nlp_dataset import SingleInputDataset, DoubleInputDataset, DoubleInputLabelDataset, SingleInputLabelDataset
@@ -312,7 +312,7 @@ class TrainWholeModel:
                 train_step_function = self.__match_train_step_for_cross
             else:
                 raise_dataset_error()
-        elif self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'ParallelMatchEncoder', 'Deformer']:
+        elif self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'MatchParallelEncoder', 'Deformer']:
             if self.dataset_name in ['mnli']:
                 train_step_function = self.__classify_train_step_for_qa_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
@@ -906,7 +906,7 @@ class TrainWholeModel:
             for index, batch in enumerate(classify_dataloader):
                 # 读取数据
                 # add model
-                if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder', 'Deformer']:
+                if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'Deformer']:
                     logits = self.__val_step_for_qa_input(batch)
                 elif self.model_class in ['CrossBERT']:
                     logits = self.__classify_val_step_for_cross(batch)
@@ -965,7 +965,7 @@ class TrainWholeModel:
             for index, batch in enumerate(tqdm(match_dataloader)):
                 # 读取数据
                 # add model
-                if self.model_class in ['QAMatchModel', 'ParallelMatchEncoder', 'PolyEncoder', 'Deformer']:
+                if self.model_class in ['QAMatchModel', 'MatchParallelEncoder', 'PolyEncoder', 'Deformer']:
                     logits = self.__match_val_step_for_bi(batch)
                 elif self.model_class in ['CrossBERT']:
                     logits = self.__match_val_step_for_cross(batch)
@@ -1009,7 +1009,7 @@ class TrainWholeModel:
 
                     # 读取数据
                     # add model
-                    if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder', 'Deformer']:
+                    if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'Deformer']:
                         logits = self.__val_step_for_qa_input(batch)
                     elif self.model_class in ['CrossBERT']:
                         logits = self.__classify_val_step_for_cross(batch)
@@ -1086,7 +1086,7 @@ class TrainWholeModel:
 
         # add model
         # Checking whether input is pair or single is important
-        if self.model_class in ['QAClassifierModel', 'ParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'ParallelMatchEncoder', 'Deformer']:
+        if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel', 'MatchParallelEncoder', 'Deformer']:
             pair_flag = True
             save_load_prefix = ""
             save_load_suffix = ""
@@ -1231,14 +1231,14 @@ class TrainWholeModel:
             model = QAClassifierModel(config=self.config)
         elif self.model_class in ['CrossBERT']:
             model = CrossBERT(config=self.config)
-        elif self.model_class in ['ParallelEncoder']:
-            model = ParallelEncoder(config=self.config)
+        elif self.model_class in ['ClassifyParallelEncoder']:
+            model = ClassifyParallelEncoder(config=self.config)
         elif self.model_class in ['PolyEncoder']:
             model = PolyEncoder(config=self.config)
         elif self.model_class in ['QAMatchModel']:
             model = QAMatchModel(config=self.config)
-        elif self.model_class in ['ParallelMatchEncoder']:
-            model = ParallelMatchEncoder(config=self.config)
+        elif self.model_class in ['MatchParallelEncoder']:
+            model = MatchParallelEncoder(config=self.config)
         elif self.model_class in ['Deformer']:
             model = Deformer(config=self.config)
         else:
@@ -1292,6 +1292,11 @@ class TrainWholeModel:
         self.context_num = args.context_num
         self.query_block_size = args.query_block_size
 
+        if self.dataset_name in ['ubuntu', 'dstc7']:
+            self.truncate_from_head = True
+        else:
+            self.truncate_from_head = False
+
     # 读取命令行传入的有关config的参数
     def __read_args_for_config(self, args):
         if args.pretrained_bert_path in ['prajjwal1/bert-small', 'google/bert_uncased_L-6_H-512_A-8',
@@ -1322,14 +1327,14 @@ class TrainWholeModel:
                                      word_embedding_len=word_embedding_len,
                                      sentence_embedding_len=sentence_embedding_len,
                                      composition=self.composition)
-        elif self.model_class in ['ParallelEncoder', 'ParallelMatchEncoder']:
+        elif self.model_class in ['ClassifyParallelEncoder', 'MatchParallelEncoder']:
             config = ParallelEncoderConfig(len(self.tokenizer),
-                                    pretrained_bert_path=args.pretrained_bert_path,
-                                    num_labels=args.label_num,
-                                    word_embedding_len=word_embedding_len,
-                                    sentence_embedding_len=sentence_embedding_len,
-                                    composition=self.composition,
-                                    context_num=self.context_num)
+                                           pretrained_bert_path=args.pretrained_bert_path,
+                                           num_labels=args.label_num,
+                                           word_embedding_len=word_embedding_len,
+                                           sentence_embedding_len=sentence_embedding_len,
+                                           composition=self.composition,
+                                           context_num=self.context_num)
         elif self.model_class == 'PolyEncoder':
             config = PolyEncoderConfig(len(self.tokenizer),
                                        pretrained_bert_path=args.pretrained_bert_path,
@@ -1374,7 +1379,7 @@ class TrainWholeModel:
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
             ]
-        elif self.model_class in ['ParallelEncoder']:
+        elif self.model_class in ['ClassifyParallelEncoder']:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
@@ -1382,7 +1387,7 @@ class TrainWholeModel:
                 {'params': model.decoder.parameters(), 'lr': 5e-5},
                 {'params': model.classifier.parameters(), 'lr': 5e-5},
             ]
-        elif self.model_class in ['ParallelMatchEncoder']:
+        elif self.model_class in ['MatchParallelEncoder']:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
@@ -1411,7 +1416,7 @@ class TrainWholeModel:
 
         # 对于那些有两段的,第一段训练参数不太一样
         if not final_stage_flag:
-            if self.model_class in ['ParallelEncoder']:
+            if self.model_class in ['ClassifyParallelEncoder']:
                 parameters_dict_list = [
                     # 这几个一样
                     {'params': model.decoder.parameters(), 'lr': 5e-5},
@@ -1467,7 +1472,7 @@ class TrainWholeModel:
             a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask)
+            b_attention_mask=b_attention_mask, truncate_from_head=self.truncate_from_head)
 
         # 计算损失
         step_loss = cross_entropy_function(logits, qa_labels)
@@ -1486,7 +1491,7 @@ class TrainWholeModel:
             if self.model_class in ['QAMemory'] and not kwargs['final_stage_flag']:
                 self.model.embeddings.weight.grad[:self.origin_voc_size] *= 0.0
 
-            # if self.model_class in ['ParallelEncoder']:
+            # if self.model_class in ['ClassifyParallelEncoder']:
             #     nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
 
             optimizer.step()
@@ -1557,7 +1562,7 @@ class TrainWholeModel:
                 return (step_loss, )
             else:
                 return (torch.tensor(0.0), )
-        # elif self.model_class in ['ParallelMatchEncoder']:
+        # elif self.model_class in ['MatchParallelEncoder']:
         #     b_input_ids = (batch['b_input_ids'])
         #     b_token_type_ids = (batch['b_token_type_ids'])
         #     b_attention_mask = (batch['b_attention_mask'])
