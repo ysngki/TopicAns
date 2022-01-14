@@ -5,8 +5,8 @@ Task1: mnli ------------------------------------------------------------
 python -u nlp_main.py -d mnli --model_class QAClassifierModel --composition pooler -n 0 --label_num 3 --train_batch_size 128 | tee  logs/mnli/bi.log
 # train cross
 python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --pretrained_bert_path bert-base-uncased | tee  logs/mnli/base_cross.log
-# train ParallelEncoder
-python -u nlp_main.py -d mnli --model_class ParallelEncoder -n 0 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage  --model_save_prefix c10_one_stage_out_vector_base_ --context_num 10 | tee  logs/mnli/c10_one_stage_out_vector.log
+# train ClassifyParallelEncoder
+python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder -n 0 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage  --model_save_prefix c10_one_stage_out_vector_base_ --context_num 10 | tee  logs/mnli/c10_one_stage_out_vector.log
 
 Task2: dstc7 ------------------------------------------------------------
 # train cross

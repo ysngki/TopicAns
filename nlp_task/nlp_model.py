@@ -14,7 +14,7 @@ from my_function import get_rep_by_avg, dot_attention
 #       basic bi-encoder, support mem
 # 2. CrossBERT
 #       basic cross-encoder
-# 3. ParallelEncoder
+# 3. ClassifyParallelEncoder
 #       my model
 
 
@@ -50,11 +50,9 @@ class QAClassifierModel(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
         self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
         self.embeddings = self.bert_model.get_input_embeddings()
@@ -98,6 +96,7 @@ class QAClassifierModel(nn.Module):
             mask = token_type_ids.type(dtype=torch.float)
             mask[mask == 1] = -np.inf
             mask[mask == 0] = 0.0
+            mask = mask * attention_mask
 
         mask_weight = mask + weight
         final_weight = nn.functional.softmax(mask_weight, dim=-1)
@@ -135,6 +134,7 @@ class QAClassifierModel(nn.Module):
 
         return representations
 
+    # Pre-compute representations. Used for time measuring.
     def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
         if self.config.composition == 'avg':
             composition_function = self.get_rep_by_avg
@@ -153,6 +153,7 @@ class QAClassifierModel(nn.Module):
                                                     attention_mask=attention_mask)
         return candidate_embeddings
 
+    # use pre-compute candidate to get logits
     def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
         # if self.config.composition == 'avg':
         #     composition_function = self.get_rep_by_avg
@@ -166,6 +167,7 @@ class QAClassifierModel(nn.Module):
         logits = self.classifier(a_embedding=query_embeddings, b_embedding=candidate_context_embeddings)
         return logits
 
+    # for training
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
 
@@ -195,11 +197,9 @@ class QAMatchModel(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
         self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
@@ -232,6 +232,7 @@ class QAMatchModel(nn.Module):
 
         return out
 
+    # Pre-compute representations. Used for time measuring.
     def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
         candidate_seq_len = input_ids.shape[-1]
 
@@ -243,6 +244,7 @@ class QAMatchModel(nn.Module):
                                                       attention_mask=attention_mask)
         return candidate_embeddings
 
+    # use pre-compute candidate to get scores
     def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
         query_embeddings = self.get_rep_by_pooler(input_ids=input_ids, token_type_ids=token_type_ids,
                                                   attention_mask=attention_mask)
@@ -279,6 +281,7 @@ class QAMatchModel(nn.Module):
         b_embeddings = composition_function(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
                                             attention_mask=b_attention_mask)
 
+        # for some purposes I don't compute logits in forward while training. Only this model behaves like this.
         if train_flag:
             # dot_product = torch.matmul(a_embeddings, b_embeddings.t())  # [bs, bs]
             # mask = torch.eye(a_embeddings.size(0)).to(a_embeddings.device)
@@ -323,11 +326,9 @@ class CrossBERT(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
         this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
         this_bert_config.num_labels = self.num_labels
 
@@ -370,18 +371,17 @@ class ParallelEncoderConfig:
         print("context_num:", self.context_num)
 
 
-class ParallelEncoder(nn.Module):
+# used for 1-1 classification task
+class ClassifyParallelEncoder(nn.Module):
     def __init__(self, config: ParallelEncoderConfig):
 
-        super(ParallelEncoder, self).__init__()
+        super(ClassifyParallelEncoder, self).__init__()
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
         self.this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
 
         # contain the parameters of encoder
@@ -483,6 +483,7 @@ class ParallelEncoder(nn.Module):
         value_static.update(updating_value_static)
         self.decoder['candidate_value'].load_state_dict(value_static)
 
+    # Pre-compute representations. Used for time measuring.
     def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
         # reshape and encode candidates
         # (all_candidate_num, dim)
@@ -500,6 +501,7 @@ class ParallelEncoder(nn.Module):
 
         return candidate_embeddings
 
+    # use pre-compute candidate to get logits
     def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
         candidate_context_embeddings = candidate_context_embeddings.reshape(input_ids.shape[0], self.config.context_num,
                                                                             candidate_context_embeddings.shape[-1])
@@ -531,7 +533,7 @@ class ParallelEncoder(nn.Module):
     # 如果不把a传进q，就会退化成最普通的QAModel，已经被验证过了
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
-                b_input_ids, b_token_type_ids, b_attention_mask, candidate_num=1):
+                b_input_ids, b_token_type_ids, b_attention_mask):
         # encoding candidate texts
         # (text_b_num, sequence len, dim)
         b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask,
@@ -540,53 +542,47 @@ class ParallelEncoder(nn.Module):
 
         # get (text_b_num, context_num, dim)
         b_embeddings = self.composition_layer(b_last_hidden_state, attention_mask=b_attention_mask)
-        # convert to (query_num, candidate_context_num, dim)
-        if candidate_num != b_embeddings.shape[0]:
-            b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], candidate_num*self.config.context_num, b_embeddings.shape[-1])
-        elif candidate_num == b_embeddings.shape[0]:
-            # need broadcast
-            b_embeddings = b_embeddings.reshape(-1, b_embeddings.shape[-1]).unsqueeze(0).repeat(a_input_ids.shape[0], 1, 1)
-        else:
-            raise Exception("Candidate num should either equal to text_b_num or equal to (text_b_num / text_a_num)!")
 
-        lstm_initial_state = torch.zeros(a_input_ids.shape[0], candidate_num, b_embeddings.shape[-1], device=b_embeddings.device)
+        # convert to (query_num, context_num, dim)
+        # perhaps this line could be removed
+        b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], self.config.context_num, b_embeddings.shape[-1])
+
+        lstm_initial_state = torch.zeros(a_input_ids.shape[0], 1, b_embeddings.shape[-1], device=b_embeddings.device)
         # (query_num, candidate_context_num + candidate_num, dim)
         b_embeddings = torch.cat((b_embeddings, lstm_initial_state), dim=1)
 
         # get q and new a
         a_out = self.bert_model(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask,
                                 enrich_candidate_by_question=True, candidate_embeddings=b_embeddings,
-                                decoder=self.decoder, candidate_num=candidate_num)
+                                decoder=self.decoder, candidate_num=1)
 
         a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
 
         # get final representations
-        # (query_num, candidate_num, context_num, dim)
-        b_context_embeddings = decoder_output[:,:-candidate_num,:].reshape(decoder_output.shape[0], candidate_num, self.config.context_num, decoder_output.shape[-1])
-        # (query_num, candidate_num, dim)
+        # (query_num, 1, context_num, dim)
+        b_context_embeddings = decoder_output[:, :-1, :].reshape(decoder_output.shape[0], 1, self.config.context_num, decoder_output.shape[-1])
+        # (query_num, 1, dim)
         b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
 
-        a_embeddings = decoder_output[:,-candidate_num:,:]
+        a_embeddings = decoder_output[:, -1:, :]
 
         logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
-        if candidate_num == 1:
-            logits = logits.squeeze(1)
+        logits = logits.squeeze(1)
 
         return logits
 
 
-class ParallelMatchEncoder(nn.Module):
+# used for 1-n match task
+class MatchParallelEncoder(nn.Module):
     def __init__(self, config: ParallelEncoderConfig):
 
-        super(ParallelMatchEncoder, self).__init__()
+        super(MatchParallelEncoder, self).__init__()
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
         self.this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
 
         # contain the parameters of encoder
@@ -683,6 +679,7 @@ class ParallelMatchEncoder(nn.Module):
         value_static.update(updating_value_static)
         self.decoder['candidate_value'].load_state_dict(value_static)
 
+    # Pre-compute representations. Used for time measuring.
     def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
         # reshape and encode candidates
         # (all_candidate_num, dim)
@@ -700,6 +697,7 @@ class ParallelMatchEncoder(nn.Module):
 
         return candidate_embeddings
 
+    # use pre-compute candidate to get scores
     def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
         # train_flag = kwargs.get('train_flag', False)
         # if train_flag:
@@ -748,6 +746,11 @@ class ParallelMatchEncoder(nn.Module):
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, train_flag):
+        """
+        if train_flag==True, a_input_ids.shape and b_input_ids.shape are 2 dims, like (batch size, seq_len),
+        otherwise, b_input_ids should look like (batch size, candidate num, seq len).
+        """
+
         # reshape and encode candidates
         # (all_candidate_num, dim)
         candidate_seq_len = b_input_ids.shape[-1]
@@ -782,12 +785,12 @@ class ParallelMatchEncoder(nn.Module):
 
         # get final representations
         # (query_num, candidate_num, context_num, dim)
-        b_context_embeddings = decoder_output[:,:-candidate_num,:].reshape(decoder_output.shape[0], candidate_num, self.config.context_num, decoder_output.shape[-1])
+        b_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0], candidate_num, self.config.context_num, decoder_output.shape[-1])
         # (query_num, candidate_num, dim)
         b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
 
         # (query_num, candidate_num, dim)
-        a_embeddings = decoder_output[:,-candidate_num:,:]
+        a_embeddings = decoder_output[:, -candidate_num:, :]
 
         # (query_num, candidate_num)
         dot_product = torch.mul(a_embeddings, b_embeddings).sum(-1)
@@ -934,11 +937,9 @@ class PolyEncoder(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
         self.this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
 
         # contain the parameters of encoder
