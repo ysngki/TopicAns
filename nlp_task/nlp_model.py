@@ -160,7 +160,7 @@ class QAClassifierModel(nn.Module):
         return candidate_embeddings
 
     # use pre-compute candidate to get logits
-    def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+    def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
         # if self.config.composition == 'avg':
         #     composition_function = self.get_rep_by_avg
         # elif self.config.composition == 'pooler':
@@ -685,10 +685,10 @@ class MatchParallelEncoder(nn.Module):
         value_static.update(updating_value_static)
         self.decoder['candidate_value'].load_state_dict(value_static)
 
-    # Pre-compute representations. Used for time measuring.
     def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
-        # reshape and encode candidates
-        # (all_candidate_num, dim)
+        """ Pre-compute representations. Used for time measuring. Return shape: (-1, context_num, context_dim) """
+
+        # reshape and encode candidates, (all_candidate_num, dim)
         candidate_seq_len = input_ids.shape[-1]
         input_ids = input_ids.reshape(-1, candidate_seq_len)
         token_type_ids = token_type_ids.reshape(-1, candidate_seq_len)
@@ -703,17 +703,8 @@ class MatchParallelEncoder(nn.Module):
 
         return candidate_embeddings
 
-    # use pre-compute candidate to get scores
     def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
-        # train_flag = kwargs.get('train_flag', False)
-        # if train_flag:
-        #     candidate_num = candidate_context_embeddings.shape[0]
-        #     candidate_context_embeddings = candidate_context_embeddings.reshape(-1,
-        #                                                                         candidate_context_embeddings.shape[-1]).expand(input_ids.shape[0], -1, -1)
-        # else:
-        #     candidate_num = candidate_context_embeddings.shape[1]
-        #     candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
-        #                                                                         -1, candidate_context_embeddings.shape[-1])
+        """ use pre-compute candidate to get scores. Only used by real test."""
 
         candidate_num = candidate_context_embeddings.shape[1]
         candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
@@ -974,7 +965,7 @@ class PolyEncoder(nn.Module):
 
         return candidate_embeddings
 
-    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
         query_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
                                            attention_mask=attention_mask)
         query_last_hidden_state = query_out['last_hidden_state']
@@ -989,9 +980,9 @@ class PolyEncoder(nn.Module):
         dot_product = torch.sum(final_query_context_vec * candidate_context_embeddings, -1)
         return dot_product
 
-    def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
+    def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
         query_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
-                                           attention_mask=attention_mask)
+                                    attention_mask=attention_mask)
         query_last_hidden_state = query_out['last_hidden_state']
         # (query_num, context_num, dim)
         query_embeddings = self.query_composition_layer(query_last_hidden_state, attention_mask)
@@ -1209,6 +1200,35 @@ class ClassifyDeformer(nn.Module):
             final_hidden_states = layer_outputs[0]
         return final_hidden_states
 
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+        """ Pre-compute representations. Used for time measuring. Return shape: (-1, dim) """
+        token_type_ids = token_type_ids + 1
+
+        lower_encoded_embeddings = self.lower_encoding(input_ids=input_ids,
+                                                       attention_mask=attention_mask,
+                                                       token_type_id=token_type_ids)
+        return lower_encoded_embeddings
+
+    def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings,
+                            candidate_attention_mask, **kwargs):
+        """ use pre-compute candidate to get scores. Only used by real test."""
+
+        # encoding a
+        a_lower_encoded_embeddings = self.lower_encoding(input_ids=input_ids,
+                                                         attention_mask=attention_mask,
+                                                         token_type_id=token_type_ids)
+
+        # encoding together
+        joint_embeddings = self.joint_encoding(a_embeddings=a_lower_encoded_embeddings,
+                                               b_embeddings=candidate_context_embeddings,
+                                               a_attention_mask=attention_mask,
+                                               b_attention_mask=candidate_attention_mask)
+
+        pooler = self.pooler_layer(joint_embeddings)
+        logits = self.classifier(pooler)
+
+        return logits
+
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
 
@@ -1265,6 +1285,49 @@ class MatchDeformer(nn.Module):
         # take a vector in and out a logits
         self.classifier = self.bert_model.classifier
 
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+        """ Pre-compute representations. Used for time measuring. Return shape: (-1, dim) """
+
+        candidate_seq_len = input_ids.shape[-1]
+
+        input_ids = input_ids.reshape(-1, candidate_seq_len)
+        token_type_ids = token_type_ids.reshape(-1, candidate_seq_len)
+        attention_mask = attention_mask.reshape(-1, candidate_seq_len)
+
+        token_type_ids = token_type_ids + 1
+
+        lower_encoded_embeddings = self.lower_encoding(input_ids=input_ids,
+                                                       attention_mask=attention_mask,
+                                                       token_type_id=token_type_ids)
+        return lower_encoded_embeddings
+
+    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings,
+                         candidate_attention_mask, **kwargs):
+        """ use pre-compute candidate to get scores. Only used by real test."""
+
+        # encoding a
+        a_lower_encoded_embeddings = self.lower_encoding(input_ids=input_ids,
+                                                         attention_mask=attention_mask,
+                                                         token_type_id=token_type_ids)
+
+        # process candidate
+        candidate_seq_len = candidate_attention_mask.shape[-1]
+        candidate_attention_mask = candidate_attention_mask.reshape(-1, candidate_seq_len)
+        candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_attention_mask.shape[0],
+                                                                            candidate_seq_len,
+                                                                            candidate_context_embeddings.shape[-1])
+
+        joint_embeddings = self.joint_encoding(a_embeddings=a_lower_encoded_embeddings,
+                                               b_embeddings=candidate_context_embeddings,
+                                               a_attention_mask=attention_mask,
+                                               b_attention_mask=candidate_attention_mask,
+                                               train_flag=False)
+
+        pooler = self.pooler_layer(joint_embeddings)
+        logits = self.classifier(pooler)
+        logits = logits.reshape(input_ids.shape[0], -1)
+        return logits
+
     # encode a text using lower layers
     def lower_encoding(self, input_ids, attention_mask, token_type_id):
         embeddings = self.embeddings(input_ids=input_ids,
@@ -1287,7 +1350,7 @@ class MatchDeformer(nn.Module):
     # concatenate embeddings of two texts and encoding them using top layers
     # dims of a_embeddings, b_embeddings are both 3, (batch size, seq len, dim)
     # dims of a_attention_mask, b_attention_mask are both 2, (batch size, seq len)
-    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask):
+    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, train_flag):
         device = a_embeddings.device
 
         b_max_seq_len = torch.max(b_attention_mask.sum(-1))
@@ -1300,11 +1363,9 @@ class MatchDeformer(nn.Module):
         b_embeddings = b_embeddings[:, :b_max_seq_len, :]
         b_attention_mask = b_attention_mask[:, :b_max_seq_len]
 
-        candidate_num = a_embeddings.shape[0]
-        match_train = True
-        # testing
-        if b_embeddings.shape[0] != candidate_num:
-            match_train = False
+        if train_flag:
+            candidate_num = a_embeddings.shape[0]
+        else:
             candidate_num = int(b_embeddings.shape[0] / a_embeddings.shape[0])
 
         # repeat A
@@ -1315,7 +1376,7 @@ class MatchDeformer(nn.Module):
         a_attention_mask = a_attention_mask.repeat(1, candidate_num, 1).reshape(-1, a_max_seq_len)
 
         # need repeat candidate
-        if match_train:
+        if train_flag:
             b_embeddings = b_embeddings.repeat(candidate_num, 1, 1)
             b_attention_mask = b_attention_mask.repeat(candidate_num, 1)
 
@@ -1359,7 +1420,8 @@ class MatchDeformer(nn.Module):
         joint_embeddings = self.joint_encoding(a_embeddings=a_lower_encoded_embeddings,
                                                b_embeddings=b_lower_encoded_embeddings,
                                                a_attention_mask=a_attention_mask,
-                                               b_attention_mask=b_attention_mask)
+                                               b_attention_mask=b_attention_mask,
+                                               train_flag=train_flag)
         pooler = self.pooler_layer(joint_embeddings)
         logits = self.classifier(pooler)
 
