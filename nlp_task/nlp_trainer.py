@@ -469,7 +469,7 @@ class TrainWholeModel:
 
                     this_query_candidate_embeddings.append(batch_embeddings)
 
-                # (candidate_num(, context_num), dim)
+                # (1, candidate_num(, context_num), dim)
                 this_query_candidate_embeddings = torch.cat(this_query_candidate_embeddings, dim=0).unsqueeze(0)
                 whole_candidate_embeddings.append(this_query_candidate_embeddings)
 
@@ -498,10 +498,14 @@ class TrainWholeModel:
                 this_block_candidate_embeddings = whole_candidate_embeddings[
                                                   processed_query_count:processed_query_count + self.query_block_size].to(
                     self.device)
+                this_block_candidate_attention_mask = candidate_attention_mask[
+                                                      processed_query_count:processed_query_count + self.query_block_size].to(
+                    self.device)
                 dot_products = self.model.do_queries_match(input_ids=this_block_query_input_ids,
                                                            token_type_ids=this_block_query_token_type_ids,
                                                            attention_mask=this_block_query_attention_mask,
-                                                           candidate_context_embeddings=this_block_candidate_embeddings)
+                                                           candidate_context_embeddings=this_block_candidate_embeddings,
+                                                           candidate_attention_mask=this_block_candidate_attention_mask)
                 whole_dot_products.append(dot_products)
                 processed_query_count += self.query_block_size
 
@@ -641,7 +645,7 @@ class TrainWholeModel:
 
                 processed_candidate_count += encoding_batch_size
 
-            # (query_num, candidate_num(, context_num), dim)
+            # (candidate_num(, context_num), dim)
             whole_candidate_embeddings = torch.cat(whole_candidate_embeddings, dim=0).to("cpu")
 
             # begin time
@@ -666,10 +670,15 @@ class TrainWholeModel:
                 this_block_candidate_embeddings = whole_candidate_embeddings[
                                                   processed_query_count:processed_query_count + self.query_block_size].to(
                     self.device)
+                this_block_candidate_attention_mask = candidate_attention_mask[
+                                                      processed_query_count:processed_query_count + self.query_block_size].to(
+                    self.device)
+
                 logits = self.model.do_queries_classify(input_ids=this_block_query_input_ids,
                                                         token_type_ids=this_block_query_token_type_ids,
                                                         attention_mask=this_block_query_attention_mask,
-                                                        candidate_context_embeddings=this_block_candidate_embeddings)
+                                                        candidate_context_embeddings=this_block_candidate_embeddings,
+                                                        candidate_attention_mask=this_block_candidate_attention_mask)
                 whole_logits.append(logits)
                 processed_query_count += self.query_block_size
 
