@@ -1,11 +1,11 @@
 /home/yuanhang/anaconda3/envs/prompt/lib/python3.8/site-packages/transformers/
 ------------------------------------------------------------------------------------------------------------------------
-Task1: mnli ------------------------------------------------------------
+Task1: mnli/qqp ------------------------------------------------------------
 # train bi
-python -u nlp_main.py -d mnli --model_class QAClassifierModel --composition pooler -n 0 --label_num 3 --train_batch_size 128 | tee  logs/mnli/bi.log
+python -u nlp_main.py -d qqp --model_class QAClassifierModel --composition pooler -n 1 --label_num 2 --train_batch_size 128 --val_batch_size 128 --no_apex | tee  logs/qqp/bi.log
 
 # train cross
-python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --pretrained_bert_path bert-base-uncased | tee  logs/mnli/base_cross.log
+python -u nlp_main.py -d qqp --model_class CrossBERT --composition pooler --label_num 2 --train_batch_size 16 --gradient_accumulation_steps 8  -n 1  | tee  logs/qqp/cross.log
 
 # train ClassifyParallelEncoder
 python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder -n 0 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage  --model_save_prefix c10_one_stage_out_vector_base_ --context_num 10 | tee  logs/mnli/c10_one_stage_out_vector.log

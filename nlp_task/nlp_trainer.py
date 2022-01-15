@@ -264,7 +264,7 @@ class TrainWholeModel:
                     self.save_model(model_save_path=model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
                                     previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
 
-                    if self.dataset_name == 'mnli':
+                    if self.dataset_name in ['mnli', 'qqp']:
                         self.do_test(test_datasets=test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
 
                 self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
@@ -307,7 +307,7 @@ class TrainWholeModel:
 
         # add model
         if self.model_class == "CrossBERT":
-            if self.dataset_name in ['mnli']:
+            if self.dataset_name in ['mnli', 'qqp']:
                 train_step_function = self.__classify_train_step_for_cross
             elif self.dataset_name in ['dstc7', 'ubuntu']:
                 train_step_function = self.__match_train_step_for_cross
@@ -315,7 +315,7 @@ class TrainWholeModel:
                 raise_dataset_error()
         elif self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel',
                                   'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer']:
-            if self.dataset_name in ['mnli']:
+            if self.dataset_name in ['mnli', 'qqp']:
                 train_step_function = self.__classify_train_step_for_qa_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
                 train_step_function = self.__match_train_step_for_qa_input
@@ -359,7 +359,7 @@ class TrainWholeModel:
         torch.cuda.empty_cache()
         gc.collect()
 
-        if self.dataset_name in ['mnli']:
+        if self.dataset_name in ['mnli', 'qqp']:
             now_best_performance = self.classify_do_val_body(val_datasets, previous_best_performance)
         elif self.dataset_name in ['dstc7', 'ubuntu']:
             now_best_performance = self.match_val_test_body(this_datasets=val_datasets,
@@ -380,7 +380,7 @@ class TrainWholeModel:
         previous_best_performance = kwargs.get('previous_best_performance', 0.0)
         do_val = kwargs.get('do_val', False)
 
-        if self.dataset_name in ['mnli']:
+        if self.dataset_name in ['mnli', 'qqp']:
             self.glue_test(test_datasets=test_datasets, model_save_path=model_save_path, postfix=postfix)
         elif self.dataset_name in ['dstc7', 'ubuntu']:
             _ = self.match_val_test_body(this_datasets=test_datasets,
@@ -1000,8 +1000,9 @@ class TrainWholeModel:
 
     def glue_test(self, test_datasets=None, model_save_path=None, postfix=None):
         # add dataset
-        dataset_label_dict = {'mnli': ['entailment', 'neutral', 'contradiction']}
-        output_text_name = {'mnli': ['MNLI-m.tsv', 'MNLI-mm.tsv']}
+        dataset_label_dict = {'mnli': ['entailment', 'neutral', 'contradiction'],
+                              'qqp': ['0', '1']}
+        output_text_name = {'mnli': ['MNLI-m.tsv', 'MNLI-mm.tsv'], 'qqp': ['QQP.tsv']}
 
         # create model if necessary
         if self.model is None:
@@ -1181,6 +1182,48 @@ class TrainWholeModel:
                     label_column_name='label')
 
                 test_datasets = (test_matched_dataset, test_mismatched_dataset,)
+        elif self.dataset_name == 'qqp':
+            # choose function to process data
+            if pair_flag is True:
+                temp_dataset_process_function = self.__tokenize_classify_bi_data_then_save
+            else:
+                temp_dataset_process_function = self.__tokenize_classify_cross_data_then_save
+
+            # have been processed and saved to disk
+            if os.path.exists("./dataset/" + save_load_prefix + "glue_qqp_train"):
+                train_datasets = (
+                torch.load("./dataset/" + save_load_prefix + "glue_qqp_train")['dataset'],)
+
+                val_datasets = (torch.load("./dataset/" + save_load_prefix + "glue_qqp_val")['dataset'],)
+
+                test_datasets = (torch.load("./dataset/" + save_load_prefix + "glue_qqp_test")['dataset'],)
+            else:
+                # load data from huggingface(online)
+                complete_dataset = datasets.load_dataset("glue", 'qqp')
+
+                # get train dataset
+                train_datasets = (temp_dataset_process_function(data=complete_dataset['train'],
+                                                                save_name=save_load_prefix + "glue_qqp_train",
+                                                                a_column_name="question1",
+                                                                b_column_name="question2",
+                                                                label_column_name='label'),)
+
+                # get val dataset
+                validation_dataset = temp_dataset_process_function(data=complete_dataset['validation'],
+                                                                   save_name=save_load_prefix + "glue_qqp_val",
+                                                                   a_column_name="question1",
+                                                                   b_column_name="question2",
+                                                                   label_column_name='label')
+
+                val_datasets = (validation_dataset,)
+
+                # get test dataset
+                test_dataset = temp_dataset_process_function(data=complete_dataset['test'],
+                                                             save_name=save_load_prefix + "glue_qqp_test",
+                                                             a_column_name="question1",
+                                                             b_column_name="question2",
+                                                             label_column_name='label')
+                test_datasets = (test_dataset,)
         elif self.dataset_name in ['dstc7', 'ubuntu']:
             # check
             if not pair_flag and self.train_candidate_num < 1:
