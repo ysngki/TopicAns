@@ -131,18 +131,22 @@ class MyBertSelfAttention(nn.Module):
 		mixed_query_layer = self.query(hidden_states)
 		# get query for candidate
 		if enrich_candidate_by_question:
+			# get shape for future computations
+			batch_size, candidate_context_num, self_att_dim = candidate_context_embeddings.shape
+			context_num = int(candidate_context_num / candidate_num)
+
 			if candidate_context_embeddings is None or decoder is None or layer_index is None:
 				raise Exception(
 					"candidate_embeddings or decode_query_layer or layer_index missed for enrich_candidate_by_question!")
 
-			# (query_num, candidate_context_num, vec_dim)
-			# used to enrich candidate contexts themselves
+			# (query_num, candidate_context_num, vec_dim), used to enrich candidate contexts themselves
 			candidate_query = decoder['candidate_query'][layer_index](candidate_context_embeddings)
 
-			# used to compress the text a into a vector, like what cls does
-  			# (query_num, candidate_num, vec_dim)
+			# (query_num, candidate_num, vec_dim), used to compress the text a into a vector, like what cls does
 			compress_query = decoder['compress_query'][layer_index](lstm_hint_vector)
-			mixed_query_layer = torch.cat((mixed_query_layer, compress_query), dim=1)
+
+			# (query_num, a_seq_len + candidate_num + candidate_context_num, vec_dim)
+			mixed_query_layer = torch.cat((mixed_query_layer, compress_query, candidate_query), dim=1)
 
 		# If this is instantiated as a cross-attention module, the keys
 		# and values come from an encoder; the attention mask needs to be
@@ -165,20 +169,17 @@ class MyBertSelfAttention(nn.Module):
 			value_layer = torch.cat([past_key_value[1], value_layer], dim=2)
 		# only consider here!!!!!!!!!!!!!!!!
 		else:
-			# (batch size, head num, sequence len, head dim)
+			# (batch size, head num, a_seq_len, head dim)
 			key_layer = self.transpose_for_scores(self.key(hidden_states))
 			value_layer = self.transpose_for_scores(self.value(hidden_states))
 
 			# get key and value for candidate
 			if enrich_candidate_by_question:
+				# (batch size, head num, candidate_context_num, head dim)
 				candidate_key_layer = self.transpose_for_scores(
 					decoder['candidate_key'][layer_index](candidate_context_embeddings))
 				candidate_value_layer = self.transpose_for_scores(
 					decoder['candidate_value'][layer_index](candidate_context_embeddings))
-
-				# candidate can see almost all tokens
-				candidate_key_layer = torch.cat([key_layer, candidate_key_layer], dim=-2)
-				candidate_value_layer = torch.cat([value_layer, candidate_value_layer], dim=-2)
 
 		query_layer = self.transpose_for_scores(mixed_query_layer)
 		if enrich_candidate_by_question:
@@ -195,11 +196,17 @@ class MyBertSelfAttention(nn.Module):
 			past_key_value = (key_layer, value_layer)
 
 		# Take the dot product between "query" and "key" to get the raw attention scores.
-		# (batch size, head num, sequence len, sequence len)
+		# (batch size, head num, whole sequence len, text_a_seq_len)
 		attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
 		if enrich_candidate_by_question:
-			# (batch size, head num, candidate_num*context_num, sequence len + candidate_num*context_num)
-			candidate_attention_scores = torch.matmul(candidate_query, candidate_key_layer.transpose(-1, -2))
+			# (batch size, head num, candidate_num, context_num, head dim)
+			candidate_query = candidate_query.reshape(batch_size, self.num_attention_heads, candidate_num, context_num,
+													  candidate_query.shape[-1])
+			candidate_key_layer = candidate_key_layer.reshape(batch_size, self.num_attention_heads, candidate_num,
+															  context_num, candidate_query.shape[-1])
+
+			# (batch size, head num, candidate_num, context_num, context_num)
+			candidate_context_2_self_attention = torch.matmul(candidate_query, candidate_key_layer.transpose(-1, -2))
 
 		if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
 			seq_length = hidden_states.size()[1]
@@ -220,43 +227,28 @@ class MyBertSelfAttention(nn.Module):
 		attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 		if enrich_candidate_by_question:
 			# (batch size, head num, candidate_num*context_num, sequence len + candidate_num*context_num)
-			candidate_attention_scores = candidate_attention_scores / math.sqrt(self.attention_head_size)
+			candidate_context_2_self_attention = candidate_context_2_self_attention / math.sqrt(
+				self.attention_head_size)
 
-		# attention_mask.shape = (batch size, 1, 1, question_sequence_len)
+		# attention_mask.shape = (batch size, 1, 1, text_a_seq_len)
 		if attention_mask is not None:
 			# Apply the attention mask is (precomputed for all layers in BertModel forward() function)
 			attention_scores = attention_scores + attention_mask
 
 			if enrich_candidate_by_question:
-				# prepare mask for candidate
-				candidate_context_num = candidate_context_embeddings.shape[1]
+				# pick attention: candidate_context_2_text_a
+				# (batch size, head num, candidate_context_num, text_a_seq_len)
+				candidate_context_2_text_a_attention = attention_scores[:, :, -candidate_context_num:, :]
+				# (batch size, head num, text_a_seq_len + candidate_num, text_a_seq_len)
+				attention_scores = attention_scores[:, :, :-candidate_context_num, :]
 
-				# (1, 1, 1, candidate_context_num)
-				candidate_mask_tensor = torch.tensor([-10000.0] * candidate_context_num,
-													 device=attention_scores.device).unsqueeze(
-					0).unsqueeze(0).unsqueeze(0)
-				# (batch size, 1, 1, candidate_context_num)
-				candidate_mask_tensor = candidate_mask_tensor.repeat(attention_mask.shape[0], 1, 1, 1)
-				# (batch size, 1, 1, question_sequence_len + candidate_context_num)
-				new_attention_mask = torch.cat([attention_mask, candidate_mask_tensor], dim=-1)
-				# (batch size, head num, candidate_context_num, question_sequence_len + candidate_context_num)
-				new_attention_mask = new_attention_mask.repeat(1, candidate_attention_scores.shape[1],
-															   candidate_attention_scores.shape[2], 1)
-				previous_shape = new_attention_mask.size()
-
-				# (batch size, head num, candidate_num, context_num, question_sequence_len + candidate_context_num)
-				new_attention_mask = new_attention_mask.reshape(previous_shape[0], previous_shape[1], candidate_num, -1,
-																previous_shape[-1])
-				context_num = new_attention_mask.shape[-2]
-				all_sequence_len = new_attention_mask.shape[-1]
-
-				# let candidate diagno to be 0.0
-				for inner_index in range(1, candidate_num + 1):
-					new_attention_mask[:, :, -inner_index, :,
-					-inner_index * context_num: all_sequence_len - ((inner_index - 1) * context_num)] = 0.0
-				new_attention_mask = new_attention_mask.reshape(*previous_shape)
-				# now candidate can see itself and question, while question can only see itself
-				candidate_attention_scores = candidate_attention_scores + new_attention_mask
+				# (batch size, head num, candidate_context_num, context_num)
+				candidate_context_2_self_attention = candidate_context_2_self_attention.reshape(batch_size,
+																								self.num_attention_heads,
+																								candidate_context_num,
+																								context_num)
+				candidate_attention_scores = torch.cat(
+					(candidate_context_2_text_a_attention, candidate_context_2_self_attention), dim=-1)
 
 		# Normalize the attention scores to probabilities.
 		attention_probs = nn.functional.softmax(attention_scores, dim=-1)
@@ -275,7 +267,23 @@ class MyBertSelfAttention(nn.Module):
 		# (batch size, head num, sequence len, dim)
 		context_layer = torch.matmul(attention_probs, value_layer)
 		if enrich_candidate_by_question:
-			candidate_context = torch.matmul(candidate_attention_probs, candidate_value_layer)
+			# (batch size, head num, candidate_context_num, text_a_seq_len)
+			candidate_context_2_text_a_attention = candidate_attention_probs[:, :, :, :-context_num]
+			candidate_context_from_text_a = torch.matmul(candidate_context_2_text_a_attention, value_layer)
+
+			# (batch size, head num, candidate_context_num, context_num)
+			candidate_context_2_self_attention = candidate_attention_probs[:, :, :, -context_num:]
+			candidate_context_2_self_attention = candidate_context_2_self_attention.reshape(batch_size,
+																							self.num_attention_heads,
+																							candidate_num, context_num,
+																							context_num)
+			candidate_value_layer = candidate_value_layer.reshape(batch_size, self.num_attention_heads, candidate_num,
+																  context_num, -1)
+			candidate_context_from_self = torch.matmul(candidate_context_2_self_attention, candidate_value_layer)
+			candidate_context_from_self = candidate_context_from_self.reshape(batch_size, self.num_attention_heads,
+																			  candidate_context_num, -1)
+
+			candidate_context = candidate_context_from_self + candidate_context_from_text_a
 
 		# (batch size, sequence len, head num, dim)
 		context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
@@ -347,7 +355,7 @@ class MyBertAttention(nn.Module):
 			candidate_num=1,
 	):
 		if enrich_candidate_by_question:
-      		# (query_num, candidate_context_num, dim)
+			# (query_num, candidate_context_num, dim)
 			candidate_context_embeddings = candidate_embeddings[:, :-candidate_num, :]
 			# (query_num, candidate_num, context_num, dim)
 			lstm_hint_vector = candidate_context_embeddings.reshape(candidate_embeddings.shape[0], candidate_num, -1,

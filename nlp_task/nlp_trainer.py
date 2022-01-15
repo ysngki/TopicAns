@@ -405,7 +405,7 @@ class TrainWholeModel:
 
         # prepare data
         if not test_datasets:
-                _, _, this_datasets = self.__get_datasets(get_train=False, get_val=False)
+            _, _, this_datasets = self.__get_datasets(get_train=False, get_val=False)
         else:
             this_datasets = test_datasets
         if len(this_datasets) > 1:
