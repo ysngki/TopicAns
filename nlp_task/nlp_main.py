@@ -151,7 +151,7 @@ if __name__ == '__main__':
 									my_args.dataset_name)
 			else:
 				raise Exception(f"{my_args.model_class} is not supported for real test yet!")
-		elif my_args.dataset_name in ['mnli']:
+		elif my_args.dataset_name in ['mnli', 'qqp']:
 			if my_args.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'ClassifyDeformer']:
 				my_train_model.classify_bi_real_test(
 					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +

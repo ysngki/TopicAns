@@ -226,3 +226,21 @@ def tokenize_and_truncate_from_head(tokenizer, block_data, text_max_len):
 
 	return this_block_input_ids_list, this_block_token_type_ids_list, this_block_attention_mask_list, this_seq_max_len
 
+
+def clean_input_ids(input_ids, attention_mask, token_type_ids):
+	# max_seq_len = torch.max(attention_mask.sum(-1))
+	#
+	# input_ids = input_ids[:, :max_seq_len]
+	# token_type_ids = token_type_ids[:, :max_seq_len]
+	# attention_mask = attention_mask[:, :max_seq_len]
+
+	return input_ids, attention_mask, token_type_ids
+
+
+def clean_input_embeddings(attention_mask, embeddings):
+	# max_seq_len = torch.max(attention_mask.sum(-1))
+	# embeddings = embeddings[:, :max_seq_len, :]
+	# attention_mask = embeddings[:, :max_seq_len]
+
+	return attention_mask, embeddings
+

@@ -623,15 +623,27 @@ class TrainWholeModel:
 
         self.model.eval()
 
+        # if self.model_class == 'ClassifyDeformer' and self.dataset_name == 'qqp':
+        query_num = candidate_input_ids.shape[0] // 8
+
+        candidate_input_ids = candidate_input_ids[:query_num]
+        candidate_attention_mask = candidate_attention_mask[:query_num]
+        candidate_token_type_ids = candidate_token_type_ids[:query_num]
+
+        query_input_ids = query_input_ids[:query_num]
+        query_attention_mask = query_attention_mask[:query_num]
+        query_token_type_ids = query_token_type_ids[:query_num]
+
         # pre-compute candidates
         with torch.no_grad():
             candidate_num = candidate_input_ids.shape[0]
             processed_candidate_count = 0
-            encoding_batch_size = 200
+            encoding_batch_size = 800
 
             # encoding one by one
             whole_candidate_embeddings = []
             while processed_candidate_count < candidate_num:
+                print(f"\r{processed_candidate_count}/{candidate_num}", end="")
                 # calculate vectors of candidates
                 batch_input_ids = candidate_input_ids[
                                   processed_candidate_count:processed_candidate_count + encoding_batch_size].to(
@@ -647,15 +659,17 @@ class TrainWholeModel:
                                                                  token_type_ids=batch_token_type_ids,
                                                                  attention_mask=batch_attention_mask)
 
-                if self.model_class in ['ClassifyDeformer']:
+                if self.model_class in ['ClassifyDeformer'] or self.dataset_name in ['qqp']:
                     whole_candidate_embeddings.append(batch_embeddings.to("cpu"))
                 else:
                     whole_candidate_embeddings.append(batch_embeddings)
 
                 processed_candidate_count += encoding_batch_size
 
+            print()
             # (candidate_num(, context_num), dim)
             whole_candidate_embeddings = torch.cat(whole_candidate_embeddings, dim=0).to("cpu")
+            print("candidate computed finished!")
 
             # begin time
             begin_time = time.time()
@@ -775,7 +789,6 @@ class TrainWholeModel:
             print(f"Avg: {accuracy}")
             print(f"Model is {self.model_class}, Real scene testing takes", get_elapse_time(begin_time))
             print("*" * 100)
-            raise_test_error()
 
     def classify_do_val_body(self, val_datasets, previous_best_performance):
         val_dataloader = self.__get_dataloader(data=val_datasets, batch_size=self.val_batch_size)
@@ -1047,7 +1060,7 @@ class TrainWholeModel:
                 if not os.path.exists("./output/"):
                     os.makedirs("./output/")
 
-                with open("./output/" + output_text_name[self.dataset_name][dataloader_index] + postfix, "w") as writer:
+                with open("./output/" + self.model_save_prefix + output_text_name[self.dataset_name][dataloader_index] + postfix, "w") as writer:
                     tsv_writer = csv.writer(writer, delimiter='\t', lineterminator='\n')
 
                     tsv_writer.writerow(['index', 'prediction'])
@@ -1055,7 +1068,7 @@ class TrainWholeModel:
                         text_pre = dataset_label_dict[self.dataset_name][pre]
                         tsv_writer.writerow([index.item(), text_pre])
 
-                print(f"Result is saved to ./output/{output_text_name[self.dataset_name][dataloader_index] + postfix}")
+                print(f"Result is saved to ./output/{self.model_save_prefix + output_text_name[self.dataset_name][dataloader_index] + postfix}")
 
         self.model.train()
 

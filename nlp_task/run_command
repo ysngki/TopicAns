@@ -4,11 +4,14 @@ Task1: mnli/qqp ------------------------------------------------------------
 # train bi
 python -u nlp_main.py -d qqp --model_class QAClassifierModel --composition pooler -n 1 --label_num 2 --train_batch_size 128 --val_batch_size 128 --no_apex | tee  logs/qqp/bi.log
 
+# train poly
+python -u nlp_main.py -d qqp --model_class PolyEncoder --label_num 2 --train_batch_size 128 --gradient_accumulation_steps 1 --one_stage  --model_save_prefix c16_ --no_apex -n 0 --context_num 16 | tee  logs/qqp/c16_poly.log
+
 # train cross
 python -u nlp_main.py -d qqp --model_class CrossBERT --composition pooler --label_num 2 --train_batch_size 16 --gradient_accumulation_steps 8  -n 1  | tee  logs/qqp/cross.log
 
 # train ClassifyParallelEncoder
-python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder -n 0 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage  --model_save_prefix c10_one_stage_out_vector_base_ --context_num 10 | tee  logs/mnli/c10_one_stage_out_vector.log
+python -u nlp_main.py -d qqp --model_class ClassifyParallelEncoder --label_num 2 --train_batch_size 32 --gradient_accumulation_steps 4 --one_stage  --model_save_prefix c1_one_stage_out_vector_ -n 0 --context_num 1 --no_apex | tee  logs/qqp/c1_one_stage_out_vector.log
 
 # train Deformer
 python -u nlp_main.py -d mnli --model_class ClassifyDeformer --top_layer_num 2 --first_seq_max_len 256 -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --no_apex --one_stage | tee -a logs/mnli/deformer.log
