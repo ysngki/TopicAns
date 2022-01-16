@@ -228,19 +228,23 @@ def tokenize_and_truncate_from_head(tokenizer, block_data, text_max_len):
 
 
 def clean_input_ids(input_ids, attention_mask, token_type_ids):
-	# max_seq_len = torch.max(attention_mask.sum(-1))
-	#
-	# input_ids = input_ids[:, :max_seq_len]
-	# token_type_ids = token_type_ids[:, :max_seq_len]
-	# attention_mask = attention_mask[:, :max_seq_len]
+	max_seq_len = torch.max(attention_mask.sum(-1))
+
+	# ensure only pad be filtered
+	dropped_input_ids = input_ids[:, max_seq_len:]
+	assert torch.max(dropped_input_ids.sum(-1)) == 0
+
+	input_ids = input_ids[:, :max_seq_len]
+	token_type_ids = token_type_ids[:, :max_seq_len]
+	attention_mask = attention_mask[:, :max_seq_len]
 
 	return input_ids, attention_mask, token_type_ids
 
 
 def clean_input_embeddings(attention_mask, embeddings):
-	# max_seq_len = torch.max(attention_mask.sum(-1))
-	# embeddings = embeddings[:, :max_seq_len, :]
-	# attention_mask = embeddings[:, :max_seq_len]
+	max_seq_len = torch.max(attention_mask.sum(-1))
+	embeddings = embeddings[:, :max_seq_len, :]
+	attention_mask = attention_mask[:, :max_seq_len]
 
 	return attention_mask, embeddings
 
