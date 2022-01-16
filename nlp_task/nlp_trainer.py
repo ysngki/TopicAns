@@ -624,7 +624,7 @@ class TrainWholeModel:
         self.model.eval()
 
         # if self.model_class == 'ClassifyDeformer' and self.dataset_name == 'qqp':
-        query_num = candidate_input_ids.shape[0] // 8
+        query_num = candidate_input_ids.shape[0] // 100
 
         candidate_input_ids = candidate_input_ids[:query_num]
         candidate_attention_mask = candidate_attention_mask[:query_num]
@@ -754,7 +754,11 @@ class TrainWholeModel:
 
         with torch.no_grad():
             whole_logits = []
+            dataloader_len = len(val_dataloader) // 100
+
             for index, batch in enumerate(tqdm(val_dataloader)):
+                if index == dataloader_len:
+                    break
                 input_ids = batch['input_ids'].to(self.device)
                 token_type_ids = batch['token_type_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)

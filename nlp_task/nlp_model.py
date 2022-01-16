@@ -1077,7 +1077,7 @@ class PolyEncoder(nn.Module):
             # (batch size, batch size)
             # first is query, second is candidate
             dot_product = torch.sum(final_query_context_vec * candidate_context_vectors, -1)
-
+            train_flag = kwargs['train_flag']
             if train_flag:
                 mask = torch.eye(batch_size).to(dot_product.device)
                 loss = F.log_softmax(dot_product, dim=-1) * mask
@@ -1144,6 +1144,7 @@ class DeformerConfig:
         print("sentence_embedding_len:", self.sentence_embedding_len)
         print("top_layer_numL:", self.top_layer_num)
         print("text_max_len:", self.text_max_len)
+
 
 class ClassifyDeformer(nn.Module):
     def __init__(self, config: DeformerConfig):
@@ -1232,7 +1233,6 @@ class ClassifyDeformer(nn.Module):
                             candidate_attention_mask, **kwargs):
         """ use pre-compute candidate to get scores. Only used by real test."""
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
-
         candidate_attention_mask, candidate_context_embeddings = clean_input_embeddings(candidate_attention_mask, candidate_context_embeddings)
 
         # encoding a
@@ -1374,7 +1374,6 @@ class MatchDeformer(nn.Module):
     def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, train_flag):
         device = a_embeddings.device
 
-        b_max_seq_len = torch.max(b_attention_mask.sum(-1))
         a_max_seq_len = torch.max(a_attention_mask.sum(-1))
 
         if train_flag:
