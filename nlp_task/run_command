@@ -55,3 +55,14 @@ python -u nlp_main.py -d dstc7 --model_class MatchParallelEncoder --val_candidat
 
 python -u nlp_main.py -d dstc7 --model_class CrossBERT --val_candidate_num 100 --one_stage --label_num 1 --train_candidate_num 16 --train_batch_size 2  --gradient_accumulation_steps 64 --val_batch_size 2 -n 1 --no_train --do_real_test
 
+
+------------------------------------------------------------------------------------------------------------------------
+Task4: yahooqa ------------------------------------------------------------
+1. Mine
+python -u nlp_main.py -d yahooqa --model_class MatchParallelEncoder --label_num 0  --train_batch_size 32 --gradient_accumulation_steps 4 --one_stage  --model_save_prefix c10_ -n 0 --context_num 10 --no_apex  --train_candidate_num 5 | tee -a logs/yahooqa/c10_l4.log
+
+2. bi
+python -u nlp_main.py -d yahooqa --model_class QAMatchModel --label_num 0  --train_batch_size 32 --gradient_accumulation_steps 4 --one_stage  -n 1 --no_apex  --train_candidate_num 5 | tee -a logs/yahooqa/bi_l4.log
+
+3. Cross
+python -u nlp_main.py -d yahooqa --model_class CrossBERT --label_num 1 --train_candidate_num 5 --val_candidate_num 5 --val_batch_size 2 --no_apex --train_batch_size 32 --gradient_accumulation_steps 4  -n 1  | tee -a logs/yahooqa/cross_bs_128.log

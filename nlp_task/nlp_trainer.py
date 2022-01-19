@@ -185,7 +185,7 @@ class TrainWholeModel:
                 if epoch == restore_epoch and not self.no_initial_test:
                     print("-" * 30 + "initial validation" + "-" * 30)
 
-                    this_best_performance = self.do_val(val_datasets, previous_best_performance, r_k_num=(1, 10))
+                    this_best_performance = self.do_val(val_datasets, previous_best_performance)
 
                     if this_best_performance > previous_best_performance:
                         previous_best_performance = this_best_performance
@@ -252,7 +252,7 @@ class TrainWholeModel:
                     # 忽略，变更为一次epoch结束评测一次
                     # ......
 
-                this_best_performance = self.do_val(val_datasets, previous_best_performance, r_k_num=(1, 10))
+                this_best_performance = self.do_val(val_datasets, previous_best_performance)
 
                 # 准备存储模型
                 postfix = ""
@@ -268,7 +268,7 @@ class TrainWholeModel:
                                     previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
 
                     if self.dataset_name in ['mnli', 'qqp']:
-                        self.do_test(test_datasets=test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
+                        self.do_test(test_datasets=test_datasets, postfix=postfix, previous_best_performance=previous_best_performance)
 
                 self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer, scheduler=scheduler,
                                 previous_best_performance=previous_best_performance, early_stop_count=early_stop_count)
@@ -297,7 +297,7 @@ class TrainWholeModel:
             # 用最好的模型
             self.model = load_model(self.model, model_save_path + postfix)
 
-            self.do_test(test_datasets=test_datasets, postfix=postfix, previous_best_performance=previous_best_performance, r_k_num=(1, 10))
+            self.do_test(test_datasets=test_datasets, postfix=postfix, previous_best_performance=previous_best_performance)
 
             # 如果只是第一阶段的训练，那么还要继续训练
             if not final_stage_flag:
@@ -312,7 +312,7 @@ class TrainWholeModel:
         if self.model_class == "CrossBERT":
             if self.dataset_name in ['mnli', 'qqp']:
                 train_step_function = self.__classify_train_step_for_cross
-            elif self.dataset_name in ['dstc7', 'ubuntu']:
+            elif self.dataset_name in ['dstc7', 'ubuntu', 'yahooqa']:
                 train_step_function = self.__match_train_step_for_cross
             else:
                 raise_dataset_error()
@@ -320,6 +320,8 @@ class TrainWholeModel:
                                   'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer']:
             if self.dataset_name in ['mnli', 'qqp']:
                 train_step_function = self.__classify_train_step_for_qa_input
+            elif self.dataset_name in ['yahooqa']:
+                train_step_function = self.__train_step_for_multi_candidates_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
                 train_step_function = self.__match_train_step_for_qa_input
             else:
@@ -362,12 +364,13 @@ class TrainWholeModel:
         torch.cuda.empty_cache()
         gc.collect()
 
+        # add dataset
         if self.dataset_name in ['mnli', 'qqp']:
             now_best_performance = self.classify_do_val_body(val_datasets, previous_best_performance)
-        elif self.dataset_name in ['dstc7', 'ubuntu']:
+        elif self.dataset_name in ['dstc7', 'ubuntu', 'yahooqa']:
             now_best_performance = self.match_val_test_body(this_datasets=val_datasets,
-                                                            previous_best_performance=previous_best_performance,
-                                                            r_k_num=kwargs['r_k_num'], do_test=False)
+                                                            previous_best_performance=previous_best_performance
+                                                            , do_test=False)
         else:
             raise Exception("do_val is not supported for this dataset_name!")
 
@@ -379,16 +382,15 @@ class TrainWholeModel:
         torch.cuda.empty_cache()
         gc.collect()
 
-        r_k_num = kwargs.get('r_k_num', (1, 10))
         previous_best_performance = kwargs.get('previous_best_performance', 0.0)
         do_val = kwargs.get('do_val', False)
 
         if self.dataset_name in ['mnli', 'qqp']:
             self.glue_test(test_datasets=test_datasets, model_save_path=model_save_path, postfix=postfix)
-        elif self.dataset_name in ['dstc7', 'ubuntu']:
+        elif self.dataset_name in ['dstc7', 'ubuntu', 'yahooqa']:
             _ = self.match_val_test_body(this_datasets=test_datasets,
                                          previous_best_performance=previous_best_performance,
-                                         r_k_num=r_k_num, do_test=not do_val, model_save_path=model_save_path, do_val=do_val)
+                                         do_test=not do_val, model_save_path=model_save_path)
         else:
             raise Exception("do_val is not supported for this dataset_name!")
 
@@ -404,7 +406,6 @@ class TrainWholeModel:
         :return: None
         """
         print("*" * 40 + " Begin Real Testing " + "*" * 40)
-        r_k_num = kwargs.get('r_k_num', (1, 10))
 
         # prepare data
         if not test_datasets:
@@ -522,7 +523,7 @@ class TrainWholeModel:
             # calculate R@K
             r_k_result = ()
 
-            for k in r_k_num:
+            for k in self.r_k_num:
                 _, indices = torch.topk(whole_dot_products, k, dim=-1)
                 hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
                 r_k_result += (hit_num / whole_dot_products.shape[0],)
@@ -536,7 +537,6 @@ class TrainWholeModel:
 
     def match_cross_real_test(self, test_datasets: SingleInputDataset = None, model_save_path=None, **kwargs):
         print("*" * 40 + " Begin Real Testing " + "*" * 40)
-        r_k_num = kwargs.get('r_k_num', (1, 10))
 
         # prepare data
         if not test_datasets:
@@ -581,7 +581,7 @@ class TrainWholeModel:
             # calculate R@K
             r_k_result = ()
 
-            for k in r_k_num:
+            for k in self.r_k_num:
                 _, indices = torch.topk(whole_logits, k, dim=-1)
                 hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
                 r_k_result += (hit_num / whole_logits.shape[0],)
@@ -816,19 +816,18 @@ class TrainWholeModel:
 
         return avg_val_acc
 
-    def match_val_test_body(self, previous_best_performance, r_k_num,  this_datasets=None, model_save_path=None, do_test=False, **kwargs):
+    def match_val_test_body(self, previous_best_performance,  this_datasets=None, model_save_path=None, do_test=False, **kwargs):
         """
         calculate R@K, and loss
         :param model_save_path:
         :param this_datasets:
         :param do_test: do test or validation
         :param previous_best_performance: used to print
-        :param r_k_num: can be tuple or int
         :return: (loss, R@K, ...)
         """
 
         if not this_datasets:
-            if kwargs['do_val']:
+            if not do_test:
                 _, test_datasets, _ = self.__get_datasets(get_train=False, get_test=False)
             else:
                 _, _, test_datasets = self.__get_datasets(get_train=False, get_val=False)
@@ -856,17 +855,10 @@ class TrainWholeModel:
 
             # calculate R@K
             r_k_result = ()
-            if isinstance(r_k_num, int):
-                _, indices = torch.topk(logits, r_k_num, dim=-1)
-                hit_num = ((indices == (self.val_candidate_num-1)).sum(-1)).sum().item()
-                r_k_result += (hit_num / logits.shape[0], )
-            elif isinstance(r_k_num, tuple):
-                for k in r_k_num:
-                    _, indices = torch.topk(logits, k, dim=-1)
-                    hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
-                    r_k_result += (hit_num / logits.shape[0],)
-            else:
-                raise Exception("r_k_num should be int or tuple!")
+            for k in self.r_k_num:
+                _, indices = torch.topk(logits, k, dim=-1)
+                hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
+                r_k_result += (hit_num / logits.shape[0],)
 
             _, avg_r_k_result = sum_average_tuple(r_k_result)
 
@@ -878,7 +870,7 @@ class TrainWholeModel:
 
         print(
             f"Eval on {log_text} Dataset: " + "*" * 30 +
-            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{r_k_num}\tAvg R:{avg_r_k_result}\tprevious best performance:{previous_best_performance}\tfrom rank:{self.local_rank}")
+            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{self.r_k_num}\tAvg R:{avg_r_k_result}\tprevious best performance:{previous_best_performance}\tfrom rank:{self.local_rank}")
 
         # in order to use > to reveal priority
         return r_k_result[0]
@@ -1245,6 +1237,72 @@ class TrainWholeModel:
                                                              b_column_name="question2",
                                                              label_column_name='label')
                 test_datasets = (test_dataset,)
+        elif self.dataset_name == 'yahooqa':
+            # check
+            if not pair_flag and self.train_candidate_num < 1:
+                raise Exception("Should designate train_candidate_num if you want train cross model on match task!!")
+
+            # read or process...
+            # read training data. exist? read!--------------------------------------------------
+            if not get_train:
+                pass
+            elif os.path.exists("./dataset/" + save_load_prefix + self.dataset_name + "_train" + save_load_suffix):
+                train_datasets = (
+                torch.load("./dataset/" + save_load_prefix + self.dataset_name + "_train" + save_load_suffix)[
+                    'dataset'],)
+            else:
+                if pair_flag:
+                    string_train_dataset = datasets.load_from_disk(
+                        "./dataset/string_train_" + self.dataset_name)
+
+                    train_datasets = (self.__tokenize_match_multi_candidate_data_then_save(data=string_train_dataset,
+                                                                                           save_name=save_load_prefix + self.dataset_name + "_train",
+                                                                                           a_column_name="sentence_a",
+                                                                                           b_column_name="candidates",
+                                                                                           candidate_num=5),)
+                else:
+                    string_train_dataset = datasets.load_from_disk(
+                        "./dataset/string_train_" + self.dataset_name)
+
+                    train_datasets = (self.__tokenize_match_cross_data_then_save(data=string_train_dataset,
+                                                                                 save_name=save_load_prefix + self.dataset_name + "_train",
+                                                                                 a_column_name="sentence_a",
+                                                                                 b_column_name="candidates",
+                                                                                 candidate_num=5,
+                                                                                 suffix="_5"),)
+
+            # read val data. exist? read!--------------------------------------------------
+            if pair_flag:
+                process_val_test_func = self.__tokenize_match_multi_candidate_data_then_save
+            else:
+                process_val_test_func = self.__tokenize_match_cross_data_then_save
+
+            if not get_val:
+                pass
+            elif os.path.exists("./dataset/" + save_load_prefix + self.dataset_name + "_val"):
+                val_datasets = (torch.load("./dataset/" + save_load_prefix + self.dataset_name + "_val")['dataset'],)
+            else:
+                string_val_dataset = datasets.load_from_disk("./dataset/string_val_" + self.dataset_name)
+
+                val_datasets = (process_val_test_func(data=string_val_dataset,
+                                                      save_name=save_load_prefix + self.dataset_name + "_val",
+                                                      a_column_name="sentence_a",
+                                                      b_column_name="candidates",
+                                                      candidate_num=5),)
+
+            # read test data. exist? read!--------------------------------------------------
+            if not get_test:
+                pass
+            elif os.path.exists("./dataset/" + save_load_prefix + self.dataset_name + "_test"):
+                test_datasets = (torch.load("./dataset/" + save_load_prefix + self.dataset_name + "_test")['dataset'],)
+            else:
+                string_test_dataset = datasets.load_from_disk("./dataset/string_test_" + self.dataset_name)
+
+                test_datasets = (process_val_test_func(data=string_test_dataset,
+                                                       save_name=save_load_prefix + self.dataset_name + "_test",
+                                                       a_column_name="sentence_a",
+                                                       b_column_name="candidates",
+                                                       candidate_num=5),)
         elif self.dataset_name in ['dstc7', 'ubuntu']:
             # check
             if not pair_flag and self.train_candidate_num < 1:
@@ -1349,7 +1407,6 @@ class TrainWholeModel:
         self.top_layer_num = args.top_layer_num
         self.val_num_each_epoch = args.val_num_each_epoch
         self.no_apex = args.no_apex
-        self.val_candidate_num = args.val_candidate_num
         self.val_batch_size = args.val_batch_size
         self.text_max_len = args.text_max_len
         self.dataset_name = args.dataset_name
@@ -1385,6 +1442,19 @@ class TrainWholeModel:
         self.context_num = args.context_num
         self.query_block_size = args.query_block_size
         self.first_seq_max_len = args.first_seq_max_len
+
+        # add dataset
+        if self.dataset_name == 'ubuntu':
+            self.val_candidate_num = 10
+            self.r_k_num = (1,)
+        elif self.dataset_name == 'dstc7':
+            self.val_candidate_num = 100
+            self.r_k_num = (1, 10)
+        elif self.dataset_name == 'yahooqa':
+            self.val_candidate_num = 5
+            self.r_k_num = (1, )
+        else:
+            raise_dataset_error()
 
     # 读取命令行传入的有关config的参数
     def __read_args_for_config(self, args):
@@ -1596,6 +1666,61 @@ class TrainWholeModel:
                 inner_index = max_index[0]
                 if inner_index == qa_labels[i]:
                     step_hit_num += 1
+
+        return (step_loss, step_shoot_num, step_hit_num)
+
+    # 输入为一个q和很多歌candidate，最佳答案放在最后一个。
+    def __train_step_for_multi_candidates_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
+        cross_entropy_function = nn.CrossEntropyLoss()
+        # 读取数据
+        a_input_ids = (batch['a_input_ids']).to(self.device)
+        a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
+        a_attention_mask = (batch['a_attention_mask']).to(self.device)
+
+        b_input_ids = (batch['b_input_ids']).to(self.device)
+        b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
+        b_attention_mask = (batch['b_attention_mask']).to(self.device)
+
+        candidate_num = b_input_ids.shape[1]
+
+        # 得到模型的结果
+        logits = self.model(
+            a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+            a_attention_mask=a_attention_mask,
+            b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
+            b_attention_mask=b_attention_mask, train_flag=False)
+
+        qa_labels = torch.tensor([candidate_num - 1] * logits.shape[0], dtype=torch.long, device=logits.device)
+
+        # 计算损失
+        step_loss = cross_entropy_function(logits, qa_labels)
+
+        # 误差反向传播
+        if not APEX_FLAG or self.no_apex:
+            step_loss.backward()
+        else:
+            with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+
+        # 更新模型参数
+        if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
+            # add model
+            # only update memory in embeddings
+            if self.model_class in ['QAMemory'] and not kwargs['final_stage_flag']:
+                self.model.embeddings.weight.grad[:self.origin_voc_size] *= 0.0
+
+            # if self.model_class in ['ClassifyParallelEncoder']:
+            #     nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
+
+            optimizer.step()
+            optimizer.zero_grad()
+            scheduler.step()
+
+        # 统计命中率
+        step_shoot_num = logits.shape[0]
+
+        _, row_max_indices = logits.topk(k=1, dim=-1)
+        step_hit_num = (row_max_indices.squeeze(-1) == (candidate_num-1)).sum().item()
 
         return (step_loss, step_shoot_num, step_hit_num)
 

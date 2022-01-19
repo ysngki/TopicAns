@@ -21,7 +21,7 @@ def read_arguments():
 								 'QAMatchModel', 'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer'])
 
 	# related to data
-	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli', 'ubuntu', 'qqp'])
+	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli', 'ubuntu', 'qqp', 'yahooqa'])
 	parser.add_argument("--label_num", required=True, type=int, help="for match task, please set as 1")
 
 	# related to model
