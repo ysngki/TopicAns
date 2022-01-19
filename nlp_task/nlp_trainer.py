@@ -852,6 +852,7 @@ class TrainWholeModel:
 
         for dataloader in val_dataloader:
             logits = self.match_validate_model(dataloader)
+            print(logits.shape)
 
             # calculate R@K
             r_k_result = ()
@@ -860,11 +861,17 @@ class TrainWholeModel:
                 hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
                 r_k_result += (hit_num / logits.shape[0],)
 
+            print(r_k_result)
+
             _, avg_r_k_result = sum_average_tuple(r_k_result)
+
+            print(avg_r_k_result)
 
             # calculate loss
             my_label = torch.tensor([self.val_candidate_num-1]*logits.shape[0], dtype=torch.long, device=logits.device)
             this_loss = cross_entropy_function(logits, my_label)
+
+            print(this_loss)
 
         log_text = "test" if do_test else "validation"
 
