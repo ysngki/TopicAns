@@ -1042,9 +1042,6 @@ class PolyEncoder(nn.Module):
         batch_size = a_token_type_ids.shape[0]
         a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask,
                                                                           a_token_type_ids)
-        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
-                                                                          b_token_type_ids)
-
         # encoding candidate texts
         # (batch_size, sequence len, dim)
         candidate_seq_len = b_input_ids.shape[-1]
@@ -1052,6 +1049,9 @@ class PolyEncoder(nn.Module):
         b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
         b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
         b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
+
+        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
+                                                                          b_token_type_ids)
 
         b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
         b_last_hidden_state = b_out['last_hidden_state']
