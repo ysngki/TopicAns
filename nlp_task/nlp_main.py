@@ -109,8 +109,8 @@ if __name__ == '__main__':
 	# 设置训练参数
 	my_train_two_stage_flag = False
 	# add model
-	# if my_args.model_class in ['ClassifyParallelEncoder']:
-	# 	my_train_two_stage_flag = True
+	if my_args.model_class in ['MatchParallelEncoder']:
+		my_train_two_stage_flag = True
 
 	if my_args.one_stage:
 		my_train_two_stage_flag = False

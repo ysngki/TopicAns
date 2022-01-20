@@ -156,7 +156,7 @@ class TrainWholeModel:
             if final_stage_flag:
                 early_stop_threshold = 10
             else:
-                early_stop_threshold = 5
+                early_stop_threshold = 1
 
             # restore training settings
             early_stop_count, restore_epoch, scheduler_last_epoch, previous_best_performance = \
@@ -1459,7 +1459,7 @@ class TrainWholeModel:
     # 读取命令行传入的有关config的参数
     def __read_args_for_config(self, args):
         if args.pretrained_bert_path in ['prajjwal1/bert-small', 'google/bert_uncased_L-6_H-512_A-8',
-                                         'google/bert_uncased_L-8_H-512_A-8']:
+                                         'google/bert_uncased_L-8_H-512_A-8', 'prajjwal1/bert-medium']:
             word_embedding_len = 512
             sentence_embedding_len = 512
         elif args.pretrained_bert_path == 'bert-base-uncased':
@@ -1550,8 +1550,8 @@ class TrainWholeModel:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
-                {'params': model.composition_layer.parameters(), 'lr': 5e-5},
-                {'params': model.decoder.parameters(), 'lr': 5e-5},
+                {'params': model.composition_layer.parameters(), 'lr': 1e-4},
+                {'params': model.decoder.parameters(), 'lr': 1e-4},
             ]
         elif self.model_class == 'PolyEncoder':
             parameters_dict_list = [
@@ -1582,13 +1582,19 @@ class TrainWholeModel:
                     {'params': model.composition_layer.parameters(), 'lr': 1e-4},
                     {'params': model.classifier.parameters(), 'lr': 1e-4},
                 ]
+            elif self.model_class in ['MatchParallelEncoder']:
+                parameters_dict_list = [
+                    # 这几个一样
+                    {'params': model.composition_layer.parameters(), 'lr': 1e-4},
+                    {'params': model.decoder.parameters(), 'lr': 1e-4},
+                ]
             else:
                 raise Exception("Have Two Stage But No optimizer supported for this model class!")
 
         # if to restore, it will be printed in other places
         if not self.restore_flag:
             print(parameters_dict_list)
-        optimizer = torch.optim.Adam(parameters_dict_list, lr=5e-5)
+        optimizer = torch.optim.AdamW(parameters_dict_list, lr=5e-5)
         print("*"*30)
 
         return optimizer
@@ -1650,8 +1656,8 @@ class TrainWholeModel:
             if self.model_class in ['QAMemory'] and not kwargs['final_stage_flag']:
                 self.model.embeddings.weight.grad[:self.origin_voc_size] *= 0.0
 
-            # if self.model_class in ['ClassifyParallelEncoder']:
-            #     nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
+            if self.model_class in ['ClassifyParallelEncoder']:
+                nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
 
             optimizer.step()
             optimizer.zero_grad()
@@ -1709,8 +1715,15 @@ class TrainWholeModel:
             if self.model_class in ['QAMemory'] and not kwargs['final_stage_flag']:
                 self.model.embeddings.weight.grad[:self.origin_voc_size] *= 0.0
 
-            # if self.model_class in ['ClassifyParallelEncoder']:
-            #     nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
+            if self.model_class in ['MatchParallelEncoder']:
+                # for p in self.model.decoder['LSTM'].parameters():
+                #     print(p.grad.norm)
+                # print("*******************************"*3)
+                # for p in self.model.decoder.layer_chunks.parameters():
+                #     print(p.grad.norm)
+                # raise_test_error()
+
+                nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
 
             optimizer.step()
             optimizer.zero_grad()
@@ -1798,6 +1811,9 @@ class TrainWholeModel:
             else:
                 with amp.scale_loss(step_loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
+
+            if self.model_class in ['MatchParallelEncoder']:
+                nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
 
             optimizer.step()
             optimizer.zero_grad()

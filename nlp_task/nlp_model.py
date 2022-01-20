@@ -1434,8 +1434,6 @@ class MatchDeformer(nn.Module):
 
         a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask,
                                                                           a_token_type_ids)
-        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
-                                                                          b_token_type_ids)
 
         # encoding a
         a_lower_encoded_embeddings = self.lower_encoding(input_ids=a_input_ids,
@@ -1450,6 +1448,9 @@ class MatchDeformer(nn.Module):
         b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
 
         b_token_type_ids = b_token_type_ids + 1
+
+        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
+                                                                          b_token_type_ids)
 
         b_lower_encoded_embeddings = self.lower_encoding(input_ids=b_input_ids,
                                                          attention_mask=b_attention_mask,

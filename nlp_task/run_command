@@ -11,7 +11,7 @@ python -u nlp_main.py -d qqp --model_class PolyEncoder --label_num 2 --train_bat
 python -u nlp_main.py -d qqp --model_class CrossBERT --composition pooler --label_num 2 --train_batch_size 16 --gradient_accumulation_steps 8  -n 1  | tee  logs/qqp/cross.log
 
 # train ClassifyParallelEncoder
-python -u nlp_main.py -d qqp --model_class ClassifyParallelEncoder --label_num 2 --train_batch_size 32 --gradient_accumulation_steps 4 --one_stage  --model_save_prefix c1_one_stage_out_vector_ -n 0 --context_num 1 --no_apex | tee  logs/qqp/c1_one_stage_out_vector.log
+python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder --label_num 3 --train_batch_size 32 --gradient_accumulation_steps 4 --pretrained_bert_path bert-base-uncased --one_stage  --no_apex  --model_save_prefix c10_base_  --context_num 10 -n 0 | tee -a logs/mnli/c10_base_mine.log
 
 # train Deformer
 python -u nlp_main.py -d qqp --no_apex --model_class ClassifyDeformer --top_layer_num 2 --first_seq_max_len 256 -n 0 --label_num 2 --train_batch_size 32 --gradient_accumulation_steps 4 --no_apex --one_stage | tee -a logs/qqp/deformer.log
