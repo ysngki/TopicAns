@@ -1556,7 +1556,7 @@ class TrainWholeModel:
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
                 {'params': model.composition_layer.parameters(), 'lr': 5e-5},
-                {'params': model.decoder.parameters(), 'lr': 1e-4},
+                {'params': model.decoder.parameters(), 'lr': 5e-5},
             ]
         elif self.model_class == 'PolyEncoder':
             parameters_dict_list = [

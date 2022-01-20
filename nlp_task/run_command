@@ -29,7 +29,7 @@ python -u nlp_main.py --label_num 1 --val_candidate_num 10  -d ubuntu --model_cl
 
 python -u nlp_main.py  -d ubuntu --model_class MatchDeformer --label_num 1 --val_candidate_num 10 --top_layer_num 2 --first_seq_max_len 256 -n 0 --train_batch_size 2 --gradient_accumulation_steps 24  --no_apex  --val_batch_size 4  --no_initial_test | tee logs/ubuntu/deformer.log
 
-python -u nlp_main.py -d ubuntu --no_apex --model_class CrossBERT --label_num 1 --train_candidate_num 2 --val_candidate_num 10 --val_batch_size 2 --train_batch_size 16 --gradient_accumulation_steps 8  -n 1 --no_initial_test | tee logs/ubuntu/cross_bs_128.log
+python -u nlp_main.py -d ubuntu --no_apex --model_class CrossBERT --label_num 1 --train_candidate_num 16 --val_candidate_num 10 --val_batch_size 2 --train_batch_size 4 --gradient_accumulation_steps 32  -n 1 --no_initial_test | tee logs/ubuntu/cross_bs_128.log
 
 ************* real test ***********************
 1. PolyEncoder
