@@ -1453,6 +1453,9 @@ class TrainWholeModel:
         elif self.dataset_name == 'yahooqa':
             self.val_candidate_num = 5
             self.r_k_num = (1, )
+        elif self.dataset_name in ['mnli']:
+            self.val_candidate_num = None
+            self.r_k_num = None
         else:
             raise_dataset_error()
 
