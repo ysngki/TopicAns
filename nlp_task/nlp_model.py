@@ -556,6 +556,8 @@ class ClassifyParallelEncoder(nn.Module):
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
+        do_ablation = kwargs.get('do_ablation')
+
         b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
                                                                           b_token_type_ids)
 
@@ -591,7 +593,12 @@ class ClassifyParallelEncoder(nn.Module):
         # (query_num, 1, dim)
         b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
 
-        a_embeddings = decoder_output[:, -1:, :]
+        if do_ablation:
+            # (query_num, 1, dim)
+            a_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state)
+        else:
+            # (query_num, candidate_num, dim)
+            a_embeddings = decoder_output[:, -1:, :]
 
         logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
         logits = logits.squeeze(1)
@@ -773,6 +780,9 @@ class MatchParallelEncoder(nn.Module):
         otherwise, b_input_ids should look like (batch size, candidate num, seq len).
         """
 
+        return_dot_product = kwargs.get('return_dot_product', False)
+        do_ablation = kwargs.get('do_ablation')
+
         # reshape and encode candidates
         # (all_candidate_num, dim)
         candidate_seq_len = b_input_ids.shape[-1]
@@ -812,16 +822,25 @@ class MatchParallelEncoder(nn.Module):
 
         # get final representations
         # (query_num, candidate_num, context_num, dim)
-        b_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0], candidate_num, self.config.context_num, decoder_output.shape[-1])
+        b_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0], candidate_num,
+                                                                             self.config.context_num,
+                                                                             decoder_output.shape[-1])
         # (query_num, candidate_num, dim)
         b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
 
-        # (query_num, candidate_num, dim)
-        a_embeddings = decoder_output[:, -candidate_num:, :]
+        if do_ablation:
+            # (query_num, 1, dim)
+            a_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state)
+            dot_product = torch.matmul(a_embeddings, b_embeddings.permute(0, 2, 1)).squeeze(-2)
+        else:
+            # (query_num, candidate_num, dim)
+            a_embeddings = decoder_output[:, -candidate_num:, :]
+            # (query_num, candidate_num)
+            dot_product = torch.mul(a_embeddings, b_embeddings).sum(-1)
 
-        # (query_num, candidate_num)
-        dot_product = torch.mul(a_embeddings, b_embeddings).sum(-1)
         if train_flag:
+            if return_dot_product:
+                return dot_product
             mask = torch.eye(a_embeddings.size(0)).to(a_embeddings.device)
             loss = F.log_softmax(dot_product, dim=-1) * mask
             loss = (-loss.sum(dim=1)).mean()

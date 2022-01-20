@@ -4,6 +4,7 @@ import math
 import time
 
 import datasets
+import numpy as np
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch
@@ -1420,6 +1421,7 @@ class TrainWholeModel:
         self.train_batch_size = args.train_batch_size
         self.latent_dim = args.latent_dim
         self.model_save_prefix = args.model_save_prefix
+        self.do_ablation = args.do_ablation
 
         self.local_rank = args.local_rank
         self.data_parallel = args.data_parallel
@@ -1553,7 +1555,7 @@ class TrainWholeModel:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
-                {'params': model.composition_layer.parameters(), 'lr': 1e-4},
+                {'params': model.composition_layer.parameters(), 'lr': 5e-5},
                 {'params': model.decoder.parameters(), 'lr': 1e-4},
             ]
         elif self.model_class == 'PolyEncoder':
@@ -1640,7 +1642,7 @@ class TrainWholeModel:
             a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask)
+            b_attention_mask=b_attention_mask, do_ablation=self.do_ablation)
 
         # 计算损失
         step_loss = cross_entropy_function(logits, qa_labels)
@@ -1692,14 +1694,23 @@ class TrainWholeModel:
 
         candidate_num = b_input_ids.shape[1]
 
+        poly_training_strategy = False
         # 得到模型的结果
         logits = self.model(
             a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask, train_flag=False)
+            b_attention_mask=b_attention_mask, train_flag=poly_training_strategy,
+            return_dot_product=poly_training_strategy, do_ablation=self.do_ablation)
 
-        qa_labels = torch.tensor([candidate_num - 1] * logits.shape[0], dtype=torch.long, device=logits.device)
+        if poly_training_strategy:
+            qa_labels = []
+            for i in range(logits.shape[0]):
+                qa_labels.append(i*candidate_num + candidate_num - 1)
+        else:
+            qa_labels = [candidate_num - 1] * logits.shape[0]
+
+        qa_labels = torch.tensor(qa_labels, dtype=torch.long, device=logits.device)
 
         # 计算损失
         step_loss = cross_entropy_function(logits, qa_labels)
@@ -1736,8 +1747,10 @@ class TrainWholeModel:
         step_shoot_num = logits.shape[0]
 
         _, row_max_indices = logits.topk(k=1, dim=-1)
-        step_hit_num = (row_max_indices.squeeze(-1) == (candidate_num-1)).sum().item()
+        step_hit_num = (row_max_indices.squeeze(-1) == qa_labels).sum().item()
 
+        # step_shoot_num = a_input_ids.shape[0]
+        # step_hit_num = a_input_ids.shape[0]
         return (step_loss, step_shoot_num, step_hit_num)
 
     # 输入为QA，而非title.body.answer的模型的训练步
@@ -1758,7 +1771,7 @@ class TrainWholeModel:
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-                b_attention_mask=b_attention_mask, train_flag=True)
+                b_attention_mask=b_attention_mask, train_flag=True, do_ablation=self.do_ablation)
 
             self.training_a_embeddings_stack.append(this_a_embeddings)
             self.training_b_embeddings_stack.append(this_b_embeddings)
@@ -1806,7 +1819,7 @@ class TrainWholeModel:
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-                b_attention_mask=b_attention_mask, train_flag=True, match_train=True)
+                b_attention_mask=b_attention_mask, train_flag=True, match_train=True, do_ablation=self.do_ablation)
 
             # 误差反向传播
             if not APEX_FLAG or self.no_apex:
@@ -1926,7 +1939,7 @@ class TrainWholeModel:
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-                b_attention_mask=b_attention_mask)
+                b_attention_mask=b_attention_mask, do_ablation=self.do_ablation)
 
         return logits
 
@@ -1959,7 +1972,7 @@ class TrainWholeModel:
             a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask, train_flag=False)
+            b_attention_mask=b_attention_mask, train_flag=False, do_ablation=self.do_ablation)
 
         return logits
 
