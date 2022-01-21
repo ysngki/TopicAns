@@ -710,7 +710,8 @@ class ClassifyParallelEncoder(nn.Module):
             a_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=a_attention_mask)
         else:
             # (query_num, candidate_num, dim)
-            a_embeddings = decoder_output[:, -1:, :]
+            a_embeddings = decoder_output[:, -1:, :] + self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=a_attention_mask)
+            a_embeddings = a_embeddings / 2
 
         logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
         logits = logits.squeeze(1)
@@ -849,7 +850,7 @@ class MatchParallelEncoder(nn.Module):
         """ use pre-compute candidate to get scores. Only used by real test."""
 
         do_ablation = kwargs.get('do_ablation', False)
-
+        
         candidate_num = candidate_context_embeddings.shape[1]
         this_candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
                                                                                  -1,
@@ -884,7 +885,8 @@ class MatchParallelEncoder(nn.Module):
             dot_product = torch.matmul(query_embeddings, candidate_embeddings.permute(0, 2, 1)).squeeze(-2)
         else:
             # (query_num, candidate_num, dim)
-            query_embeddings = decoder_output[:, -candidate_num:, :]
+            query_embeddings = decoder_output[:, -candidate_num:, :] + self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=attention_mask)
+            query_embeddings = query_embeddings / 2
             # (query_num, candidate_num)
             dot_product = torch.mul(query_embeddings, candidate_embeddings).sum(-1)
 
