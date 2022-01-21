@@ -5,16 +5,16 @@ Task1: mnli/qqp ------------------------------------------------------------
 python -u nlp_main.py -d qqp --model_class QAClassifierModel --composition pooler -n 1 --label_num 2 --train_batch_size 128 --val_batch_size 128 --no_apex | tee  logs/qqp/bi.log
 
 # train poly
-python -u nlp_main.py -d qqp --model_class PolyEncoder --label_num 2 --train_batch_size 128 --gradient_accumulation_steps 1 --one_stage  --model_save_prefix c16_ --no_apex -n 0 --context_num 16 | tee  logs/qqp/c16_poly.log
+python -u nlp_main.py -d mnli --model_class PolyEncoder --label_num 3 --train_batch_size 128 --gradient_accumulation_steps 1 --one_stage  --model_save_prefix c64_ --no_apex -n 0 --context_num 64 | tee  logs/mnli/c64_poly.log
 
 # train cross
 python -u nlp_main.py -d qqp --model_class CrossBERT --composition pooler --label_num 2 --train_batch_size 16 --gradient_accumulation_steps 8  -n 1  | tee  logs/qqp/cross.log
 
 # train ClassifyParallelEncoder
-python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder --label_num 3 --train_batch_size 32 --gradient_accumulation_steps 4 --pretrained_bert_path bert-base-uncased --one_stage  --no_apex  --model_save_prefix c10_base_  --context_num 10 -n 0 | tee -a logs/mnli/c10_base_mine.log
+python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder --label_num 3 --train_batch_size 64 --gradient_accumulation_steps 2  --one_stage  --no_apex  --model_save_prefix c1_ablation_  --context_num 1 -n 0 --do_ablation | tee -a logs/mnli/c1_ablation_mine.log
 
 # train Deformer
-python -u nlp_main.py -d qqp --no_apex --model_class ClassifyDeformer --top_layer_num 2 --first_seq_max_len 256 -n 0 --label_num 2 --train_batch_size 32 --gradient_accumulation_steps 4 --no_apex --one_stage | tee -a logs/qqp/deformer.log
+python -u nlp_main.py -d mnli --no_apex --model_class ClassifyDeformer --top_layer_num 3 --first_seq_max_len 256 -n 1 --label_num 3 --train_batch_size 16 --gradient_accumulation_steps 8 --one_stage --pretrained_bert_path bert-base-uncased | tee -a logs/mnli/deformer_c12.log
 
 
 ------------------------------------------------------------------------------------------------------------------------

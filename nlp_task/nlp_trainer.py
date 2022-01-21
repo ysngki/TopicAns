@@ -1061,7 +1061,7 @@ class TrainWholeModel:
                 if not os.path.exists("./output/"):
                     os.makedirs("./output/")
 
-                with open("./output/" + self.model_save_prefix + output_text_name[self.dataset_name][dataloader_index] + postfix, "w") as writer:
+                with open("./output/" + self.model_save_prefix + self.model_class + output_text_name[self.dataset_name][dataloader_index] + postfix, "w") as writer:
                     tsv_writer = csv.writer(writer, delimiter='\t', lineterminator='\n')
 
                     tsv_writer.writerow(['index', 'prediction'])
@@ -1069,7 +1069,7 @@ class TrainWholeModel:
                         text_pre = dataset_label_dict[self.dataset_name][pre]
                         tsv_writer.writerow([index.item(), text_pre])
 
-                print(f"Result is saved to ./output/{self.model_save_prefix + output_text_name[self.dataset_name][dataloader_index] + postfix}")
+                print(f"Result is saved to ./output/{self.model_save_prefix + self.model_class + output_text_name[self.dataset_name][dataloader_index] + postfix}")
 
         self.model.train()
 
