@@ -95,22 +95,14 @@ def get_rep_by_avg(embeddings, token_type_ids=None, attention_mask=None):
 	:return: (..., 1, dim)
 	"""
 	# should create mask
-	if token_type_ids is not None and attention_mask is not None:
+	if attention_mask is not None:
 		with torch.no_grad():
-			# (batch_size, sequence_length)
-			temp_mask = token_type_ids.clone().detach()
-
-			# remove tokens whose type id is 1
-			temp_mask[temp_mask == 0] = 2
-			temp_mask -= 1
-
 			# remove tokens whose attention mask is 0
 			temp_attention_mask = attention_mask.clone().detach()
-			temp_mask = temp_mask * temp_attention_mask
-			sequence_len = temp_mask.sum(dim=-1).unsqueeze(-1)
+			sequence_len = temp_attention_mask.sum(dim=-1).unsqueeze(-1)
 
 			# (batch_size, sequence_length, 1)
-			temp_mask = temp_mask.unsqueeze(-1)
+			temp_mask = temp_attention_mask.unsqueeze(-1)
 
 		# (batch_size, sequence_length, hidden state size)
 		embeddings = embeddings * temp_mask

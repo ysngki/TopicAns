@@ -830,7 +830,7 @@ class MatchParallelEncoder(nn.Module):
 
         if do_ablation:
             # (query_num, 1, dim)
-            a_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state)
+            a_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=a_attention_mask)
             dot_product = torch.matmul(a_embeddings, b_embeddings.permute(0, 2, 1)).squeeze(-2)
         else:
             # (query_num, candidate_num, dim)
