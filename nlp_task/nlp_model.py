@@ -426,6 +426,9 @@ class MatchCrossBERT(nn.Module):
 
             for index, (this_a_input_ids, this_a_attention_mask, this_a_token_type_ids) in enumerate(
                     zip(a_input_ids, a_attention_mask, a_token_type_ids)):
+                this_a_input_ids = this_a_input_ids.repeat(candidate_num, 1)
+                this_a_attention_mask = this_a_attention_mask.repeat(candidate_num, 1)
+                this_a_token_type_ids = this_a_token_type_ids.repeat(candidate_num, 1)
 
                 this_b_input_ids = b_input_ids[index]
                 this_b_attention_mask = b_attention_mask[index]
