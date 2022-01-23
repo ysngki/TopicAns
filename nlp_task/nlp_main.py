@@ -12,7 +12,7 @@ def read_arguments():
 	# default arguments
 	parser.add_argument("--seed", "-s", default=42, type=int)
 	parser.add_argument("--text_max_len", default=512, type=int)
-	parser.add_argument("--num_train_epochs", "-e", type=int, default=50)
+	parser.add_argument("--num_train_epochs", "-e", type=int, default=75)
 
 	# must set
 	# add model
