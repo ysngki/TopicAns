@@ -904,10 +904,10 @@ class MatchParallelEncoder(nn.Module):
         return_dot_product = kwargs.get('return_dot_product', False)
         do_ablation = kwargs.get('do_ablation')
 
-        # (all_candidate_num, dim)
+        # (all_candidate_num, context_num, dim)
         b_embeddings = self.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
 
-        # convert to (query_num, candidate_context_num, dim)
+        # convert to (query_num, candidate_num, context_num, dim)
         if not train_flag:
             b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], -1, self.config.context_num, b_embeddings.shape[-1])
         else:
