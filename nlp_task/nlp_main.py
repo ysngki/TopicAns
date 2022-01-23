@@ -18,7 +18,8 @@ def read_arguments():
 	# add model
 	parser.add_argument("--model_class", required=True, type=str,
 						choices=['CrossBERT', 'QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder',
-								 'QAMatchModel', 'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer'])
+								 'QAMatchModel', 'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer',
+								 'MatchCrossBERT'])
 
 	# related to data
 	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli', 'ubuntu', 'qqp', 'yahooqa'])

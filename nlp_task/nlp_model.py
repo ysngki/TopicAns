@@ -368,6 +368,87 @@ class CrossBERT(nn.Module):
         return logits
 
 
+class MatchCrossBERT(nn.Module):
+    def __init__(self, config):
+
+        super(MatchCrossBERT, self).__init__()
+
+        self.config = config
+
+        self.num_labels = config.num_labels
+        self.sentence_embedding_len = config.sentence_embedding_len
+
+        this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
+        this_bert_config.num_labels = self.num_labels
+
+        self.bert_model = BertForSequenceClassification.from_pretrained(config.pretrained_bert_path, config=this_bert_config)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+        # self.embeddings = self.bert_model.get_input_embeddings()
+
+    def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask, train_flag, **kwargs):
+        # (all_candidate_num, dim)
+        candidate_seq_len = b_input_ids.shape[-1]
+        b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
+        b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
+        b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
+
+        # remove padding
+        a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask, a_token_type_ids)
+        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask, b_token_type_ids)
+        b_token_type_ids = b_token_type_ids + 1
+
+        batch_size = a_input_ids.shape[0]
+        if train_flag:
+            candidate_num = batch_size
+        else:
+            candidate_num = b_input_ids.shape[0] // batch_size
+
+        # concatenate them
+        final_logits = []
+        if train_flag:
+            for this_a_input_ids, this_a_attention_mask, this_a_token_type_ids in zip(a_input_ids, a_attention_mask, a_token_type_ids):
+                this_a_input_ids = this_a_input_ids.repeat(candidate_num, 1)
+                this_a_attention_mask = this_a_attention_mask.repeat(candidate_num, 1)
+                this_a_token_type_ids = this_a_token_type_ids.repeat(candidate_num, 1)
+
+                final_input_ids = torch.cat((this_a_input_ids, b_input_ids), dim=-1)
+                final_attention_mask = torch.cat((this_a_attention_mask, b_attention_mask), dim=-1)
+                final_token_type_ids = torch.cat((this_a_token_type_ids, b_token_type_ids), dim=-1)
+
+                this_logits = self.bert_model(input_ids=final_input_ids, token_type_ids=final_token_type_ids, attention_mask=final_attention_mask).unsqueeze(0)
+                final_logits.append(this_logits)
+        else:
+            new_candidate_seq_len = b_input_ids.shape[-1]
+            b_input_ids = b_input_ids.reshape(batch_size, candidate_num, new_candidate_seq_len)
+            b_token_type_ids = b_token_type_ids.reshape(batch_size, candidate_num, new_candidate_seq_len)
+            b_attention_mask = b_attention_mask.reshape(batch_size, candidate_num, new_candidate_seq_len)
+
+            for index, (this_a_input_ids, this_a_attention_mask, this_a_token_type_ids) in enumerate(
+                    zip(a_input_ids, a_attention_mask, a_token_type_ids)):
+
+                this_b_input_ids = b_input_ids[index]
+                this_b_attention_mask = b_attention_mask[index]
+                this_b_token_type_ids = b_token_type_ids[index]
+
+                final_input_ids = torch.cat((this_a_input_ids, this_b_input_ids), dim=-1)
+                final_attention_mask = torch.cat((this_a_attention_mask, this_b_attention_mask), dim=-1)
+                final_token_type_ids = torch.cat((this_a_token_type_ids, this_b_token_type_ids), dim=-1)
+
+                this_logits = self.bert_model(input_ids=final_input_ids, token_type_ids=final_token_type_ids,
+                                              attention_mask=final_attention_mask).unsqueeze(0)
+                final_logits.append(this_logits)
+
+        dot_product = torch.cat(final_logits, dim=0)
+
+        if train_flag:
+            mask = torch.eye(batch_size).to(a_input_ids.device)
+            loss = F.log_softmax(dot_product, dim=-1) * mask
+            loss = (-loss.sum(dim=1)).mean()
+            return loss
+        else:
+            return dot_product
+
 # --------------------------------------
 # fen ge xian
 # --------------------------------------

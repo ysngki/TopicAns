@@ -27,7 +27,7 @@ except:
 
 from nlp_model import QAClassifierModel, QAClassifierModelConfig, CrossBERT, CrossBERTConfig, ClassifyParallelEncoder, \
     ParallelEncoderConfig, PolyEncoder, PolyEncoderConfig, QAMatchModel, MatchParallelEncoder, ClassifyDeformer, \
-    DeformerConfig, MatchDeformer
+    DeformerConfig, MatchDeformer, MatchCrossBERT
 from my_function import sum_average_tuple, raise_dataset_error, print_recall_precise, load_model, print_optimizer, \
     raise_test_error, tokenize_and_truncate_from_head, get_elapse_time
 from nlp_dataset import SingleInputDataset, DoubleInputDataset, DoubleInputLabelDataset, SingleInputLabelDataset
@@ -313,12 +313,12 @@ class TrainWholeModel:
         if self.model_class == "CrossBERT":
             if self.dataset_name in ['mnli', 'qqp']:
                 train_step_function = self.__classify_train_step_for_cross
-            elif self.dataset_name in ['dstc7', 'ubuntu', 'yahooqa']:
-                train_step_function = self.__match_train_step_for_cross
+            # elif self.dataset_name in ['dstc7', 'ubuntu', 'yahooqa']:
+            #     train_step_function = self.__match_train_step_for_cross
             else:
                 raise_dataset_error()
         elif self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel',
-                                  'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer']:
+                                  'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer', 'MatchCrossBERT']:
             if self.dataset_name in ['mnli', 'qqp']:
                 train_step_function = self.__classify_train_step_for_qa_input
             elif self.dataset_name in ['yahooqa']:
@@ -999,7 +999,7 @@ class TrainWholeModel:
             for index, batch in enumerate(tqdm(match_dataloader)):
                 # 读取数据
                 # add model
-                if self.model_class in ['QAMatchModel', 'MatchParallelEncoder', 'PolyEncoder', 'MatchDeformer']:
+                if self.model_class in ['QAMatchModel', 'MatchParallelEncoder', 'PolyEncoder', 'MatchDeformer', 'MatchCrossBERT']:
                     logits = self.__match_val_step_for_bi(batch)
                 elif self.model_class in ['CrossBERT']:
                     logits = self.__match_val_step_for_cross(batch)
@@ -1124,7 +1124,7 @@ class TrainWholeModel:
         # add model
         # Checking whether input is pair or single is important
         if self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel',
-                                'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer']:
+                                'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer', 'MatchCrossBERT']:
             pair_flag = True
             save_load_prefix = ""
             save_load_suffix = ""
@@ -1135,7 +1135,7 @@ class TrainWholeModel:
         else:
             raise_dataset_error()
 
-        if self.model_class in ['MatchDeformer', 'ClassifyDeformer']:
+        if self.model_class in ['MatchDeformer', 'ClassifyDeformer', 'MatchCrossBERT']:
             save_load_prefix = "deformer_" + str(self.first_seq_max_len) + "_" + save_load_prefix
 
         # add dataset
@@ -1392,6 +1392,8 @@ class TrainWholeModel:
             model = ClassifyDeformer(config=self.config)
         elif self.model_class in ['MatchDeformer']:
             model = MatchDeformer(config=self.config)
+        elif self.model_class in ['MatchCrossBERT']:
+            model = MatchCrossBERT(config=self.config)
         else:
             raise Exception("This model class is not supported for creating!!")
 
@@ -1484,7 +1486,7 @@ class TrainWholeModel:
                                          word_embedding_len=word_embedding_len,
                                          sentence_embedding_len=sentence_embedding_len,
                                          composition=self.composition)
-        elif self.model_class in ['CrossBERT']:
+        elif self.model_class in ['CrossBERT', 'MatchCrossBERT']:
             config = CrossBERTConfig(len(self.tokenizer),
                                      pretrained_bert_path=args.pretrained_bert_path,
                                      num_labels=args.label_num,
@@ -1538,7 +1540,7 @@ class TrainWholeModel:
                 # 这个不设定
                 {'params': model.classifier.parameters(), 'lr': 5e-5}
             ]
-        elif self.model_class in ['CrossBERT']:
+        elif self.model_class in ['CrossBERT', 'MatchCrossBERT']:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
@@ -2002,7 +2004,7 @@ class TrainWholeModel:
         all_labels = data[label_column_name]
         all_index = data['idx']
 
-        if self.model_class in ['MatchDeformer', 'ClassifyDeformer']:
+        if self.model_class in ['MatchDeformer', 'ClassifyDeformer', 'MatchCrossBERT']:
             first_seq_max_len = self.first_seq_max_len
             second_seq_max_len = self.text_max_len - self.first_seq_max_len
         else:
@@ -2072,7 +2074,7 @@ class TrainWholeModel:
         split_num = 100
         this_dataset_max_len = -1
 
-        if self.model_class in ['MatchDeformer', 'ClassifyDeformer']:
+        if self.model_class in ['MatchDeformer', 'ClassifyDeformer', 'MatchCrossBERT']:
             first_seq_max_len = self.first_seq_max_len
             second_seq_max_len = self.text_max_len - self.first_seq_max_len
         else:
@@ -2126,7 +2128,7 @@ class TrainWholeModel:
         return dataset
     
     def __tokenize_match_multi_candidate_data_then_save(self, data, save_name, a_column_name="sentence_a", b_column_name="candidates", candidate_num=100):
-        if self.model_class in ['MatchDeformer', 'ClassifyDeformer']:
+        if self.model_class in ['MatchDeformer', 'ClassifyDeformer', 'MatchCrossBERT']:
             first_seq_max_len = self.first_seq_max_len
             second_seq_max_len = self.text_max_len - self.first_seq_max_len
         else:
