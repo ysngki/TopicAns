@@ -12,13 +12,14 @@ def read_arguments():
 	# default arguments
 	parser.add_argument("--seed", "-s", default=42, type=int)
 	parser.add_argument("--text_max_len", default=512, type=int)
-	parser.add_argument("--num_train_epochs", "-e", type=int, default=50)
+	parser.add_argument("--num_train_epochs", "-e", type=int, default=75)
 
 	# must set
 	# add model
 	parser.add_argument("--model_class", required=True, type=str,
 						choices=['CrossBERT', 'QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder',
-								 'QAMatchModel', 'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer'])
+								 'QAMatchModel', 'MatchParallelEncoder', 'ClassifyDeformer', 'MatchDeformer',
+								 'MatchCrossBERT'])
 
 	# related to data
 	parser.add_argument("--dataset_name", "-d", type=str, choices=['dstc7', 'mnli', 'ubuntu', 'qqp', 'yahooqa'])
