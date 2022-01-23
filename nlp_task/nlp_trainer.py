@@ -1560,9 +1560,9 @@ class TrainWholeModel:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
-                {'params': model.composition_layer.parameters(), 'lr': 1e-4},
-                {'params': model.decoder.parameters(), 'lr': 1e-4},
-                {'params': model.classifier.parameters(), 'lr': 1e-4},
+                {'params': model.composition_layer.parameters(), 'lr': 5e-5},
+                {'params': model.decoder.parameters(), 'lr': 5e-5},
+                {'params': model.classifier.parameters(), 'lr': 5e-5},
             ]
         elif self.model_class in ['MatchParallelEncoder']:
             parameters_dict_list = [
@@ -1882,9 +1882,9 @@ class TrainWholeModel:
         while batch_count < batch_size:
             new_batch_count = batch_count + step_num
 
-            this_a_input_ids = a_input_ids[batch_count:new_batch_count]
-            this_a_token_type_ids = a_token_type_ids[batch_count:new_batch_count]
-            this_a_attention_mask = a_attention_mask[batch_count:new_batch_count]
+            this_a_input_ids = a_input_ids[batch_count:new_batch_count].to(self.device)
+            this_a_token_type_ids = a_token_type_ids[batch_count:new_batch_count].to(self.device)
+            this_a_attention_mask = a_attention_mask[batch_count:new_batch_count].to(self.device)
 
             dot_product = self.model.do_queries_match(input_ids=this_a_input_ids,
                                                       token_type_ids=this_a_token_type_ids,
@@ -1896,28 +1896,26 @@ class TrainWholeModel:
             raise_test_error()
             batch_count = new_batch_count
 
-
-
         step_loss = self.model(
             a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
             b_attention_mask=b_attention_mask, train_flag=True, match_train=True, do_ablation=self.do_ablation)
 
-            # 误差反向传播
-            if not APEX_FLAG or self.no_apex:
-                step_loss.backward()
-            else:
-                with amp.scale_loss(step_loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
+        # 误差反向传播
+        if not APEX_FLAG or self.no_apex:
+            step_loss.backward()
+        else:
+            with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
 
-            if self.model_class in ['MatchParallelEncoder']:
-                nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
+        if self.model_class in ['MatchParallelEncoder']:
+            nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
 
-            optimizer.step()
-            optimizer.zero_grad()
-            scheduler.step()
-            return (step_loss,)
+        optimizer.step()
+        optimizer.zero_grad()
+        scheduler.step()
+        return (step_loss,)
 
     # 输入为QA，而非title.body.answer的模型的训练步
     def __efficient_match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
