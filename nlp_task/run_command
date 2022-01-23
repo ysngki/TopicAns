@@ -19,7 +19,7 @@ python -u nlp_main.py -d mnli --no_apex --model_class ClassifyDeformer --top_lay
 
 ------------------------------------------------------------------------------------------------------------------------
 Task2: ubuntu ------------------------------------------------------------
-python -u nlp_main.py -d ubuntu --val_candidate_num 10 --train_candidate_num 2 --model_class ParallelMatchEncoder --composition pooler -n 1 --label_num 0 --train_batch_size 48  --val_batch_size 2 --no_apex --context_num 3 | tee logs/ubuntu/c3_my.log
+python -u nlp_main.py -d ubuntu --val_candidate_num 10  --model_class MatchParallelEncoder -n 2 --label_num 0 --train_batch_size 48  --val_batch_size 20 --no_apex --context_num 1 | tee logs/ubuntu/new_lr_add_c1_mine.log
 
 python -u nlp_main.py -d ubuntu --val_candidate_num 10  --model_class PolyEncoder --composition pooler -n 0 --label_num 0 --train_batch_size 48  --val_batch_size 2  --context_num 16 | tee  -a logs/ubuntu/poly_16.log
 
