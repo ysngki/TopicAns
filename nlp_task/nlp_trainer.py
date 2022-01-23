@@ -1560,9 +1560,9 @@ class TrainWholeModel:
             parameters_dict_list = [
                 # 这几个一样
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
-                {'params': model.composition_layer.parameters(), 'lr': 5e-5},
-                {'params': model.decoder.parameters(), 'lr': 5e-5},
-                {'params': model.classifier.parameters(), 'lr': 5e-5},
+                {'params': model.composition_layer.parameters(), 'lr': 1e-4},
+                {'params': model.decoder.parameters(), 'lr': 1e-4},
+                {'params': model.classifier.parameters(), 'lr': 1e-4},
             ]
         elif self.model_class in ['MatchParallelEncoder']:
             parameters_dict_list = [
