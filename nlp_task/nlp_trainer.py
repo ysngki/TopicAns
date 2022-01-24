@@ -324,7 +324,10 @@ class TrainWholeModel:
             elif self.dataset_name in ['yahooqa']:
                 train_step_function = self.__train_step_for_multi_candidates_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
-                train_step_function = self.__match_train_step_for_qa_input
+                if self.model_class in ['MatchParallelEncoder']:
+                    train_step_function = self.__efficient_match_train_step_for_qa_input
+                else:
+                    train_step_function = self.__match_train_step_for_qa_input
             else:
                 raise_dataset_error()
         else:
@@ -1842,6 +1845,72 @@ class TrainWholeModel:
             optimizer.zero_grad()
             scheduler.step()
             return (step_loss,)
+
+    # 输入为QA，而非title.body.answer的模型的训练步
+    def __efficient_match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
+        step_num = 4
+
+        b_input_ids = (batch['b_input_ids']).to(self.device)
+        b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
+        b_attention_mask = (batch['b_attention_mask']).to(self.device)
+
+        candidate_embeddings = self.model.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
+        print(candidate_embeddings.shape)
+
+        b_embeddings = candidate_embeddings.reshape(-1, self.context_num, candidate_embeddings.shape[-1])\
+            .unsqueeze(0).expand(step_num, -1, -1, -1)
+
+        # 读取数据
+        a_input_ids = (batch['a_input_ids'])
+        a_token_type_ids = (batch['a_token_type_ids'])
+        a_attention_mask = (batch['a_attention_mask'])
+
+        batch_size = a_input_ids.shape[0]
+
+        if batch_size % step_num > 0:
+            raise Exception(f"Batch size {a_input_ids.shape[0]} should be divisible by step num {step_num}!")
+
+        # begin training
+        batch_count = 0
+        while batch_count < batch_size:
+            new_batch_count = batch_count + step_num
+
+            this_a_input_ids = a_input_ids[batch_count:new_batch_count].to(self.device)
+            this_a_token_type_ids = a_token_type_ids[batch_count:new_batch_count].to(self.device)
+            this_a_attention_mask = a_attention_mask[batch_count:new_batch_count].to(self.device)
+
+            dot_product = self.model.do_queries_match(input_ids=this_a_input_ids,
+                                                      token_type_ids=this_a_token_type_ids,
+                                                      attention_mask=this_a_attention_mask,
+                                                      candidate_context_embeddings=b_embeddings,
+                                                      do_ablation=self.do_ablation)
+
+            print(dot_product.shape)
+            raise_test_error()
+            batch_count = new_batch_count
+
+
+
+        step_loss = self.model(
+            a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+            a_attention_mask=a_attention_mask,
+            b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
+            b_attention_mask=b_attention_mask, train_flag=True, match_train=True, do_ablation=self.do_ablation)
+
+        # 误差反向传播
+        if not APEX_FLAG or self.no_apex:
+            step_loss.backward()
+        else:
+            with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+
+        if self.model_class in ['MatchParallelEncoder']:
+            nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
+
+        optimizer.step()
+        optimizer.zero_grad()
+        scheduler.step()
+        return (step_loss,)
 
     # cross模型的训练步
     def __classify_train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
