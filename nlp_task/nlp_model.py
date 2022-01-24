@@ -946,11 +946,11 @@ class MyLSTMBlock(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     # shapes are supposed to be (batch size, input_dim)
-    def forward(self, this_compressed_vector, last_compressed_vector, weight_hint):
-        weight = self.weight_layer(torch.cat((weight_hint, this_compressed_vector, last_compressed_vector), dim=-1))
+    def forward(self, new_information, last_compressed_vector, weight_hint):
+        weight = self.weight_layer(torch.cat((weight_hint, new_information, last_compressed_vector), dim=-1))
         weight = self.sigmoid(weight)
 
-        new_compressed_vector = weight * this_compressed_vector + (1-weight)*last_compressed_vector
+        new_compressed_vector = weight * new_information + (1-weight)*last_compressed_vector
 
         return new_compressed_vector
 

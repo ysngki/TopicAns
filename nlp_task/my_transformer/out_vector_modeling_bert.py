@@ -396,6 +396,7 @@ class MyBertAttention(nn.Module):
 																					old_embeddings=candidate_context_embeddings)
 
 			new_lstm_hidden_states = decoder['layer_chunks'][layer_index](res_flag=False,
+																		  encoder_representations=self_outputs[0][:, 0, :].unsqueeze(1),
 																		  new_embeddings=self_outputs[2],
 																		  old_embeddings=lstm_hidden_states,
 																		  lstm_cell=decoder['LSTM'],
@@ -831,13 +832,14 @@ class DecoderLayerChunk(nn.Module):
 			self,
 			# lstm_flag = not res_flag
 			res_flag,
+			encoder_representations=None,
 			new_embeddings=None,
 			old_embeddings=None,
 			lstm_cell=None,
 			lstm_hint_vector=None,
 	):
 		# dense + dropout + layer_norm(res)
-		attention_output = self.attention(new_embeddings, old_embeddings, res_flag, lstm_cell, lstm_hint_vector)
+		attention_output = self.attention(encoder_representations, new_embeddings, old_embeddings, res_flag, lstm_cell, lstm_hint_vector)
 		# dense + activation
 		intermediate_output = self.intermediate(attention_output)
 		# dense + dropout + layer_norm(res)
@@ -853,12 +855,18 @@ class MyBertSelfOutput(nn.Module):
 		self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 		self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-	def forward(self, hidden_states, input_tensor, res_flag, lstm_cell, lstm_hint_vector):
-		hidden_states = self.dense(hidden_states)
-		hidden_states = self.dropout(hidden_states)
+	def forward(self, encoder_representations, hidden_states, last_hidden_states, res_flag, lstm_cell, lstm_hint_vector):
 		if res_flag:
-			hidden_states = self.LayerNorm(hidden_states + input_tensor)
+			hidden_states = self.dense(hidden_states)
+			hidden_states = self.dropout(hidden_states)
+			hidden_states = self.LayerNorm(hidden_states + last_hidden_states)
 		else:
-			hidden_states = self.LayerNorm(lstm_cell(hidden_states, input_tensor, lstm_hint_vector))
+			hidden_states = self.dense(hidden_states)
+			encoder_representations = self.dense(encoder_representations)
+
+			new_information = (hidden_states + encoder_representations)/2.0
+			new_information = self.dropout(new_information)
+
+			hidden_states = self.LayerNorm(lstm_cell(new_information, last_hidden_states, lstm_hint_vector))
 
 		return hidden_states
