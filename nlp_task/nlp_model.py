@@ -848,38 +848,45 @@ class MatchParallelEncoder(nn.Module):
     def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
         """ use pre-compute candidate to get scores. Only used by real test."""
 
-        candidate_num = candidate_context_embeddings.shape[1]
-        candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
-                                                                            -1, candidate_context_embeddings.shape[-1])
+        do_ablation = kwargs.get('do_ablation', False)
 
-        lstm_initial_state = torch.zeros(candidate_context_embeddings.shape[0], candidate_num, candidate_context_embeddings.shape[-1],
-                                         device=candidate_context_embeddings.device)
+        candidate_num = candidate_context_embeddings.shape[1]
+        this_candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
+                                                                                 -1,
+                                                                                 candidate_context_embeddings.shape[-1])
+
+        lstm_initial_state = torch.zeros(this_candidate_context_embeddings.shape[0], candidate_num, this_candidate_context_embeddings.shape[-1],
+                                         device=this_candidate_context_embeddings.device)
 
         # (query_num, candidate_context_num + candidate_num, dim)
-        candidate_context_embeddings = torch.cat((candidate_context_embeddings, lstm_initial_state), dim=1)
+        this_candidate_context_embeddings = torch.cat((this_candidate_context_embeddings, lstm_initial_state), dim=1)
 
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
         a_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
-                                enrich_candidate_by_question=True, candidate_embeddings=candidate_context_embeddings,
+                                enrich_candidate_by_question=True, candidate_embeddings=this_candidate_context_embeddings,
                                 decoder=self.decoder, candidate_num=candidate_num)
 
         a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
 
         # get final representations
         # (query_num, candidate_num, context_num, dim)
-        candidate_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0],
-                                                                                     candidate_num,
-                                                                                     self.config.context_num,
-                                                                                     decoder_output.shape[-1])
+        this_candidate_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0],
+                                                                                          candidate_num,
+                                                                                          self.config.context_num,
+                                                                                          decoder_output.shape[-1])
         # (query_num, candidate_num, dim)
-        candidate_embeddings = self.decoder['candidate_composition_layer'](candidate_context_embeddings).squeeze(-2)
+        candidate_embeddings = self.decoder['candidate_composition_layer'](this_candidate_context_embeddings).squeeze(-2)
 
-        # (query_num, candidate_num, dim)
-        query_embeddings = decoder_output[:, -candidate_num:, :]
-
-        # (query_num, candidate_num)
-        dot_product = torch.mul(query_embeddings, candidate_embeddings).sum(-1)
+        if do_ablation:
+            # (query_num, 1, dim)
+            query_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=attention_mask)
+            dot_product = torch.matmul(query_embeddings, candidate_embeddings.permute(0, 2, 1)).squeeze(-2)
+        else:
+            # (query_num, candidate_num, dim)
+            query_embeddings = decoder_output[:, -candidate_num:, :]
+            # (query_num, candidate_num)
+            dot_product = torch.mul(query_embeddings, candidate_embeddings).sum(-1)
 
         return dot_product
 
@@ -895,65 +902,25 @@ class MatchParallelEncoder(nn.Module):
         return_dot_product = kwargs.get('return_dot_product', False)
         do_ablation = kwargs.get('do_ablation')
 
-        # reshape and encode candidates
         # (all_candidate_num, dim)
-        candidate_seq_len = b_input_ids.shape[-1]
-        b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
-        b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
-        b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
+        b_embeddings = self.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
 
-        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
-                                                                          b_token_type_ids)
-
-        b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask,
-                                enrich_candidate_by_question=False)
-        b_last_hidden_state = b_out['last_hidden_state']
-
-        # get (all_candidate_num, context_num, dim)
-        b_embeddings = self.composition_layer(b_last_hidden_state, attention_mask=b_attention_mask)
         # convert to (query_num, candidate_context_num, dim)
         if not train_flag:
-            b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], -1, b_embeddings.shape[-1])
+            b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], -1, self.config.context_num, b_embeddings.shape[-1])
         else:
             # need broadcast
-            b_embeddings = b_embeddings.reshape(-1, b_embeddings.shape[-1]).unsqueeze(0).expand(a_input_ids.shape[0], -1, -1)
+            b_embeddings = b_embeddings.reshape(-1, self.config.context_num, b_embeddings.shape[-1]).unsqueeze(0).\
+                expand(a_input_ids.shape[0], -1, -1, -1)
 
-        candidate_num = int(b_embeddings.shape[1] / self.config.context_num)
-        lstm_initial_state = torch.zeros(a_input_ids.shape[0], candidate_num, b_embeddings.shape[-1], device=b_embeddings.device)
-        # (query_num, candidate_context_num + candidate_num, dim)
-        b_embeddings = torch.cat((b_embeddings, lstm_initial_state), dim=1)
-
-        a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask,
-                                                                          a_token_type_ids)
-        # get q and new a
-        a_out = self.bert_model(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask,
-                                enrich_candidate_by_question=True, candidate_embeddings=b_embeddings,
-                                decoder=self.decoder, candidate_num=candidate_num)
-
-        a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
-
-        # get final representations
-        # (query_num, candidate_num, context_num, dim)
-        b_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0], candidate_num,
-                                                                             self.config.context_num,
-                                                                             decoder_output.shape[-1])
-        # (query_num, candidate_num, dim)
-        b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
-
-        if do_ablation:
-            # (query_num, 1, dim)
-            a_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=a_attention_mask)
-            dot_product = torch.matmul(a_embeddings, b_embeddings.permute(0, 2, 1)).squeeze(-2)
-        else:
-            # (query_num, candidate_num, dim)
-            a_embeddings = decoder_output[:, -candidate_num:, :]
-            # (query_num, candidate_num)
-            dot_product = torch.mul(a_embeddings, b_embeddings).sum(-1)
+        dot_product = self.do_queries_match(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                            attention_mask=a_attention_mask, candidate_context_embeddings=b_embeddings,
+                                            do_ablation=do_ablation)
 
         if train_flag:
             if return_dot_product:
                 return dot_product
-            mask = torch.eye(a_embeddings.size(0)).to(a_embeddings.device)
+            mask = torch.eye(a_input_ids.size(0)).to(a_input_ids.device)
             loss = F.log_softmax(dot_product, dim=-1) * mask
             loss = (-loss.sum(dim=1)).mean()
             return loss
