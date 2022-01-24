@@ -18,6 +18,7 @@ import csv
 import torch.nn.functional as F
 try:
     from apex import amp
+    from apex.parallel import DistributedDataParallel, convert_syncbn_model
     APEX_FLAG = True
     print("*"*50)
     print("Apex Available")
@@ -139,7 +140,6 @@ class TrainWholeModel:
 
             # 训练准备
             self.__model_to_device()
-            self.__model_parallel()
 
             # 优化器
             optimizer = self.__get_model_optimizer(final_stage_flag=final_stage_flag)
@@ -209,8 +209,13 @@ class TrainWholeModel:
                 # 获取scheduler
                 if epoch == restore_epoch:
                     scheduler = self.get_scheduler(optimizer, scheduler_last_epoch, train_dataloader)
+                    if self.data_distribute:
+                        self.model = convert_syncbn_model(self.model)
                     if APEX_FLAG and not self.no_apex:
                         self.model, optimizer = amp.initialize(self.model, optimizer, opt_level="O1")
+                    if self.data_distribute:
+                        self.model = DistributedDataParallel(self.model, delay_allreduce=True)
+                    # self.__model_parallel()
 
                 # 开始训练----------------------------------------------------------------------------------------
                 # 进度条
@@ -325,7 +330,8 @@ class TrainWholeModel:
                 train_step_function = self.__train_step_for_multi_candidates_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
                 if self.model_class in ['MatchParallelEncoder']:
-                    train_step_function = self.__efficient_match_train_step_for_qa_input
+                    train_step_function = self.__match_train_step_for_qa_input
+                    # train_step_function = self.__efficient_match_train_step_for_qa_input
                 else:
                     train_step_function = self.__match_train_step_for_qa_input
             else:
@@ -1531,10 +1537,7 @@ class TrainWholeModel:
     # 根据model_class获取optimizer
     def __get_model_optimizer(self, final_stage_flag):
 
-        if self.data_distribute or self.data_parallel:
-            model = self.model.module
-        else:
-            model = self.model
+        model = self.model.module if hasattr(self.model, 'module') else self.model
 
         # add model
         # 获得模型的训练参数和对应的学习率
@@ -1620,10 +1623,12 @@ class TrainWholeModel:
 
     def __model_parallel(self):
         if self.data_distribute:
-            self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model).to(self.device)
-            self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.local_rank],
-                                                                   find_unused_parameters=True,
-                                                                   output_device=self.local_rank)
+            # self.model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.model).to(self.device)
+            # self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.local_rank],
+            #                                                        find_unused_parameters=True,
+            #                                                        output_device=self.local_rank)
+            self.model = convert_syncbn_model(self.model)
+            self.model = DistributedDataParallel(self.model, device_ids=[self.local_rank])
             # self.model = convert_syncbn_model(self.model).to(self.device)
             # self.model, new_optimizer = amp.initialize(self.model, optimizer, opt_level='O1')
             # self.model = DistributedDataParallel(self.model, delay_allreduce=True)
@@ -1848,14 +1853,15 @@ class TrainWholeModel:
 
     # 输入为QA，而非title.body.answer的模型的训练步
     def __efficient_match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
-        step_num = 4
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+
+        step_num = 2
 
         b_input_ids = (batch['b_input_ids']).to(self.device)
         b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
         b_attention_mask = (batch['b_attention_mask']).to(self.device)
 
-        candidate_embeddings = self.model.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
-        print(candidate_embeddings.shape)
+        candidate_embeddings = model.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
 
         b_embeddings = candidate_embeddings.reshape(-1, self.context_num, candidate_embeddings.shape[-1])\
             .unsqueeze(0).expand(step_num, -1, -1, -1)
@@ -1872,6 +1878,7 @@ class TrainWholeModel:
 
         # begin training
         batch_count = 0
+        whole_dot_product = []
         while batch_count < batch_size:
             new_batch_count = batch_count + step_num
 
@@ -1879,23 +1886,19 @@ class TrainWholeModel:
             this_a_token_type_ids = a_token_type_ids[batch_count:new_batch_count].to(self.device)
             this_a_attention_mask = a_attention_mask[batch_count:new_batch_count].to(self.device)
 
-            dot_product = self.model.do_queries_match(input_ids=this_a_input_ids,
-                                                      token_type_ids=this_a_token_type_ids,
-                                                      attention_mask=this_a_attention_mask,
-                                                      candidate_context_embeddings=b_embeddings,
-                                                      do_ablation=self.do_ablation)
+            dot_product = model.do_queries_match(input_ids=this_a_input_ids,
+                                                 token_type_ids=this_a_token_type_ids,
+                                                 attention_mask=this_a_attention_mask,
+                                                 candidate_context_embeddings=b_embeddings,
+                                                 do_ablation=self.do_ablation)
 
-            print(dot_product.shape)
-            raise_test_error()
             batch_count = new_batch_count
+            whole_dot_product.append(dot_product)
 
-
-
-        step_loss = self.model(
-            a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
-            a_attention_mask=a_attention_mask,
-            b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask, train_flag=True, match_train=True, do_ablation=self.do_ablation)
+        whole_dot_product = torch.cat(whole_dot_product, dim=0)
+        mask = torch.eye(whole_dot_product.size(0)).to(whole_dot_product.device)
+        loss = F.log_softmax(whole_dot_product, dim=-1) * mask
+        step_loss = (-loss.sum(dim=1)).mean()
 
         # 误差反向传播
         if not APEX_FLAG or self.no_apex:
