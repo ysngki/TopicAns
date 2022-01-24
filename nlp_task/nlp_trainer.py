@@ -387,7 +387,7 @@ class TrainWholeModel:
         do_val = kwargs.get('do_val', False)
 
         if self.dataset_name in ['mnli', 'qqp']:
-            self.glue_test(test_datasets=test_datasets, model_save_path=model_save_path, postfix=postfix)
+            self.glue_test(test_datasets=test_datasets, model_save_path=model_save_path, postfix=postfix, do_val=do_val)
         elif self.dataset_name in ['dstc7', 'ubuntu', 'yahooqa']:
             _ = self.match_val_test_body(this_datasets=test_datasets,
                                          previous_best_performance=previous_best_performance,
@@ -1012,7 +1012,7 @@ class TrainWholeModel:
 
         return whole_logits
 
-    def glue_test(self, test_datasets=None, model_save_path=None, postfix=None):
+    def glue_test(self, test_datasets=None, model_save_path=None, postfix=None, do_val=False):
         # add dataset
         dataset_label_dict = {'mnli': ['entailment', 'neutral', 'contradiction'],
                               'qqp': ['0', '1']}
@@ -1028,7 +1028,12 @@ class TrainWholeModel:
 
         # read datasets if necessary
         if test_datasets is None:
-            _, _, test_datasets = self.__get_datasets()
+            if not do_val:
+                _, _, test_datasets = self.__get_datasets()
+            else:
+                _, test_datasets, _ = self.__get_datasets()
+                self.classify_do_val_body(test_datasets, 0.0)
+                return None
 
         test_dataloaders = self.__get_dataloader(data=test_datasets, batch_size=self.val_batch_size)
 
