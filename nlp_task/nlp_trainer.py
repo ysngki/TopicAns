@@ -1919,6 +1919,7 @@ class TrainWholeModel:
 
     # 输入为QA，而非title.body.answer的模型的训练步
     def __efficient_match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
+        model = self.model.module if hasattr(self.model, 'module') else self.model
         step_num = 4
 
         b_input_ids = (batch['b_input_ids']).to(self.device)
@@ -1943,6 +1944,7 @@ class TrainWholeModel:
 
         # begin training
         batch_count = 0
+        whole_dot_product = []
         while batch_count < batch_size:
             new_batch_count = batch_count + step_num
 
