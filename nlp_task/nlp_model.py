@@ -707,10 +707,11 @@ class ClassifyParallelEncoder(nn.Module):
 
         if do_ablation:
             # (query_num, 1, dim)
-            a_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=a_attention_mask)
+            a_embeddings = a_last_hidden_state[:, 0, :].unsqueeze(1)
         else:
+            cls_embeddings = a_last_hidden_state[:, 0, :].unsqueeze(1)
             # (query_num, candidate_num, dim)
-            a_embeddings = decoder_output[:, -1:, :] + self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=a_attention_mask)
+            a_embeddings = decoder_output[:, -1:, :] + cls_embeddings
             a_embeddings = a_embeddings / 2
 
         logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
@@ -885,8 +886,7 @@ class MatchParallelEncoder(nn.Module):
             dot_product = torch.matmul(query_embeddings, candidate_embeddings.permute(0, 2, 1)).squeeze(-2)
         else:
             # (query_num, candidate_num, dim)
-            query_embeddings = decoder_output[:, -candidate_num:, :] + self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=attention_mask)
-            query_embeddings = query_embeddings / 2
+            query_embeddings = decoder_output[:, -candidate_num:, :]
             # (query_num, candidate_num)
             dot_product = torch.mul(query_embeddings, candidate_embeddings).sum(-1)
 
@@ -942,11 +942,11 @@ class MyLSTMBlock(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     # shapes are supposed to be (batch size, input_dim)
-    def forward(self, this_compressed_vector, last_compressed_vector, weight_hint):
-        weight = self.weight_layer(torch.cat((weight_hint, this_compressed_vector, last_compressed_vector), dim=-1))
+    def forward(self, new_information, last_compressed_vector, weight_hint):
+        weight = self.weight_layer(torch.cat((weight_hint, new_information, last_compressed_vector), dim=-1))
         weight = self.sigmoid(weight)
 
-        new_compressed_vector = weight * this_compressed_vector + (1-weight)*last_compressed_vector
+        new_compressed_vector = weight * new_information + (1-weight)*last_compressed_vector
 
         return new_compressed_vector
 
