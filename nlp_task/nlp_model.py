@@ -707,12 +707,10 @@ class ClassifyParallelEncoder(nn.Module):
 
         if do_ablation:
             # (query_num, 1, dim)
-            a_embeddings = a_last_hidden_state[:, 0, :].unsqueeze(1)
+            a_embeddings = self.decoder['candidate_composition_layer'](a_last_hidden_state, attention_mask=a_attention_mask)
         else:
-            cls_embeddings = a_last_hidden_state[:, 0, :].unsqueeze(1)
             # (query_num, candidate_num, dim)
-            a_embeddings = decoder_output[:, -1:, :] + cls_embeddings
-            a_embeddings = a_embeddings / 2
+            a_embeddings = decoder_output[:, -1:, :]
 
         logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings)
         logits = logits.squeeze(1)
