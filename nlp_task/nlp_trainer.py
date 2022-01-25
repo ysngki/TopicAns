@@ -5,6 +5,7 @@ import time
 
 import datasets
 import numpy as np
+import torch.autograd as autograd
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch

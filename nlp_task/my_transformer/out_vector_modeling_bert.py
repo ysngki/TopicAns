@@ -394,9 +394,12 @@ class MyBertAttention(nn.Module):
 			new_candidate_context_embeddings = decoder['layer_chunks'][layer_index](res_flag=True,
 																					new_embeddings=self_outputs[1],
 																					old_embeddings=candidate_context_embeddings)
+			# average of encoder tokens
+			new_attention_mask = attention_mask.squeeze(-2).squeeze(-2)/10000.0 + 1
+			encoder_representations = decoder['candidate_composition_layer'](self_outputs[0], attention_mask=new_attention_mask)
 
 			new_lstm_hidden_states = decoder['layer_chunks'][layer_index](res_flag=False,
-																		  encoder_representations=self_outputs[0][:, 0, :].unsqueeze(1),
+																		  encoder_representations=encoder_representations,
 																		  new_embeddings=self_outputs[2],
 																		  old_embeddings=lstm_hidden_states,
 																		  lstm_cell=decoder['LSTM'],
