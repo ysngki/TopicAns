@@ -8,7 +8,7 @@ python -u nlp_main.py -d qqp --model_class QAClassifierModel --composition poole
 python -u nlp_main.py -d mnli --model_class PolyEncoder --label_num 3 --train_batch_size 128 --gradient_accumulation_steps 1 --one_stage  --model_save_prefix c64_ --no_apex -n 0 --context_num 64 | tee  logs/mnli/c64_poly.log
 
 # train cross
-python -u nlp_main.py -d qqp --model_class CrossBERT --composition pooler --label_num 2 --train_batch_size 16 --gradient_accumulation_steps 8  -n 1  | tee  logs/qqp/cross.log
+python -u nlp_main.py -d mnli --model_class CrossBERT --composition pooler --label_num 2 --train_batch_size 16 --gradient_accumulation_steps 8  -n 1  | tee  logs/qqp/cross.log
 
 # train ClassifyParallelEncoder
 python -u nlp_main.py -d mnli --model_class ClassifyParallelEncoder --label_num 3 --train_batch_size 64 --gradient_accumulation_steps 2  --one_stage  --no_apex  --model_save_prefix c1_ablation_  --context_num 1 -n 0 --do_ablation | tee -a logs/mnli/c1_ablation_mine.log
