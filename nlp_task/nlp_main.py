@@ -43,7 +43,8 @@ def read_arguments():
 
 	# related to train
 	parser.add_argument("--one_stage", action="store_true", default=False)
-	parser.add_argument("--do_ablation", action="store_true", default=False)
+	parser.add_argument("--no_aggregator", action="store_true", default=False, help="use to enable Parallel-Encoder ablation")
+	parser.add_argument("--no_enricher", action="store_true", default=False, help="use to enable Parallel-Encoder ablation")
 	parser.add_argument("--no_apex", action="store_true", default=False)
 	parser.add_argument("--no_train", action="store_true", default=False)
 	parser.add_argument("--do_test", action="store_true", default=False)

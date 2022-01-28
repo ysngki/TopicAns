@@ -618,8 +618,9 @@ class ClassifyParallelEncoder(nn.Module):
         value_static.update(updating_value_static)
         self.decoder['candidate_value'].load_state_dict(value_static)
 
-    # Pre-compute representations. Used for time measuring.
     def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+        """ Pre-compute representations. """
+
         # reshape and encode candidates
         # (all_candidate_num, dim)
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
@@ -633,9 +634,10 @@ class ClassifyParallelEncoder(nn.Module):
 
         return candidate_embeddings
 
-    # use pre-compute candidate to get logits
     def do_queries_classify(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
-        do_ablation = kwargs.get('do_ablation')
+        """ use pre-compute candidate to get logits """
+        no_aggregator = kwargs.get('no_aggregator', False)
+        no_enricher = kwargs.get('no_enricher', False)
 
         candidate_context_embeddings = candidate_context_embeddings.reshape(input_ids.shape[0], self.config.context_num,
                                                                             candidate_context_embeddings.shape[-1])
@@ -644,12 +646,12 @@ class ClassifyParallelEncoder(nn.Module):
                                          device=candidate_context_embeddings.device)
 
         # (query_num, candidate_context_num + candidate_num, dim)
-        candidate_context_embeddings = torch.cat((candidate_context_embeddings, lstm_initial_state), dim=1)
+        candidate_input_embeddings = torch.cat((candidate_context_embeddings, lstm_initial_state), dim=1)
 
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
         a_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
-                                enrich_candidate_by_question=True, candidate_embeddings=candidate_context_embeddings,
+                                enrich_candidate_by_question=True, candidate_embeddings=candidate_input_embeddings,
                                 decoder=self.decoder, candidate_num=1)
 
         a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
@@ -657,15 +659,20 @@ class ClassifyParallelEncoder(nn.Module):
         b_context_embeddings = decoder_output[:, :-1, :].reshape(decoder_output.shape[0], 1,
                                                                  self.config.context_num,
                                                                  decoder_output.shape[-1])
-        # (query_num, candidate_num, dim)
-        b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
 
-        if do_ablation:
+        # control ablation
+        if no_aggregator:
             # (query_num, 1, dim)
             a_embeddings = a_last_hidden_state[:, 0, :].unsqueeze(1)
         else:
             # (query_num, candidate_num, dim)
             a_embeddings = decoder_output[:, -1:, :]
+
+        if no_enricher:
+            b_embeddings = self.decoder['candidate_composition_layer'](candidate_context_embeddings)
+        else:
+            # (query_num, candidate_num, dim)
+            b_embeddings = self.decoder['candidate_composition_layer'](b_context_embeddings).squeeze(-2)
 
         logits = self.classifier(a_embedding=a_embeddings, b_embedding=b_embeddings).squeeze(1)
 
@@ -675,7 +682,9 @@ class ClassifyParallelEncoder(nn.Module):
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
-        do_ablation = kwargs.get('do_ablation')
+        # must be clarified for training
+        no_aggregator = kwargs.get('no_aggregator')
+        no_enricher = kwargs.get('no_enricher')
 
         b_embeddings = self.prepare_candidates(input_ids=b_input_ids,
                                                attention_mask=b_attention_mask,
@@ -684,7 +693,8 @@ class ClassifyParallelEncoder(nn.Module):
         logits = self.do_queries_classify(input_ids=a_input_ids, attention_mask=a_attention_mask,
                                           token_type_ids=a_token_type_ids,
                                           candidate_context_embeddings=b_embeddings,
-                                          do_ablation=do_ablation)
+                                          no_aggregator=no_aggregator,
+                                          no_enricher=no_enricher)
 
         return logits
 
@@ -797,7 +807,7 @@ class MatchParallelEncoder(nn.Module):
         self.decoder['candidate_value'].load_state_dict(value_static)
 
     def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
-        """ Pre-compute representations. Used for time measuring. Return shape: (-1, context_num, context_dim) """
+        """ Pre-compute representations. Return shape: (-1, context_num, context_dim) """
 
         # reshape and encode candidates, (all_candidate_num, dim)
         candidate_seq_len = input_ids.shape[-1]
@@ -817,11 +827,13 @@ class MatchParallelEncoder(nn.Module):
         return candidate_embeddings
 
     def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
-        """ use pre-compute candidate to get scores. Only used by real test."""
+        """ use pre-compute candidate to get scores."""
 
-        do_ablation = kwargs.get('do_ablation', False)
-        
+        no_aggregator = kwargs.get('no_aggregator', False)
+        no_enricher = kwargs.get('no_enricher', False)
+
         candidate_num = candidate_context_embeddings.shape[1]
+        # reshape to (query_num, candidate_context_num, embedding_len)
         this_candidate_context_embeddings = candidate_context_embeddings.reshape(candidate_context_embeddings.shape[0],
                                                                                  -1,
                                                                                  candidate_context_embeddings.shape[-1])
@@ -830,26 +842,32 @@ class MatchParallelEncoder(nn.Module):
                                          device=this_candidate_context_embeddings.device)
 
         # (query_num, candidate_context_num + candidate_num, dim)
-        this_candidate_context_embeddings = torch.cat((this_candidate_context_embeddings, lstm_initial_state), dim=1)
+        this_candidate_input_embeddings = torch.cat((this_candidate_context_embeddings, lstm_initial_state), dim=1)
 
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
         a_out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
-                                enrich_candidate_by_question=True, candidate_embeddings=this_candidate_context_embeddings,
+                                enrich_candidate_by_question=True, candidate_embeddings=this_candidate_input_embeddings,
                                 decoder=self.decoder, candidate_num=candidate_num)
 
         a_last_hidden_state, decoder_output = a_out['last_hidden_state'], a_out['decoder_output']
 
         # get final representations
-        # (query_num, candidate_num, context_num, dim)
-        this_candidate_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0],
-                                                                                          candidate_num,
-                                                                                          self.config.context_num,
-                                                                                          decoder_output.shape[-1])
-        # (query_num, candidate_num, dim)
-        candidate_embeddings = self.decoder['candidate_composition_layer'](this_candidate_context_embeddings).squeeze(-2)
+        # control ablation
+        if no_enricher:
+            candidate_embeddings = self.decoder['candidate_composition_layer'](
+                candidate_context_embeddings).squeeze(-2)
+        else:
+            # (query_num, candidate_num, context_num, dim)
+            new_candidate_context_embeddings = decoder_output[:, :-candidate_num, :].reshape(decoder_output.shape[0],
+                                                                                             candidate_num,
+                                                                                             self.config.context_num,
+                                                                                             decoder_output.shape[-1])
 
-        if do_ablation:
+            # (query_num, candidate_num, dim)
+            candidate_embeddings = self.decoder['candidate_composition_layer'](new_candidate_context_embeddings).squeeze(-2)
+
+        if no_aggregator:
             # (query_num, 1, dim)
             query_embeddings = a_last_hidden_state[:, 0, :].unsqueeze(1)
             dot_product = torch.matmul(query_embeddings, candidate_embeddings.permute(0, 2, 1)).squeeze(-2)
@@ -871,7 +889,10 @@ class MatchParallelEncoder(nn.Module):
         """
 
         return_dot_product = kwargs.get('return_dot_product', False)
-        do_ablation = kwargs.get('do_ablation')
+
+        # must be clarified for training
+        no_aggregator = kwargs.get('no_aggregator')
+        no_enricher = kwargs.get('no_enricher')
 
         # (all_candidate_num, context_num, dim)
         b_embeddings = self.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
@@ -886,7 +907,7 @@ class MatchParallelEncoder(nn.Module):
 
         dot_product = self.do_queries_match(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
                                             attention_mask=a_attention_mask, candidate_context_embeddings=b_embeddings,
-                                            do_ablation=do_ablation)
+                                            no_aggregator=no_aggregator, no_enricher=no_enricher)
 
         if train_flag:
             if return_dot_product:

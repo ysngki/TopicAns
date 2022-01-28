@@ -1437,7 +1437,8 @@ class TrainWholeModel:
         self.train_batch_size = args.train_batch_size
         self.latent_dim = args.latent_dim
         self.model_save_prefix = args.model_save_prefix
-        self.do_ablation = args.do_ablation
+        self.no_aggregator = args.no_aggregator
+        self.no_enricher = args.no_enricher
 
         self.local_rank = args.local_rank
         self.data_parallel = args.data_parallel
@@ -1657,7 +1658,7 @@ class TrainWholeModel:
             a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask, do_ablation=self.do_ablation)
+            b_attention_mask=b_attention_mask, no_aggregator=self.no_aggregator, no_enricher=self.no_enricher)
 
         # 计算损失
         step_loss = cross_entropy_function(logits, qa_labels)
@@ -1716,7 +1717,7 @@ class TrainWholeModel:
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
             b_attention_mask=b_attention_mask, train_flag=poly_training_strategy,
-            return_dot_product=poly_training_strategy, do_ablation=self.do_ablation)
+            return_dot_product=poly_training_strategy, no_aggregator=self.no_aggregator, no_enricher=self.no_enricher)
 
         if poly_training_strategy:
             qa_labels = []
@@ -1786,7 +1787,8 @@ class TrainWholeModel:
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-                b_attention_mask=b_attention_mask, train_flag=True, do_ablation=self.do_ablation)
+                b_attention_mask=b_attention_mask, train_flag=True, no_aggregator=self.no_aggregator,
+                no_enricher=self.no_enricher)
 
             self.training_a_embeddings_stack.append(this_a_embeddings)
             self.training_b_embeddings_stack.append(this_b_embeddings)
@@ -1834,7 +1836,8 @@ class TrainWholeModel:
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-                b_attention_mask=b_attention_mask, train_flag=True, match_train=True, do_ablation=self.do_ablation)
+                b_attention_mask=b_attention_mask, train_flag=True, match_train=True,
+                no_aggregator=self.no_aggregator, no_enricher=self.no_enricher)
 
             # 误差反向传播
             if not APEX_FLAG or self.no_apex:
@@ -1850,72 +1853,6 @@ class TrainWholeModel:
             optimizer.zero_grad()
             scheduler.step()
             return (step_loss,)
-
-    # 输入为QA，而非title.body.answer的模型的训练步
-    def __efficient_match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
-        model = self.model.module if hasattr(self.model, 'module') else self.model
-
-        step_num = 2
-
-        b_input_ids = (batch['b_input_ids']).to(self.device)
-        b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
-        b_attention_mask = (batch['b_attention_mask']).to(self.device)
-
-        candidate_embeddings = model.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
-
-        b_embeddings = candidate_embeddings.reshape(-1, self.context_num, candidate_embeddings.shape[-1])\
-            .unsqueeze(0).expand(step_num, -1, -1, -1)
-
-        # 读取数据
-        a_input_ids = (batch['a_input_ids'])
-        a_token_type_ids = (batch['a_token_type_ids'])
-        a_attention_mask = (batch['a_attention_mask'])
-
-        batch_size = a_input_ids.shape[0]
-
-        if batch_size % step_num > 0:
-            raise Exception(f"Batch size {a_input_ids.shape[0]} should be divisible by step num {step_num}!")
-
-        # begin training
-        batch_count = 0
-        whole_dot_product = []
-        while batch_count < batch_size:
-            new_batch_count = batch_count + step_num
-
-            this_a_input_ids = a_input_ids[batch_count:new_batch_count].to(self.device)
-            this_a_token_type_ids = a_token_type_ids[batch_count:new_batch_count].to(self.device)
-            this_a_attention_mask = a_attention_mask[batch_count:new_batch_count].to(self.device)
-
-            dot_product = self.model.do_queries_match(input_ids=this_a_input_ids,
-                                                      token_type_ids=this_a_token_type_ids,
-                                                      attention_mask=this_a_attention_mask,
-                                                      candidate_context_embeddings=b_embeddings,
-                                                      do_ablation=self.do_ablation)
-
-            print(dot_product.shape)
-            raise_test_error()
-            batch_count = new_batch_count
-
-        step_loss = self.model(
-            a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
-            a_attention_mask=a_attention_mask,
-            b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask, train_flag=True, match_train=True, do_ablation=self.do_ablation)
-
-        # 误差反向传播
-        if not APEX_FLAG or self.no_apex:
-            step_loss.backward()
-        else:
-            with amp.scale_loss(step_loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-
-        if self.model_class in ['MatchParallelEncoder']:
-            nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
-
-        optimizer.step()
-        optimizer.zero_grad()
-        scheduler.step()
-        return (step_loss,)
 
     # 输入为QA，而非title.body.answer的模型的训练步
     def __efficient_match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
@@ -1956,7 +1893,8 @@ class TrainWholeModel:
                                                  token_type_ids=this_a_token_type_ids,
                                                  attention_mask=this_a_attention_mask,
                                                  candidate_context_embeddings=b_embeddings,
-                                                 do_ablation=self.do_ablation)
+                                                 no_aggregator=self.no_aggregator,
+                                                 no_enricher=self.no_enricher)
 
             batch_count = new_batch_count
             whole_dot_product.append(dot_product)
@@ -2084,7 +2022,8 @@ class TrainWholeModel:
                 a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
                 a_attention_mask=a_attention_mask,
                 b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-                b_attention_mask=b_attention_mask, do_ablation=self.do_ablation)
+                b_attention_mask=b_attention_mask, no_aggregator=self.no_aggregator,
+                no_enricher=self.no_enricher)
 
         return logits
 
@@ -2117,7 +2056,8 @@ class TrainWholeModel:
             a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
-            b_attention_mask=b_attention_mask, train_flag=False, do_ablation=self.do_ablation)
+            b_attention_mask=b_attention_mask, train_flag=False, no_aggregator=self.no_aggregator,
+            no_enricher=self.no_enricher)
 
         return logits
 
