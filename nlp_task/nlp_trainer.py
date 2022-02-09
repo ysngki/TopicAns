@@ -166,6 +166,38 @@ class TrainWholeModel:
             # prepare dataset, all are tuples
             train_dataset, val_datasets, test_datasets = self.__get_datasets()
 
+            # print matching dataset info
+            if self.model_class == "MatchParallelEncoder":
+                for print_dataset in train_dataset:
+                    a_attention_mask = print_dataset.a_attention_mask
+                    all_token_num = a_attention_mask.sum()
+                    avg_len = all_token_num / a_attention_mask.shape[0]
+                    print(f"Train query num is {a_attention_mask.shape[0]}. Avg len of train query is {avg_len}.", end="")
+
+                    b_attention_mask = print_dataset.b_attention_mask
+                    all_token_num = b_attention_mask.sum()
+                    # add dataset
+                    if self.dataset_name in ['yahooqa']:
+                        avg_len = all_token_num / (b_attention_mask.shape[0] * b_attention_mask.shape[1])
+                        print(
+                            f" Candidate each query is {b_attention_mask.shape[1]}. Avg len of test candidate is {avg_len}.")
+                    else:
+                        avg_len = all_token_num / b_attention_mask.shape[0]
+                        print(f" Avg len of train candidate is {avg_len}.")
+
+                for print_dataset in test_datasets:
+                    # datasets for cross will raise exception here
+                    a_attention_mask = print_dataset.a_attention_mask
+                    all_token_num = a_attention_mask.sum()
+                    avg_len = all_token_num / a_attention_mask.shape[0]
+                    print(f"Test query num is {a_attention_mask.shape[0]}. Avg len of test query is {avg_len}.", end="")
+
+                    b_attention_mask = print_dataset.b_attention_mask
+                    all_token_num = b_attention_mask.sum()
+                    avg_len = all_token_num / (b_attention_mask.shape[0]*b_attention_mask.shape[1])
+                    print(f" Candidate each query is {b_attention_mask.shape[1]}. Avg len of test candidate is {avg_len}.")
+            print("*"*50)
+
             # avoid warning
             scheduler = None
 
@@ -1152,6 +1184,10 @@ class TrainWholeModel:
         if self.model_class in ['MatchDeformer', 'ClassifyDeformer', 'MatchCrossBERT']:
             save_load_prefix = "deformer_" + str(self.first_seq_max_len) + "_" + save_load_prefix
 
+        # add text_max_len info to save_load_prefix
+        if self.text_max_len != 512:
+            save_load_prefix = str(self.text_max_len) + "_" + save_load_prefix
+
         # add dataset
         if self.dataset_name == 'mnli':
             # choose function to process data
@@ -1461,6 +1497,7 @@ class TrainWholeModel:
         self.context_num = args.context_num
         self.query_block_size = args.query_block_size
         self.first_seq_max_len = args.first_seq_max_len
+        self.step_max_query_num = args.step_max_query_num
 
         # add dataset
         if self.dataset_name == 'ubuntu':
@@ -1814,26 +1851,26 @@ class TrainWholeModel:
         # (batch_size, (context_num), dim)
         candidate_embeddings = model.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
 
+        # check validity
+        if self.step_max_query_num == -1:
+            raise Exception("Please designate arg:step_max_query_num for __efficient_match_train_step_for_qa_input.")
+
+        # add model
+        if self.model_class in ['MatchParallelEncoder']:
+            candidate_embeddings = candidate_embeddings.unsqueeze(0).expand(self.step_max_query_num, -1, -1, -1)
+
         # 读取数据
         a_input_ids = (batch['a_input_ids'])
         a_token_type_ids = (batch['a_token_type_ids'])
         a_attention_mask = (batch['a_attention_mask'])
 
         batch_size = a_input_ids.shape[0]
-        if batch_size % self.gradient_accumulation_steps > 0:
-            raise Exception("train_batch_size should be divisible by gradient_accumulation_steps to support match training!")
-
-        step_query_num = int(batch_size / self.gradient_accumulation_steps)
-
-        # add model
-        if self.model_class in ['MatchParallelEncoder']:
-            candidate_embeddings = candidate_embeddings.unsqueeze(0).expand(step_query_num, -1, -1, -1)
 
         # begin training
         batch_count = 0
         whole_dot_product = []
         while batch_count < batch_size:
-            new_batch_count = batch_count + step_query_num
+            new_batch_count = batch_count + self.step_max_query_num
 
             this_a_input_ids = a_input_ids[batch_count:new_batch_count].to(self.device)
             this_a_token_type_ids = a_token_type_ids[batch_count:new_batch_count].to(self.device)
