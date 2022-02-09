@@ -259,13 +259,18 @@ class QAMatchModel(nn.Module):
         return candidate_embeddings
 
     # use pre-compute candidate to get scores
-    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings):
-        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+    def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
+        """ candidate_context_embeddings is (batch, candidate, dim) or (batch, dim) """
 
-        query_embeddings = self.get_rep_by_pooler(input_ids=input_ids, token_type_ids=token_type_ids,
-                                                  attention_mask=attention_mask)
-        query_embeddings = query_embeddings.unsqueeze(1)
-        dot_product = torch.matmul(query_embeddings, candidate_context_embeddings.permute(0, 2, 1)).squeeze(1)
+        train_flag = kwargs.get('train_flag', False)
+
+        query_embeddings = self.prepare_candidates(input_ids=input_ids, token_type_ids=token_type_ids,
+                                                   attention_mask=attention_mask)
+        if train_flag:
+            dot_product = torch.matmul(query_embeddings, candidate_context_embeddings.t())  # [bs, bs]
+        else:
+            query_embeddings = query_embeddings.unsqueeze(1)
+            dot_product = torch.matmul(query_embeddings, candidate_context_embeddings.permute(0, 2, 1)).squeeze(1)
         return dot_product
 
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
@@ -280,40 +285,27 @@ class QAMatchModel(nn.Module):
         :param b_attention_mask: training: (batch size, sequence len) / val: (batch size, candidate num, sequence len)
         :return: training: (batch size, batch size) / val: (batch size, candidate num)
         """
-        if self.config.composition == 'pooler':
-            composition_function = self.get_rep_by_pooler
-        else:
-            raise Exception(f"Composition {self.config.composition} is not supported!!")
-
-        a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask,
-                                                                          a_token_type_ids)
-
-        # encode context
-        a_embeddings = composition_function(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-                                            attention_mask=a_attention_mask)
 
         # reshape and encode candidates
-        candidate_seq_len = b_input_ids.shape[-1]
-        b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
-        b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
-        b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
+        b_embeddings = self.prepare_candidates(input_ids=b_input_ids,
+                                               attention_mask=b_attention_mask,
+                                               token_type_ids=b_token_type_ids)
+        if not train_flag:
+            b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], -1, b_embeddings.shape[-1])
 
-        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
-                                                                          b_token_type_ids)
-        b_embeddings = composition_function(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-                                            attention_mask=b_attention_mask)
+        dot_product = self.do_queries_match(input_ids=a_input_ids,
+                                            token_type_ids=a_token_type_ids,
+                                            attention_mask=a_attention_mask,
+                                            candidate_context_embeddings=b_embeddings,
+                                            train_flag=train_flag)
 
         # for some purposes I don't compute logits in forward while training. Only this model behaves like this.
         if train_flag:
-            # dot_product = torch.matmul(a_embeddings, b_embeddings.t())  # [bs, bs]
-            # mask = torch.eye(a_embeddings.size(0)).to(a_embeddings.device)
-            # loss = F.log_softmax(dot_product, dim=-1) * mask
-            # loss = (-loss.sum(dim=1)).mean()
-            return a_embeddings, b_embeddings
+            mask = torch.eye(a_input_ids.size(0)).to(a_input_ids.device)
+            loss = F.log_softmax(dot_product, dim=-1) * mask
+            loss = (-loss.sum(dim=1)).mean()
+            return loss
         else:
-            b_embeddings = b_embeddings.reshape(a_embeddings.shape[0], -1, b_embeddings.shape[-1])
-            a_embeddings = a_embeddings.unsqueeze(1)
-            dot_product = torch.matmul(a_embeddings, b_embeddings.permute(0, 2, 1)).squeeze(1)
             return dot_product
 
 
@@ -828,7 +820,7 @@ class MatchParallelEncoder(nn.Module):
 
     def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings, **kwargs):
         """ use pre-compute candidate to get scores."""
-
+        # used to control ablation
         no_aggregator = kwargs.get('no_aggregator', False)
         no_enricher = kwargs.get('no_enricher', False)
 
@@ -1129,61 +1121,33 @@ class PolyEncoder(nn.Module):
     # b_text can be pre-computed
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
-        batch_size = a_token_type_ids.shape[0]
-        a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask,
-                                                                          a_token_type_ids)
         # encoding candidate texts
-        # (batch_size, sequence len, dim)
-        candidate_seq_len = b_input_ids.shape[-1]
-
-        b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
-        b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
-        b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
-
-        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
-                                                                          b_token_type_ids)
-
-        b_out = self.bert_model(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
-        b_last_hidden_state = b_out['last_hidden_state']
         # (batch_size, 1, dim) ---- pooler
-        candidate_context_vectors = b_last_hidden_state[:, 0, :].unsqueeze(-2)
-
-        # encoding query texts
-        a_out = self.bert_model(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
-        a_last_hidden_state = a_out['last_hidden_state']
-        # (batch_size, context_num, dim)
-        query_context_vectors = self.query_composition_layer(a_last_hidden_state, a_attention_mask)
+        candidate_context_vectors = self.prepare_candidates(input_ids=b_input_ids,
+                                                            token_type_ids=b_token_type_ids,
+                                                            attention_mask=b_attention_mask)
 
         # one-one classification task
         if self.config.num_labels > 0:
-            pass
-        else:
-            train_flag = kwargs['train_flag']
-            if train_flag:
-                # (batch_size, dim)
-                candidate_context_vectors = candidate_context_vectors.squeeze(-2)
-            else:
-                # (batch_size, candidate_num, dim)
-                candidate_context_vectors = candidate_context_vectors.squeeze(-2).reshape(batch_size, -1, candidate_context_vectors.shape[-1])
-
-        # (batch_size, 1, dim) or (batch_size, batch_size, dim) or (batch_size, candidate_num, dim)
-        final_query_context_vec = dot_attention(q=candidate_context_vectors, k=query_context_vectors,
-                                                v=query_context_vectors)
-
-        # one-one classification task
-        if self.config.num_labels > 0:
-            final_query_context_vec = final_query_context_vec.squeeze(-2)
-            candidate_context_vectors = candidate_context_vectors.squeeze(-2)
-
-            logits = self.classifier(a_embedding=final_query_context_vec, b_embedding=candidate_context_vectors)
+            logits = self.do_queries_classify(input_ids=a_input_ids,
+                                              token_type_ids=a_token_type_ids,
+                                              attention_mask=a_attention_mask,
+                                              candidate_context_embeddings=candidate_context_vectors)
 
             return logits
-        # cos full-match task
         else:
-            # (batch size, batch size)
-            # first is query, second is candidate
-            dot_product = torch.sum(final_query_context_vec * candidate_context_vectors, -1)
+            batch_size = a_token_type_ids.shape[0]
             train_flag = kwargs['train_flag']
+            if not train_flag:
+                # (batch_size, candidate_num, dim)
+                candidate_context_vectors = candidate_context_vectors.reshape(batch_size, -1, candidate_context_vectors.shape[-1])
+
+            # (batch size, batch size) or (batch size, candidate_num)
+            dot_product = self.do_queries_match(input_ids=a_input_ids,
+                                                token_type_ids=a_token_type_ids,
+                                                attention_mask=a_attention_mask,
+                                                candidate_context_embeddings=candidate_context_vectors)
+
             if train_flag:
                 mask = torch.eye(batch_size).to(dot_product.device)
                 loss = F.log_softmax(dot_product, dim=-1) * mask
