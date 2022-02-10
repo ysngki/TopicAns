@@ -4,7 +4,6 @@ import math
 import time
 
 import datasets
-import numpy as np
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch
@@ -106,8 +105,6 @@ class TrainWholeModel:
         # avoid warning
         self.model = None
         self.teacher_model = None
-        self.training_a_embeddings_stack = []
-        self.training_b_embeddings_stack = []
 
     def train(self, train_two_stage_flag, only_final=False):
         # best model save path
@@ -202,10 +199,6 @@ class TrainWholeModel:
             scheduler = None
 
             for epoch in range(restore_epoch, self.num_train_epochs):
-                # used for support accumulate for QAMatchModel
-                self.training_a_embeddings_stack = []
-                self.training_b_embeddings_stack = []
-
                 torch.cuda.empty_cache()
 
                 # whether this epoch get the best model
@@ -361,7 +354,7 @@ class TrainWholeModel:
             elif self.dataset_name in ['yahooqa']:
                 train_step_function = self.__train_step_for_multi_candidates_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
-                if self.model_class in ['MatchParallelEncoder']:
+                if self.model_class in ['MatchParallelEncoder', 'QAMatchModel']:
                     # train_step_function = self.__match_train_step_for_qa_input
                     train_step_function = self.__efficient_match_train_step_for_qa_input
                 else:
@@ -892,6 +885,9 @@ class TrainWholeModel:
         cross_entropy_function = nn.CrossEntropyLoss()
         this_loss, r_k_result = None, None
 
+        # global statement
+        avg_r_k_result = -999
+
         for dataloader in val_dataloader:
             logits = self.match_validate_model(dataloader)
 
@@ -899,6 +895,7 @@ class TrainWholeModel:
             r_k_result = ()
             for k in self.r_k_num:
                 _, indices = torch.topk(logits, k, dim=-1)
+                # best candidate is at last index
                 hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
                 r_k_result += (hit_num / logits.shape[0],)
 
@@ -912,7 +909,9 @@ class TrainWholeModel:
 
         print(
             f"Eval on {log_text} Dataset: " + "*" * 30 +
-            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{self.r_k_num}\tAvg R:{avg_r_k_result}\tprevious best performance:{previous_best_performance}\tfrom rank:{self.local_rank}")
+            f"\nval_loss:{this_loss}\tR@K:{r_k_result}%\tR_k:{self.r_k_num}\t"
+            f"Avg R:{avg_r_k_result}\tprevious best performance:{previous_best_performance}"
+            f"\tfrom rank:{self.local_rank}")
 
         # in order to use > to reveal priority
         return r_k_result[0]

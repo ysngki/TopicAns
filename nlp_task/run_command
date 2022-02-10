@@ -31,8 +31,10 @@ python -u nlp_main.py  -d ubuntu --model_class MatchDeformer --label_num 1 --val
 
 python -u nlp_main.py -d ubuntu --no_apex --model_class CrossBERT --label_num 1 --train_candidate_num 16 --val_candidate_num 10 --val_batch_size 2 --train_batch_size 4 --gradient_accumulation_steps 32  -n 1 --no_initial_test | tee logs/ubuntu/cross_bs_128.log
 
-************* base ***********************
+************* efficient  training ***********************
 python -u nlp_main.py -d ubuntu --val_candidate_num 10  --model_class MatchParallelEncoder --one_stage --label_num 0 --no_apex  --val_batch_size 20 --train_batch_size 48  --pretrained_bert_path bert-base-uncased --context_num 1 -n 1 --seed 42 --model_save_prefix s42_c1_base_ --text_max_len 256 --step_max_query_num 48 --no_initial_test | tee logs/ubuntu/s42_c1_base_mine.log
+
+python -u nlp_main.py -d ubuntu --val_candidate_num 10  --model_class QAMatchModel --one_stage --label_num 0 --no_apex  --val_batch_size 20 --train_batch_size 48  --pretrained_bert_path bert-base-uncased  -n 0 --seed 42 --model_save_prefix s42_base_ --text_max_len 256 --step_max_query_num 48  | tee logs/ubuntu/s42_base_bi.log
 
 ************* real test ***********************
 1. PolyEncoder

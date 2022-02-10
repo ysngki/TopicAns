@@ -276,7 +276,8 @@ class QAMatchModel(nn.Module):
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, train_flag, **kwargs):
         """
-        :param train_flag:
+        Traditional training method. May be unsuitable for big model and big batch size due to cuda memory restriction;
+        :param train_flag: None
         :param a_input_ids: (batch size, sequence len)
         :param a_token_type_ids: (batch size, sequence len)
         :param a_attention_mask: (batch size, sequence len)
@@ -291,6 +292,7 @@ class QAMatchModel(nn.Module):
                                                attention_mask=b_attention_mask,
                                                token_type_ids=b_token_type_ids)
         if not train_flag:
+            # (query_num, candidate_num, dim)
             b_embeddings = b_embeddings.reshape(a_input_ids.shape[0], -1, b_embeddings.shape[-1])
 
         dot_product = self.do_queries_match(input_ids=a_input_ids,
