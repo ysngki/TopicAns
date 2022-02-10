@@ -15,13 +15,19 @@ from my_function import get_rep_by_avg, dot_attention, clean_input_ids, clean_in
 # 2. QAMatchModel
 #       basic bi-encoder for 1-n match tasks, support mem
 # 3. CrossBERT
-#       basic cross-encoder for both classification and matching
-# 4. ClassifyParallelEncoder
+#       basic cross-encoder for classification
+# 4. MatchCrossBERT
+#       basic cross-encoder for match
+# 5. ClassifyParallelEncoder
 #       my model for 1-1 classification
-# 5. MatchParallelEncoder
+# 6. MatchParallelEncoder
 #       my model for 1-n match tasks
-# 6. PolyEncoder
+# 7. PolyEncoder
 #       for both classification and matching
+# 8. ClassifyDeformer
+#       deformer for classification
+# 9. MatchDeformer
+#       deformer for match
 
 
 # --------------------------------------
