@@ -129,7 +129,5 @@ if __name__ == '__main__':
 
 	# 如果读取memory，或者不训练mlm，就要train
 	if (my_args.load_memory or (not my_args.mlm)) and (not my_args.no_train):
-		my_train_model.train(train_two_stage_flag=my_train_two_stage_flag,
-							 memory_save_name=my_args.memory_save_prefix + "_" +
-											  my_args.dataset_name, only_final=my_args.only_final)
+		my_train_model.train(train_two_stage_flag=my_train_two_stage_flag, only_final=my_args.only_final)
 

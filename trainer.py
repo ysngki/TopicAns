@@ -106,13 +106,12 @@ class TrainWholeModel:
 		self.model = None
 		self.teacher_model = None
 
-	def train(self, train_two_stage_flag, memory_save_name, only_final=False):
+	def train(self, train_two_stage_flag, only_final=False):
 		# 用来判断是哪一阶段的训练
 		final_stage_flag = not train_two_stage_flag
 
+		model_save_name = self.model_save_prefix + self.model_class + "_" + self.dataset_name
 		# best model save path
-		model_save_name = self.model_save_prefix + self.model_class + "_" + \
-						  self.dataset_name
 		model_save_path = self.save_model_dict + "/" + model_save_name
 		# last model save path
 		last_model_save_path = self.last_model_dict + "/" + model_save_name
@@ -140,7 +139,6 @@ class TrainWholeModel:
 			if self.restore_flag:
 				self.model = self.load_models(self.model, restore_path)
 
-			# 读取数据
 			self.__model_to_device()
 
 			# 这不不会出问题吧
@@ -166,8 +164,6 @@ class TrainWholeModel:
 			else:
 				early_stop_threshold = 5
 
-			early_stop_count = 0
-
 			# restore training settings
 			early_stop_count, restore_epoch, scheduler_last_epoch, previous_best_r_1 = \
 				self.restore_settings(optimizer, restore_path, previous_best_r_1)
@@ -187,7 +183,7 @@ class TrainWholeModel:
 				print("*" * 20 + f" {epoch} " + "*" * 20)
 
 				# 训练之前先看初始情况,保存初始best performance
-				if epoch == 0 and not self.no_initial_test:
+				if epoch == restore_epoch and not self.no_initial_test:
 					print("-" * 30 + "initial validation" + "-" * 30)
 
 					"""
@@ -227,7 +223,7 @@ class TrainWholeModel:
 				# 计算训练集的R@1
 				shoot_num, hit_num, now_batch_num = 0, 0, 0
 
-				next_val_num = 1
+				# next_val_num = 1
 
 				# 读取训练数据
 				train_data = datasets.load_from_disk("./" + self.dataset_name + "/string_train.dataset")
@@ -311,7 +307,7 @@ class TrainWholeModel:
 						# 		r_1 = self.ranking()
 						# 	print(
 						# 		f"{epoch + 1} epoch middle eval: " + "*" * 30 +
-						# 		f"\nval_loss:{val_loss}\tval_acc{val_acc}\tR@1:{r_1}\tprevious best R@1:{previous_best_r_1}\tfrom rank:{self.local_rank}")
+						# 		f"\n val_loss:{val_loss}\t val_acc{val_acc}\tR@1:{r_1}\t previous best R@1:{previous_best_r_1}\t from rank:{self.local_rank}")
 						#
 						# 	# 模型是否比之前优秀
 						# 	if r_1 > previous_best_r_1:
@@ -335,7 +331,6 @@ class TrainWholeModel:
 
 				this_best_r_1 = self.do_val()
 
-				# 存储最新的模型
 				postfix = ""
 				if not final_stage_flag:
 					postfix = "_middle"
@@ -350,9 +345,7 @@ class TrainWholeModel:
 									previous_best_performance=this_best_r_1,
 									early_stop_count=early_stop_count)
 
-				if not os.path.exists("./last_model/"):
-					os.makedirs("./last_model/")
-
+				# 存储最新的模型
 				self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer,
 								scheduler=scheduler, previous_best_performance=previous_best_r_1,
 								early_stop_count=early_stop_count, postfix=postfix)
@@ -376,11 +369,11 @@ class TrainWholeModel:
 			if not final_stage_flag:
 				postfix = "_middle"
 
-			# 用最好的模型
+			# 用之前保存的最好的模型
 			self.model = self.load_models(self.model, model_save_path + postfix)
 
 			this_stage_result = self.do_test()
-			print("#" * 15 + f" This stage result is {this_stage_result} " + "#" * 15)
+			print("#" * 15 + f" This stage result is {this_stage_result}. " + "#" * 15)
 
 			# 如果只是第一阶段的训练，那么还要继续训练
 			if not final_stage_flag:
@@ -628,7 +621,7 @@ class TrainWholeModel:
 				print("training finished!!!")
 				break
 
-	# val use first 50%
+	# val use first 50% of previous test data
 	def do_val(self):
 		print("--------------------- begin validation -----------------------")
 		# 稍加处理一下数据，把数据都存在元祖里
@@ -653,6 +646,7 @@ class TrainWholeModel:
 		# pass data into ranking method
 		return self.ranking(evaluation_qa_pairs)
 
+	# val use last 50% of previous test data
 	def do_test(self):
 		print("--------------------- begin testing -----------------------")
 		# 稍加处理一下数据，把数据都存在元祖里
@@ -678,6 +672,10 @@ class TrainWholeModel:
 		return self.ranking(evaluation_qa_pairs)
 
 	def ranking(self, ranking_qa_pairs):
+		"""
+		:param ranking_qa_pairs: List< Tuple< title: List<str>, body: List<str>, answers: List<list<str>> >>
+		:return: Recall@1: float
+		"""
 		self.model.eval()
 
 		# 开始逐条排序
@@ -919,8 +917,8 @@ class TrainWholeModel:
 		saved_dict = torch.load("./model/pretrained_memory/" + memory_save_name)
 		memory_start_index = saved_dict['memory_start_index']
 
-		memory_weights = {'memory_for_answer':saved_dict['embedding']['weight'][memory_start_index:],
-						  'memory_for_question':saved_dict['embedding']['weight'][memory_start_index:]}
+		memory_weights = {'memory_for_answer': saved_dict['embedding']['weight'][memory_start_index:],
+						  'memory_for_question': saved_dict['embedding']['weight'][memory_start_index:]}
 
 		model_dict = self.model.state_dict()
 		model_dict.update(memory_weights)
@@ -1038,7 +1036,7 @@ class TrainWholeModel:
 			answers = []
 
 			for data in evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP]:
-				temp_question = data[0]
+				temp_question: str = data[0]
 				body = data[1]
 				candidate_answers = data[2]
 
@@ -1183,7 +1181,7 @@ class TrainWholeModel:
 			texts = []
 
 			for data in evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP]:
-				temp_question = data[0]
+				temp_question: str = data[0]
 				body = data[1]
 				candidate_answers = data[2]
 
