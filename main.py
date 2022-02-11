@@ -1,10 +1,12 @@
 import argparse
+import os
+
 import torch
 from torch.backends import cudnn
 import random
 import numpy as np
 
-from Trainer import TrainWholeModel
+from trainer import TrainWholeModel
 
 
 def set_seed(seed):
@@ -13,6 +15,18 @@ def set_seed(seed):
 	torch.manual_seed(seed)
 	cudnn.deterministic = True
 	cudnn.benchmark = False
+
+
+def create_dir(this_args):
+	if not os.path.exists(this_args.save_model_dict):
+		os.makedirs(this_args.save_model_dict)
+	if not os.path.exists(this_args.last_model_dict):
+		os.makedirs(this_args.last_model_dict)
+	if not os.path.exists("./tokenizer"):
+		os.makedirs("./tokenizer")
+
+	if not os.path.exists("./dataset/"):
+		os.makedirs("./dataset/")
 
 
 def read_arguments():
@@ -36,6 +50,7 @@ def read_arguments():
 	parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
 	parser.add_argument("--val_num_each_epoch", default=3, type=int)
 	parser.add_argument("--save_model_dict", default="./model/", type=str)
+	parser.add_argument("--last_model_dict", default="./last_model/", type=str)
 	parser.add_argument("--first_stage_lr", default=0.3, type=float, help="the lr of memory at first stage")
 
 	# related to model
@@ -43,6 +58,7 @@ def read_arguments():
 	parser.add_argument("--composition", type=str, default='pooler', help = 'control the way to get sentence representation')
 
 	# related to train
+	parser.add_argument("--no_train", action="store_true", default=False)
 	parser.add_argument("--restore", action="store_true", default=False, help="use restore and only_final together to control which model to read!")
 
 	parser.add_argument("--no_initial_test", action="store_true", default=False)
@@ -79,7 +95,6 @@ def read_arguments():
 	parser.add_argument("--latent_dim", default=100, type=int)
 	parser.add_argument("--train_vae", action="store_true", default=False)
 
-
 	args = parser.parse_args()
 	print("args:", args)
 	return args
@@ -113,10 +128,8 @@ if __name__ == '__main__':
 															my_args.dataset_name)
 
 	# 如果读取memory，或者不训练mlm，就要train
-	if my_args.load_memory or (not my_args.mlm):
-		my_train_model.train(model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
-											 my_args.model_class + "_" +
-											 my_args.dataset_name, train_two_stage_flag=my_train_two_stage_flag,
+	if (my_args.load_memory or (not my_args.mlm)) and (not my_args.no_train):
+		my_train_model.train(train_two_stage_flag=my_train_two_stage_flag,
 							 memory_save_name=my_args.memory_save_prefix + "_" +
 											  my_args.dataset_name, only_final=my_args.only_final)
 

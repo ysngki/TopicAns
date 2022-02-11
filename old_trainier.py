@@ -59,6 +59,7 @@ class TrainWholeModel:
 		tokenizer_path = tokenizer_path.replace("\\", "_")
 
 		# add model
+		# For QAMemory, memory tokens are contained in tokenizer as special tokens
 		if self.model_class in ['QAMemory']:
 			tokenizer_path += "_" + str(self.memory_num) + "_" + self.model_class
 
@@ -71,10 +72,11 @@ class TrainWholeModel:
 			tokenizer_config = AutoConfig.from_pretrained(args.pretrained_bert_path)
 
 			# add model
-			# add memory to tokenizer
+			# add memory tokens to tokenizer
 			if self.model_class in ['QAMemory']:
 				memory_token_list = []
 
+				# maybe order that answer tokens are behind question tokens is important? I forgot.
 				for i in range(self.memory_num):
 					memory_token_list.append('<QMEM' + str(i) + '>')
 				for i in range(self.memory_num):
@@ -91,8 +93,9 @@ class TrainWholeModel:
 			self.tokenizer.save_pretrained("./tokenizer/" + tokenizer_path)
 			tokenizer_config.save_pretrained("./tokenizer/" + tokenizer_path)
 
-
+		# only used by QAMemory...
 		self.origin_voc_size = len(self.tokenizer) - self.memory_num*2
+
 		# 获得模型配置-------------------------------------------------------------------
 		if config is None:
 			self.config = self.__read_args_for_config(args)
@@ -1223,7 +1226,6 @@ class TrainWholeModel:
 		self.model.train()
 
 		return self.dcg_score(model_ranking, 1)
-
 
 	def __create_model(self):
 		print("---------------------- create model ----------------------")
