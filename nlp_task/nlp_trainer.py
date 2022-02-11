@@ -343,8 +343,8 @@ class TrainWholeModel:
         if self.model_class == "CrossBERT":
             if self.dataset_name in ['mnli', 'qqp']:
                 train_step_function = self.__classify_train_step_for_cross
-            # elif self.dataset_name in ['dstc7', 'ubuntu', 'yahooqa']:
-            #     train_step_function = self.__match_train_step_for_cross
+            elif self.dataset_name in ['dstc7', 'ubuntu', 'yahooqa']:
+                train_step_function = self.__match_train_step_for_cross
             else:
                 raise_dataset_error()
         elif self.model_class in ['QAClassifierModel', 'ClassifyParallelEncoder', 'PolyEncoder', 'QAMatchModel',
@@ -354,7 +354,7 @@ class TrainWholeModel:
             elif self.dataset_name in ['yahooqa']:
                 train_step_function = self.__train_step_for_multi_candidates_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
-                if self.model_class in ['MatchParallelEncoder', 'QAMatchModel']:
+                if self.model_class in ['MatchParallelEncoder', 'QAMatchModel', 'PolyEncoder']:
                     # train_step_function = self.__match_train_step_for_qa_input
                     train_step_function = self.__efficient_match_train_step_for_qa_input
                 else:

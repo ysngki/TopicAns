@@ -4,7 +4,7 @@ from torch.backends import cudnn
 import random
 import numpy as np
 
-from QA_trainer import TrainWholeModel
+from Trainer import TrainWholeModel
 
 
 def set_seed(seed):
