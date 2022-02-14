@@ -2,7 +2,7 @@
 ------------------------------------------------------------------------------------------------------------------------
 Task1: mnli/qqp ------------------------------------------------------------
 # train bi
-python -u nlp_main.py -d qqp --model_class QAClassifierModel --composition pooler -n 1 --label_num 2 --train_batch_size 128 --val_batch_size 128 --no_apex | tee  logs/qqp/bi.log
+python -u nlp_main.py -d mnli --model_class QAClassifierModel --composition pooler --label_num 2 --train_batch_size 128 --val_batch_size 128 --no_apex  -n 3 | tee  logs/qqp/bi.log
 
 # train poly
 python -u nlp_main.py -d mnli --model_class PolyEncoder --label_num 3 --train_batch_size 128 --gradient_accumulation_steps 1 --one_stage  --model_save_prefix c64_ --no_apex -n 0 --context_num 64 | tee  logs/mnli/c64_poly.log
@@ -60,6 +60,8 @@ python -u nlp_main.py -d dstc7 --model_class MatchParallelEncoder --val_candidat
 
 python -u nlp_main.py -d dstc7 --model_class CrossBERT --val_candidate_num 100 --one_stage --label_num 1 --train_candidate_num 16 --train_batch_size 2  --gradient_accumulation_steps 64 --val_batch_size 2 -n 1 --no_train --do_real_test
 
+*********** efficient  training ***********************
+python -u nlp_main.py -d dstc7  --model_class PolyEncoder --one_stage --label_num 0 --no_apex  --val_batch_size 2 --train_batch_size 48  --pretrained_bert_path bert-base-uncased --context_num 16 -n 1 --seed 100 --model_save_prefix s100_c16_base_ --text_max_len 256 --step_max_query_num 24 --no_initial_test |  tee logs/dstc7/s100_c16_base_poly.log
 
 ------------------------------------------------------------------------------------------------------------------------
 Task4: yahooqa ------------------------------------------------------------
@@ -70,4 +72,4 @@ python -u nlp_main.py -d yahooqa --model_class MatchParallelEncoder --label_num 
 python -u nlp_main.py -d yahooqa --model_class QAMatchModel --label_num 0  --train_batch_size 32 --gradient_accumulation_steps 4 --one_stage  -n 1 --no_apex  --train_candidate_num 5 | tee -a logs/yahooqa/bi_l4.log
 
 3. Cross
-python -u nlp_main.py -d yahooqa --model_class CrossBERT --label_num 1 --train_candidate_num 5 --val_candidate_num 5 --val_batch_size 2 --no_apex --train_batch_size 32 --gradient_accumulation_steps 4  -n 1  | tee -a logs/yahooqa/cross_bs_128.log
+python -u nlp_main.py -d yahooqa --model_class CrossBERT --label_num 1 --train_candidate_num 5 --val_candidate_num 5 --val_batch_size 2 --no_apex --train_batch_size 32 --gradient_accumulation_steps 4  --seed 100 --model_save_prefix s100_ -n 0  | tee logs/yahooqa/s100_cross_bs_128.log
