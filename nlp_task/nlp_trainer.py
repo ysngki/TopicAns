@@ -1958,7 +1958,7 @@ class TrainWholeModel:
                                                  train_flag=True)
 
             # calculate gradient
-            mask = (torch.eye(batch_size.size(0)).to(self.device))[batch_count:new_batch_count]
+            mask = (torch.eye(batch_size).to(self.device))[batch_count:new_batch_count]
             loss = F.log_softmax(dot_product, dim=-1) * mask
             step_loss = (-loss.sum(dim=1)).mean()
             all_loss += step_loss
