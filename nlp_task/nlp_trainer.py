@@ -356,7 +356,10 @@ class TrainWholeModel:
             elif self.dataset_name in ['dstc7', 'ubuntu']:
                 if self.model_class in ['MatchParallelEncoder', 'QAMatchModel', 'PolyEncoder']:
                     # train_step_function = self.__match_train_step_for_qa_input
-                    train_step_function = self.__efficient_match_train_step_for_qa_input
+                    if self.clean_graph:
+                        train_step_function = self.__clean_graph_efficient_match_train_step_for_qa_input
+                    else:
+                        train_step_function = self.__efficient_match_train_step_for_qa_input
                 else:
                     train_step_function = self.__match_train_step_for_qa_input
             else:
@@ -1456,6 +1459,7 @@ class TrainWholeModel:
 
     # 读取命令行传入的参数
     def __read_args_for_train(self, args):
+        self.clean_graph = args.clean_graph
         self.top_layer_num = args.top_layer_num
         self.val_num_each_epoch = args.val_num_each_epoch
         self.no_apex = args.no_apex
@@ -1839,7 +1843,7 @@ class TrainWholeModel:
         scheduler.step()
         return (step_loss,)
 
-    # 输入为QA，而非title.body.answer的模型的训练步，支持缓存candidate的表征
+    # 支持先计算candidate的表征，接着按块进行query和candidate的匹配
     def __efficient_match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
         model = self.model.module if hasattr(self.model, 'module') else self.model
 
@@ -1848,11 +1852,14 @@ class TrainWholeModel:
         b_attention_mask = (batch['b_attention_mask']).to(self.device)
 
         # (batch_size, (context_num), dim)
-        candidate_embeddings = model.prepare_candidates(input_ids=b_input_ids, token_type_ids=b_token_type_ids, attention_mask=b_attention_mask)
+        candidate_embeddings = model.prepare_candidates(input_ids=b_input_ids,
+                                                        token_type_ids=b_token_type_ids,
+                                                        attention_mask=b_attention_mask)
 
         # check validity
         if self.step_max_query_num == -1:
-            raise Exception("Please designate arg:step_max_query_num for __efficient_match_train_step_for_qa_input.")
+            raise Exception(
+                "Please designate arg:step_max_query_num for __efficient_match_train_step_for_qa_input.")
 
         # add model
         if self.model_class in ['MatchParallelEncoder']:
@@ -1905,6 +1912,73 @@ class TrainWholeModel:
         optimizer.zero_grad()
         scheduler.step()
         return (step_loss,)
+
+    # 按块进行query和candidate的匹配，并且每一块进行一次后向传播，用以减少计算图的显存占用
+    def __clean_graph_efficient_match_train_step_for_qa_input(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+
+        batch_size = batch['b_input_ids'].shape[0]
+
+        # begin training
+        batch_count = 0
+        all_loss = torch.tensor(0.0, device=self.device)
+
+        while batch_count < batch_size:
+            b_input_ids = (batch['b_input_ids']).to(self.device)
+            b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
+            b_attention_mask = (batch['b_attention_mask']).to(self.device)
+
+            # (batch_size, (context_num), dim)
+            candidate_embeddings = model.prepare_candidates(input_ids=b_input_ids,
+                                                            token_type_ids=b_token_type_ids,
+                                                            attention_mask=b_attention_mask)
+
+            # check validity
+            if self.step_max_query_num == -1:
+                raise Exception(
+                    "Please designate arg:step_max_query_num for __efficient_match_train_step_for_qa_input.")
+
+            # add model
+            if self.model_class in ['MatchParallelEncoder']:
+                candidate_embeddings = candidate_embeddings.unsqueeze_(0).expand(self.step_max_query_num, -1, -1, -1)
+
+            # 接下来进行匹配
+            new_batch_count = batch_count + self.step_max_query_num
+
+            this_a_input_ids = batch['a_input_ids'][batch_count:new_batch_count].to(self.device)
+            this_a_token_type_ids = batch['a_token_type_ids'][batch_count:new_batch_count].to(self.device)
+            this_a_attention_mask = batch['a_attention_mask'][batch_count:new_batch_count].to(self.device)
+
+            dot_product = model.do_queries_match(input_ids=this_a_input_ids,
+                                                 token_type_ids=this_a_token_type_ids,
+                                                 attention_mask=this_a_attention_mask,
+                                                 candidate_context_embeddings=candidate_embeddings,
+                                                 no_aggregator=self.no_aggregator,
+                                                 no_enricher=self.no_enricher,
+                                                 train_flag=True)
+
+            # calculate gradient
+            mask = (torch.eye(batch_size.size(0)).to(self.device))[batch_count:new_batch_count]
+            loss = F.log_softmax(dot_product, dim=-1) * mask
+            step_loss = (-loss.sum(dim=1)).mean()
+            all_loss += step_loss
+
+            # 误差反向传播
+            if not APEX_FLAG or self.no_apex:
+                step_loss.backward()
+            else:
+                with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+
+            batch_count = new_batch_count
+
+        if self.model_class in ['MatchParallelEncoder']:
+            nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
+
+        optimizer.step()
+        optimizer.zero_grad()
+        scheduler.step()
+        return (all_loss,)
 
     # cross模型的训练步
     def __classify_train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
@@ -2139,7 +2213,7 @@ class TrainWholeModel:
         print(f"Processed dataset is saved at ./dataset/{save_name}")
 
         return dataset
-    
+
     def __tokenize_match_bi_data_then_save(self, data, save_name, a_column_name="premise", b_column_name="hypothesis"):
         split_num = 100
         this_dataset_max_len = -1
@@ -2196,7 +2270,7 @@ class TrainWholeModel:
         print("*" * 20 + f"Encoding {final_a_input_ids.shape} texts finished!" + "*" * 20)
 
         return dataset
-    
+
     def __tokenize_match_multi_candidate_data_then_save(self, data, save_name, a_column_name="sentence_a", b_column_name="candidates", candidate_num=100):
         if self.model_class in ['MatchDeformer', 'ClassifyDeformer', 'MatchCrossBERT']:
             first_seq_max_len = self.first_seq_max_len

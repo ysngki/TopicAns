@@ -61,6 +61,8 @@ def read_arguments():
 	parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
 	parser.add_argument("--step_max_query_num", type=int, default=-1,
 						help="necessary for __efficient_match_train_step_for_qa_input")
+	parser.add_argument("--clean_graph", action="store_true", default=False,
+						help="do forward which reduce cuda memory of graph but increase reference time.")
 
 	parser.add_argument("--no_initial_test", action="store_true", default=False)
 	parser.add_argument("--only_final", action="store_true", default=False,

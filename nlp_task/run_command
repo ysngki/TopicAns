@@ -73,3 +73,6 @@ python -u nlp_main.py -d yahooqa --model_class QAMatchModel --label_num 0  --tra
 
 3. Cross
 python -u nlp_main.py -d yahooqa --model_class CrossBERT --label_num 1 --train_candidate_num 5 --val_candidate_num 5 --val_batch_size 2 --no_apex --train_batch_size 32 --gradient_accumulation_steps 4  --seed 100 --model_save_prefix s100_ -n 0  | tee logs/yahooqa/s100_cross_bs_128.log
+
+4. MatchDeformer
+python -u nlp_main.py -d yahooqa --model_class MatchDeformer  --label_num 1 --top_layer_num 2  --train_batch_size 32 --gradient_accumulation_steps 4 --one_stage  -n 2 --no_apex  --train_candidate_num 5 --seed 100 | tee  logs/yahooqa/s100_2_2_deformer.log
