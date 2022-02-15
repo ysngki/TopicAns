@@ -387,15 +387,17 @@ class MatchCrossBERT(nn.Module):
 
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, train_flag, **kwargs):
+        a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask,
+                                                                          a_token_type_ids)
+        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
+                                                                          b_token_type_ids)
+
         # (all_candidate_num, dim)
         candidate_seq_len = b_input_ids.shape[-1]
         b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
         b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
         b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
 
-        # remove padding
-        # a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask, a_token_type_ids)
-        # b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask, b_token_type_ids)
         b_token_type_ids = b_token_type_ids + 1
 
         # move to cpu

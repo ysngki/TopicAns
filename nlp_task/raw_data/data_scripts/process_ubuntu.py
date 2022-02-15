@@ -2,10 +2,12 @@ import json
 import os
 
 from datasets import Dataset
+import random
+
 
 # ---------------------------------------------------------------------------
 # process train data for bi models, each record is ( context, its best response)
-if not os.path.exists("/data/yuanhang/memory/nlp_task/dataset/string_bi_train_ubuntu"):
+if not os.path.exists("/data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_bi_train_ubuntu"):
 	bi_train_dict = {}
 	bi_train_a = []
 	bi_train_b = []
@@ -30,13 +32,13 @@ if not os.path.exists("/data/yuanhang/memory/nlp_task/dataset/string_bi_train_ub
 	bi_train_dict = {'sentence_a': bi_train_a, 'sentence_b': bi_train_b, 'idx': bi_train_idx, 'label': bi_train_label}
 
 	whole_datasets = Dataset.from_dict(bi_train_dict)
-	whole_datasets.save_to_disk("/data/yuanhang/memory/nlp_task/dataset/string_bi_train_ubuntu")
-	print("Datasets is saved at /data/yuanhang/memory/nlp_task/dataset/string_bi_train_ubuntu")
+	whole_datasets.save_to_disk("/data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_bi_train_ubuntu")
+	print("Datasets is saved at /data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_bi_train_ubuntu")
 
 
 # ---------------------------------------------------------------------------
 # process dev data, each record is ( context, 100 candidates (best at last))
-if not os.path.exists("/data/yuanhang/memory/nlp_task/dataset/string_dev_ubuntu"):
+if not os.path.exists("/data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_dev_ubuntu"):
 	dev_dict = {}
 
 	text_a = []
@@ -99,12 +101,12 @@ if not os.path.exists("/data/yuanhang/memory/nlp_task/dataset/string_dev_ubuntu"
 	dev_dict = {'sentence_a': text_a, 'candidates': whole_candidates, 'idx': dev_idx, 'label': whole_labels}
 
 	whole_datasets = Dataset.from_dict(dev_dict)
-	whole_datasets.save_to_disk("/data/yuanhang/memory/nlp_task/dataset/string_dev_ubuntu")
-	print("Datasets is saved at /data/yuanhang/memory/nlp_task/dataset/string_dev_ubuntu")
+	whole_datasets.save_to_disk("/data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_dev_ubuntu")
+	print("Datasets is saved at /data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_dev_ubuntu")
 
 # ---------------------------------------------------------------------------
 # process test data, each record is (context, 100 candidates (best at last))
-if not os.path.exists("/data/yuanhang/memory/nlp_task/dataset/string_test_ubuntu"):
+if not os.path.exists("/data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_test_ubuntu"):
 	dev_dict = {}
 
 	text_a = []
@@ -167,13 +169,13 @@ if not os.path.exists("/data/yuanhang/memory/nlp_task/dataset/string_test_ubuntu
 	dev_dict = {'sentence_a': text_a, 'candidates': whole_candidates, 'idx': dev_idx, 'label': whole_labels}
 
 	whole_datasets = Dataset.from_dict(dev_dict)
-	whole_datasets.save_to_disk("/data/yuanhang/memory/nlp_task/dataset/string_test_ubuntu")
-	print("Datasets is saved at /data/yuanhang/memory/nlp_task/dataset/string_test_ubuntu")
+	whole_datasets.save_to_disk("/data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_test_ubuntu")
+	print("Datasets is saved at /data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_test_ubuntu")
 
 
 # ---------------------------------------------------------------------------
 # process training data for cross models
-if not os.path.exists("/data/yuanhang/memory/nlp_task/dataset/string_cross_train_ubuntu"):
+if not os.path.exists("/data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_cross_train_ubuntu"):
 
 	cross_train_dict = {}
 	cross_train_a = []
@@ -233,10 +235,32 @@ if not os.path.exists("/data/yuanhang/memory/nlp_task/dataset/string_cross_train
 
 	print(len(cross_train_idx), len(cross_train_candidates), len(cross_train_a), len(cross_whole_labels), index)
 
-	cross_train_dict = {'sentence_a': cross_train_a, 'candidates': cross_train_candidates, 'idx': cross_train_idx,
-						'label': cross_whole_labels}
+	assert len(cross_train_a) == len(cross_train_candidates)
+
+	# 采样足够的负样本（100个）
+	query_num = len(cross_train_idx)
+	new_train_candidates = []
+	new_labels = []
+
+	for i, old_candidates in enumerate(cross_train_candidates):
+		negative_indices = [i]
+		while i in negative_indices:
+			negative_indices = random.sample(range(query_num), 31)
+		negative_indices.append(i)
+
+		this_candidates = []
+		for n in negative_indices:
+			this_candidates.append(cross_train_candidates[n][-1])
+
+		this_labels = [0]*99 + [1]
+
+		new_labels.append(this_labels)
+		new_train_candidates.append(this_candidates)
+
+	cross_train_dict = {'sentence_a': cross_train_a, 'candidates': new_train_candidates, 'idx': cross_train_idx,
+						'label': new_labels}
 
 	# save
 	whole_datasets = Dataset.from_dict(cross_train_dict)
-	whole_datasets.save_to_disk("/data/yuanhang/memory/nlp_task/dataset/string_cross_train_ubuntu")
-	print("Datasets is saved at /data/yuanhang/memory/nlp_task/dataset/string_cross_train_ubuntu")
+	whole_datasets.save_to_disk("/data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_cross_train_ubuntu")
+	print("Datasets is saved at /data/yuanhang/TaskSpecificMemory/nlp_task/dataset/string_cross_train_ubuntu")
