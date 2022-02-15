@@ -75,6 +75,7 @@ class InputMemorySelfAtt(nn.Module):
         self.softmax = torch.nn.Softmax(dim=-2)
 
     def get_rep_by_self_att_basic(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
                               token_type_ids=token_type_ids)
 
@@ -110,6 +111,8 @@ class InputMemorySelfAtt(nn.Module):
         return final_embedding
 
     def get_rep_by_self_att(self, input_ids, token_type_ids, attention_mask, is_question):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
         # ----------------------通过memory来丰富信息---------------------
         # 要确认训练时它有没有被修改
         memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
@@ -190,6 +193,8 @@ class InputMemorySelfAtt(nn.Module):
         return final_embedding
 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask, is_question):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
         # ----------------------通过memory来丰富信息---------------------
         # 要确认训练时它有没有被修改
         memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
@@ -244,6 +249,8 @@ class InputMemorySelfAtt(nn.Module):
 
     # use the average embedding of last layer as sentence representation
     def get_rep_by_avg(self, input_ids, token_type_ids, attention_mask, is_question):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
         # ----------------------通过memory来丰富信息---------------------
         # 要确认训练时它有没有被修改
         memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
@@ -483,8 +490,8 @@ class PureMemorySelfAtt(nn.Module):
         self.relu = torch.nn.ReLU(inplace=True)
         self.softmax = torch.nn.Softmax(dim=-2)
 
-
     def get_rep_by_self_att(self, input_ids, token_type_ids, attention_mask, is_question):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
                               token_type_ids=token_type_ids)
 
@@ -538,6 +545,7 @@ class PureMemorySelfAtt(nn.Module):
         return final_embedding
 
     def get_rep_simply(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
                               token_type_ids=token_type_ids)
 
@@ -663,6 +671,7 @@ class BasicModel(nn.Module):
 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
         # 获得隐藏层输出
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
                               attention_mask=attention_mask)
         pooler_out = out['pooler_output']
@@ -670,7 +679,7 @@ class BasicModel(nn.Module):
         return pooler_out
 
     def get_rep_by_self_attention(self, input_ids, token_type_ids, attention_mask, is_question=True):
-
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
                               attention_mask=attention_mask)
 
@@ -716,6 +725,7 @@ class BasicModel(nn.Module):
         return final_embedding
 
     def get_rep_by_multi_attention(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
                               attention_mask=attention_mask)
 
@@ -853,6 +863,8 @@ class OneSupremeMemory(nn.Module):
         self.softmax = torch.nn.Softmax(dim=-2)
 
     def get_rep_multi_att(self, input_ids, token_type_ids, attention_mask, is_question):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
         # 要确认训练时它有没有被修改
         memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
                                             device=input_ids.device)
@@ -997,3 +1009,17 @@ class BodyClassifier(nn.Module):
         x = self.linear4(x)
 
         return x
+
+
+def clean_input_ids(input_ids, attention_mask, token_type_ids):
+    max_seq_len = torch.max(attention_mask.sum(-1))
+
+    # ensure only pad be filtered
+    dropped_input_ids = input_ids[:, max_seq_len:]
+    assert torch.max(dropped_input_ids.sum(-1)) == 0
+
+    input_ids = input_ids[:, :max_seq_len]
+    token_type_ids = token_type_ids[:, :max_seq_len]
+    attention_mask = attention_mask[:, :max_seq_len]
+
+    return input_ids, attention_mask, token_type_ids

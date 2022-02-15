@@ -57,6 +57,8 @@ class TrainWholeModel:
 		# 读取tokenizer-------------------------------------------------------------------
 		tokenizer_path = args.pretrained_bert_path.replace("/", "_")
 		tokenizer_path = tokenizer_path.replace("\\", "_")
+		if tokenizer_path[0] != "_":
+			tokenizer_path = "_" + tokenizer_path
 
 		# add model
 		# For QAMemory, memory tokens are contained in tokenizer as special tokens
@@ -1384,7 +1386,7 @@ class TrainWholeModel:
 	# 读取命令行传入的有关config的参数
 	def __read_args_for_config(self, args):
 		if args.pretrained_bert_path in ['prajjwal1/bert-small', 'google/bert_uncased_L-6_H-512_A-8',
-										 'google/bert_uncased_L-8_H-512_A-8']:
+										 'google/bert_uncased_L-8_H-512_A-8', '/data/yuanhang/pretrained_model/prajjwal1/bert-small']:
 			word_embedding_len = 512
 			sentence_embedding_len = 512
 		elif args.pretrained_bert_path == 'bert-base-uncased':
