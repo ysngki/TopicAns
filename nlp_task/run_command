@@ -38,6 +38,8 @@ python -u nlp_main.py -d ubuntu --val_candidate_num 10  --model_class QAMatchMod
 
 python -u nlp_main.py -d ubuntu  --model_class CrossBERT --label_num 1 --train_candidate_num 4  --val_candidate_num 10 --val_batch_size 2 --train_batch_size 16 --gradient_accumulation_steps 4  -n 2 --no_initial_test --seed 42 --model_save_prefix s42_ | tee logs/ubuntu/s42_cross.log
 
+python -u nlp_main.py -d ubuntu --model_class MatchDeformer --val_candidate_num 10  --top_layer_num 2 --one_stage --label_num 1 --val_batch_size 20 --first_seq_max_len 256  --text_max_len 512 --train_batch_size 16  --step_max_query_num 16  --gradient_accumulation_steps 8 -n 2 --seed 42 --model_save_prefix s42_can16_  --no_initial_test | tee logs/ubuntu/s42_can16_deformer.log
+
 ************* real test ***********************
 1. PolyEncoder
 python -u nlp_main.py -d ubuntu --model_class PolyEncoder --val_candidate_num 10 --one_stage --label_num 0 --train_batch_size 128  --val_batch_size 2 -n 1  --no_train --do_real_test --query_block_size 100 --context_num 16

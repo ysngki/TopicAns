@@ -1391,15 +1391,16 @@ class MatchDeformer(nn.Module):
         # take a vector in and out a logits
         self.classifier = self.bert_model.classifier
 
-    def prepare_candidates(self, input_ids, token_type_ids, attention_mask):
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask, candidate_flag=True):
         """ Pre-compute representations. Used for time measuring. Return shape: (-1, dim) """
-        token_type_ids = token_type_ids + 1
+        if candidate_flag:
+            token_type_ids = token_type_ids + 1
 
-        lower_encoded_embeddings = self.lower_encoding(input_ids=input_ids,
-                                                       attention_mask=attention_mask,
-                                                       token_type_ids=token_type_ids,
-                                                       clean_flag=False)
-        return lower_encoded_embeddings
+        lower_encoded_embeddings, clean_attention_mask = self.lower_encoding(input_ids=input_ids,
+                                                                             attention_mask=attention_mask,
+                                                                             token_type_ids=token_type_ids,
+                                                                             clean_flag=True)
+        return lower_encoded_embeddings, clean_attention_mask
 
     def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings,
                          candidate_attention_mask, **kwargs):
@@ -1408,9 +1409,9 @@ class MatchDeformer(nn.Module):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
         # encoding a
-        a_lower_encoded_embeddings = self.lower_encoding(input_ids=input_ids,
-                                                         attention_mask=attention_mask,
-                                                         token_type_ids=token_type_ids)
+        a_lower_encoded_embeddings, _ = self.lower_encoding(input_ids=input_ids,
+                                                            attention_mask=attention_mask,
+                                                            token_type_ids=token_type_ids)
 
         # process candidate
         candidate_seq_len = candidate_attention_mask.shape[-1]
@@ -1434,7 +1435,7 @@ class MatchDeformer(nn.Module):
     def lower_encoding(self, input_ids, attention_mask, token_type_ids, **kwargs):
         clean_flag = kwargs.get('clean_flag', True)
         if clean_flag:
-            input_ids, attention_mask, token_type_id = clean_input_ids(input_ids, attention_mask, token_type_ids)
+            input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
         embeddings = self.embeddings(input_ids=input_ids,
                                      token_type_ids=token_type_ids)
@@ -1451,7 +1452,7 @@ class MatchDeformer(nn.Module):
                 extended_attention_mask
             )
             hidden_states = layer_outputs[0]
-        return hidden_states
+        return hidden_states, attention_mask
 
     # concatenate embeddings of two texts and encoding them using top layers
     # dims of a_embeddings, b_embeddings are both 3, (batch size, seq len, dim)
@@ -1459,27 +1460,32 @@ class MatchDeformer(nn.Module):
     def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask, train_flag):
         device = a_embeddings.device
 
-        a_max_seq_len = torch.max(a_attention_mask.sum(-1))
+        a_max_seq_len = a_attention_mask.shape[1]
+        query_num = a_attention_mask.shape[0]
 
         if train_flag:
-            candidate_num = a_embeddings.shape[0]
+            candidate_num = b_embeddings.shape[0]
         else:
             candidate_num = int(b_embeddings.shape[0] / a_embeddings.shape[0])
 
         # repeat A
+        # print(a_embeddings.shape, b_embeddings.shape, a_attention_mask.shape, b_attention_mask.shape)
+
         a_embeddings = a_embeddings.unsqueeze(1)
-        a_embeddings = a_embeddings.repeat(1, candidate_num, 1, 1).reshape(-1, a_max_seq_len,
+        a_embeddings = a_embeddings.repeat(1, candidate_num, 1, 1).reshape(query_num*candidate_num, a_max_seq_len,
                                                                            a_embeddings.shape[-1])
         a_attention_mask = a_attention_mask.unsqueeze(1)
-        a_attention_mask = a_attention_mask.repeat(1, candidate_num, 1).reshape(-1, a_max_seq_len)
+        a_attention_mask = a_attention_mask.repeat(1, candidate_num, 1).reshape(query_num*candidate_num, a_max_seq_len)
 
         # need repeat candidate
         if train_flag:
-            b_embeddings = b_embeddings.repeat(candidate_num, 1, 1)
-            b_attention_mask = b_attention_mask.repeat(candidate_num, 1)
+            b_embeddings = b_embeddings.repeat(query_num, 1, 1)
+            b_attention_mask = b_attention_mask.repeat(query_num, 1)
 
         final_attention_mask = torch.cat((a_attention_mask, b_attention_mask), dim=-1)
         final_hidden_states = torch.cat((a_embeddings, b_embeddings), dim=1)
+
+        # print(final_hidden_states.shape)
 
         # process attention mask
         input_shape = final_attention_mask.size()
@@ -1500,9 +1506,9 @@ class MatchDeformer(nn.Module):
                                                                           a_token_type_ids)
 
         # encoding a
-        a_lower_encoded_embeddings = self.lower_encoding(input_ids=a_input_ids,
-                                                         attention_mask=a_attention_mask,
-                                                         token_type_ids=a_token_type_ids)
+        a_lower_encoded_embeddings, _ = self.lower_encoding(input_ids=a_input_ids,
+                                                            attention_mask=a_attention_mask,
+                                                            token_type_ids=a_token_type_ids)
 
         # encoding b
         candidate_seq_len = b_input_ids.shape[-1]
@@ -1516,9 +1522,9 @@ class MatchDeformer(nn.Module):
         b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
                                                                           b_token_type_ids)
 
-        b_lower_encoded_embeddings = self.lower_encoding(input_ids=b_input_ids,
-                                                         attention_mask=b_attention_mask,
-                                                         token_type_ids=b_token_type_ids)
+        b_lower_encoded_embeddings, _ = self.lower_encoding(input_ids=b_input_ids,
+                                                            attention_mask=b_attention_mask,
+                                                            token_type_ids=b_token_type_ids)
 
         # encoding together
         joint_embeddings = self.joint_encoding(a_embeddings=a_lower_encoded_embeddings,

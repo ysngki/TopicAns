@@ -354,7 +354,7 @@ class TrainWholeModel:
             elif self.dataset_name in ['yahooqa']:
                 train_step_function = self.__train_step_for_multi_candidates_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
-                if self.model_class in ['MatchParallelEncoder', 'QAMatchModel', 'PolyEncoder']:
+                if self.model_class in ['MatchParallelEncoder', 'QAMatchModel', 'PolyEncoder', 'MatchDeformer']:
                     # train_step_function = self.__match_train_step_for_qa_input
                     if self.clean_graph:
                         train_step_function = self.__clean_graph_efficient_match_train_step_for_qa_input
@@ -1851,10 +1851,16 @@ class TrainWholeModel:
         b_token_type_ids = (batch['b_token_type_ids']).to(self.device)
         b_attention_mask = (batch['b_attention_mask']).to(self.device)
 
-        # (batch_size, (context_num), dim)
-        candidate_embeddings = model.prepare_candidates(input_ids=b_input_ids,
-                                                        token_type_ids=b_token_type_ids,
-                                                        attention_mask=b_attention_mask)
+        if self.model_class == 'MatchDeformer':
+            # (batch_size, seq_len, dim)
+            candidate_embeddings, clean_b_attention_mask = model.prepare_candidates(input_ids=b_input_ids,
+                                                                                    token_type_ids=b_token_type_ids,
+                                                                                    attention_mask=b_attention_mask)
+        else:
+            # (batch_size, (context_num), dim)
+            candidate_embeddings = model.prepare_candidates(input_ids=b_input_ids,
+                                                            token_type_ids=b_token_type_ids,
+                                                            attention_mask=b_attention_mask)
 
         # check validity
         if self.step_max_query_num == -1:
@@ -1882,13 +1888,29 @@ class TrainWholeModel:
             this_a_token_type_ids = a_token_type_ids[batch_count:new_batch_count].to(self.device)
             this_a_attention_mask = a_attention_mask[batch_count:new_batch_count].to(self.device)
 
-            dot_product = model.do_queries_match(input_ids=this_a_input_ids,
-                                                 token_type_ids=this_a_token_type_ids,
-                                                 attention_mask=this_a_attention_mask,
-                                                 candidate_context_embeddings=candidate_embeddings,
-                                                 no_aggregator=self.no_aggregator,
-                                                 no_enricher=self.no_enricher,
-                                                 train_flag=True)
+            if self.model_class == 'MatchDeformer':
+                a_embeddings, clean_a_attention_mask = model.prepare_candidates(input_ids=this_a_input_ids,
+                                                                                token_type_ids=this_a_token_type_ids,
+                                                                                attention_mask=this_a_attention_mask,
+                                                                                candidate_flag=False)
+                # print(a_embeddings.shape, candidate_embeddings.shape)
+                joint_embeddings = model.joint_encoding(a_embeddings=a_embeddings,
+                                                        b_embeddings=candidate_embeddings,
+                                                        a_attention_mask=clean_a_attention_mask,
+                                                        b_attention_mask=clean_b_attention_mask,
+                                                        train_flag=True)
+                pooler = model.pooler_layer(joint_embeddings)
+                dot_product = model.classifier(pooler).reshape(-1, batch_size)
+                # print(dot_product.shape)
+                # raise_test_error()
+            else:
+                dot_product = model.do_queries_match(input_ids=this_a_input_ids,
+                                                     token_type_ids=this_a_token_type_ids,
+                                                     attention_mask=this_a_attention_mask,
+                                                     candidate_context_embeddings=candidate_embeddings,
+                                                     no_aggregator=self.no_aggregator,
+                                                     no_enricher=self.no_enricher,
+                                                     train_flag=True)
 
             batch_count = new_batch_count
             whole_dot_product.append(dot_product)
@@ -1908,9 +1930,12 @@ class TrainWholeModel:
         if self.model_class in ['MatchParallelEncoder']:
             nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
 
-        optimizer.step()
-        optimizer.zero_grad()
-        scheduler.step()
+        # 更新模型参数
+        if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+            scheduler.step()
+
         return (step_loss,)
 
     # 按块进行query和candidate的匹配，并且每一块进行一次后向传播，用以减少计算图的显存占用
