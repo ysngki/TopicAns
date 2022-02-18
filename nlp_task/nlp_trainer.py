@@ -355,7 +355,6 @@ class TrainWholeModel:
                 train_step_function = self.__train_step_for_multi_candidates_input
             elif self.dataset_name in ['dstc7', 'ubuntu']:
                 if self.model_class in ['MatchParallelEncoder', 'QAMatchModel', 'PolyEncoder', 'MatchDeformer']:
-                    # train_step_function = self.__match_train_step_for_qa_input
                     if self.clean_graph:
                         train_step_function = self.__clean_graph_efficient_match_train_step_for_qa_input
                     else:
@@ -1826,17 +1825,20 @@ class TrainWholeModel:
             a_attention_mask=a_attention_mask,
             b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
             b_attention_mask=b_attention_mask, train_flag=True, match_train=True,
-            no_aggregator=self.no_aggregator, no_enricher=self.no_enricher)
+            no_aggregator=self.no_aggregator, no_enricher=self.no_enricher,
+            no_apex=self.no_apex,
+            optimizer=optimizer
+        )
 
         # 误差反向传播
-        if not APEX_FLAG or self.no_apex:
-            step_loss.backward()
-        else:
-            with amp.scale_loss(step_loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-
-        if self.model_class in ['MatchParallelEncoder']:
-            nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
+        # if not APEX_FLAG or self.no_apex:
+        #     step_loss.backward()
+        # else:
+        #     with amp.scale_loss(step_loss, optimizer) as scaled_loss:
+        #         scaled_loss.backward()
+        #
+        # if self.model_class in ['MatchParallelEncoder']:
+        #     nn.utils.clip_grad_norm_(self.model.decoder['LSTM'].parameters(), max_norm=20, norm_type=2)
 
         optimizer.step()
         optimizer.zero_grad()

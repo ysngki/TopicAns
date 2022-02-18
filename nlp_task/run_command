@@ -38,7 +38,11 @@ python -u nlp_main.py -d ubuntu --val_candidate_num 10  --model_class QAMatchMod
 
 python -u nlp_main.py -d ubuntu  --model_class CrossBERT --label_num 1 --train_candidate_num 4  --val_candidate_num 10 --val_batch_size 2 --train_batch_size 16 --gradient_accumulation_steps 4  -n 2 --no_initial_test --seed 42 --model_save_prefix s42_ | tee logs/ubuntu/s42_cross.log
 
-python -u nlp_main.py -d ubuntu --model_class MatchDeformer --val_candidate_num 10  --top_layer_num 2 --one_stage --label_num 1 --val_batch_size 20 --first_seq_max_len 256  --text_max_len 512 --train_batch_size 16  --step_max_query_num 16  --gradient_accumulation_steps 8 -n 2 --seed 42 --model_save_prefix s42_can16_  --no_initial_test | tee logs/ubuntu/s42_can16_deformer.log
+python -u nlp_main.py -d ubuntu --model_class MatchDeformer  --top_layer_num 2 --one_stage --label_num 1 --val_batch_size 20 --first_seq_max_len 256  --text_max_len 512 --train_batch_size 16  --step_max_query_num 16  --gradient_accumulation_steps 8 -n 2 --seed 42 --model_save_prefix s42_can16_  --no_initial_test | tee logs/ubuntu/s42_can16_deformer.log
+
+python -u nlp_main.py -d ubuntu  --model_class MatchCrossBERT --one_stage --label_num 1  --text_max_len 256 --first_seq_max_len 128 --val_batch_size 20 --train_batch_size 16  -n 1 --seed 42 --model_save_prefix s42_  --no_initial_test | tee logs/ubuntu/s42_match_cross.log
+
+python -u nlp_main.py -d ubuntu --model_class MatchDeformer --val_candidate_num 10  --top_layer_num 3 --one_stage --label_num 1 --val_batch_size 20 --first_seq_max_len 128  --text_max_len 256 --train_batch_size 16  --step_max_query_num 8  --gradient_accumulation_steps 8 -n 2 --seed 42 --model_save_prefix s42_can16_base_  --no_initial_test --pretrained_bert_path bert-base-uncased  | tee -a logs/ubuntu/s42_can16_base_deformer.log
 
 ************* real test ***********************
 1. PolyEncoder
@@ -66,6 +70,16 @@ python -u nlp_main.py -d dstc7 --model_class CrossBERT --val_candidate_num 100 -
 
 *********** efficient  training ***********************
 python -u nlp_main.py -d dstc7  --model_class PolyEncoder --one_stage --label_num 0 --no_apex  --val_batch_size 2 --train_batch_size 48  --pretrained_bert_path bert-base-uncased --context_num 16 -n 1 --seed 100 --model_save_prefix s100_c16_base_ --text_max_len 256 --step_max_query_num 24 --no_initial_test |  tee logs/dstc7/s100_c16_base_poly.log
+
+python -u nlp_main.py -d dstc7  --model_class MatchParallelEncoder --one_stage --label_num 0 --no_apex  --val_batch_size 2 --train_batch_size 48  --context_num 3 -n 0 --seed 100 --model_save_prefix s100_c3_ --text_max_len 256 --step_max_query_num 48 --no_initial_test |  tee logs/dstc7/s100_c3_mine.log
+
+python -u nlp_main.py -d dstc7  --model_class MatchParallelEncoder --one_stage --label_num 0  --val_batch_size 2 --train_batch_size 48  --pretrained_bert_path bert-base-uncased --context_num 10 -n 0 --seed 100 --model_save_prefix s100_c10_base_ --text_max_len 256 --step_max_query_num 24 --no_initial_test --clean_graph |  tee -a logs/dstc7/s100_c10_base_mine.log
+
+python -u nlp_main.py -d dstc7 --model_class MatchDeformer   --top_layer_num 2 --one_stage --label_num 1 --val_batch_size 2 --first_seq_max_len 256  --text_max_len 512 --train_batch_size 16  --step_max_query_num 16  --gradient_accumulation_steps 8 -n 0 --seed 42 --model_save_prefix s42_can16_  --no_initial_test | tee logs/dstc7/s42_can16_deformer.log
+
+python -u nlp_main.py -d dstc7  --model_class CrossBERT --label_num 1 --train_candidate_num 16  --val_candidate_num 10 --val_batch_size 2 --train_batch_size 6  --gradient_accumulation_steps 8  -n 0 --no_initial_test --seed 512 --model_save_prefix s512_b48_ | tee logs/dstc7/s512_b48_cross.log
+
+python -u nlp_main.py -d dstc7 --model_class MatchDeformer --val_candidate_num 10  --top_layer_num 3 --one_stage --label_num 1 --val_batch_size 20 --first_seq_max_len 128  --text_max_len 256 --train_batch_size 16  --step_max_query_num 16  --gradient_accumulation_steps 8 -n 1 --seed 42 --model_save_prefix s42_can16_base_  --no_initial_test --pretrained_bert_path bert-base-uncased --no_train --do_test | tee -a logs/dstc7/s42_can16_base_deformer.log
 
 ------------------------------------------------------------------------------------------------------------------------
 Task4: yahooqa ------------------------------------------------------------

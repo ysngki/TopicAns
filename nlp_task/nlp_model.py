@@ -8,6 +8,12 @@ import torch.nn.functional
 import torch.nn.functional as F
 
 from my_function import get_rep_by_avg, dot_attention, clean_input_ids, clean_input_embeddings
+try:
+    from apex import amp
+    APEX_FLAG = True
+except:
+    APEX_FLAG = False
+
 
 # model list
 # 1. QAClassifierModel
@@ -387,6 +393,9 @@ class MatchCrossBERT(nn.Module):
 
     def forward(self, a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, train_flag, **kwargs):
+        no_apex = kwargs.get('no_apex', None)
+        optimizer = kwargs.get('optimizer', None)
+
         a_input_ids, a_attention_mask, a_token_type_ids = clean_input_ids(a_input_ids, a_attention_mask,
                                                                           a_token_type_ids)
         b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask,
@@ -419,34 +428,70 @@ class MatchCrossBERT(nn.Module):
 
         # concatenate them
         final_logits = []
-        step_num = 4
+
         if train_flag:
-            for this_a_input_ids, this_a_attention_mask, this_a_token_type_ids in zip(a_input_ids, a_attention_mask, a_token_type_ids):
-                temp_count = 0
+            last_query_count, query_count = 0, 0
+
+            query_forward_step_num = 16
+            candidate_step_num = 16
+            query_backward_step_num = 16
+
+            # query loop { candidate loop, backward }
+            while query_count < batch_size:
+                step_a_input_ids = a_input_ids[query_count:query_count + query_forward_step_num].unsqueeze(1)
+                step_a_attention_mask = a_attention_mask[query_count:query_count + query_forward_step_num].unsqueeze(1)
+                step_a_token_type_ids = a_token_type_ids[query_count:query_count + query_forward_step_num].unsqueeze(1)
+                this_step_real_query_num = step_a_input_ids.shape[0]
+
+                candidate_count = 0
                 this_logits = []
-                while temp_count < candidate_num:
-                    step_b_input_ids = b_input_ids[temp_count:temp_count + step_num]
-                    step_b_attention_mask = b_attention_mask[temp_count:temp_count + step_num]
-                    step_b_token_type_ids = b_token_type_ids[temp_count:temp_count + step_num]
+                while candidate_count < candidate_num:
+                    step_b_input_ids = b_input_ids[candidate_count:candidate_count + candidate_step_num].repeat(this_step_real_query_num, 1)
+                    step_b_attention_mask = b_attention_mask[candidate_count:candidate_count + candidate_step_num].repeat(this_step_real_query_num, 1)
+                    step_b_token_type_ids = b_token_type_ids[candidate_count:candidate_count + candidate_step_num].repeat(this_step_real_query_num, 1)
 
-                    this_step_real_num = step_b_input_ids.shape[0]
+                    this_step_real_candidate_num = step_b_input_ids.shape[0] // this_step_real_query_num
 
-                    step_a_input_ids = this_a_input_ids.repeat(this_step_real_num, 1)
-                    step_a_attention_mask = this_a_attention_mask.repeat(this_step_real_num, 1)
-                    step_a_token_type_ids = this_a_token_type_ids.repeat(this_step_real_num, 1)
+                    this_a_input_ids = step_a_input_ids.repeat(1, this_step_real_candidate_num, 1)
+                    this_a_attention_mask = step_a_attention_mask.repeat(1, this_step_real_candidate_num, 1)
+                    this_a_token_type_ids = step_a_token_type_ids.repeat(1, this_step_real_candidate_num, 1)
 
-                    final_input_ids = torch.cat((step_a_input_ids, step_b_input_ids), dim=-1).to(original_device)
-                    final_attention_mask = torch.cat((step_a_attention_mask, step_b_attention_mask), dim=-1).to(original_device)
-                    final_token_type_ids = torch.cat((step_a_token_type_ids, step_b_token_type_ids), dim=-1).to(original_device)
+                    this_a_input_ids = this_a_input_ids.reshape(-1, step_a_input_ids.shape[-1])
+                    this_a_attention_mask = this_a_attention_mask.reshape(-1, step_a_input_ids.shape[-1])
+                    this_a_token_type_ids = this_a_token_type_ids.reshape(-1, step_a_input_ids.shape[-1])
 
-                    temp_logits = self.bert_model(input_ids=final_input_ids, token_type_ids=final_token_type_ids, attention_mask=final_attention_mask)['logits'].squeeze(-1)
+                    final_input_ids = torch.cat((this_a_input_ids, step_b_input_ids), dim=-1).to(original_device)
+                    final_attention_mask = torch.cat((this_a_attention_mask, step_b_attention_mask), dim=-1).to(original_device)
+                    final_token_type_ids = torch.cat((this_a_token_type_ids, step_b_token_type_ids), dim=-1).to(original_device)
+
+                    temp_logits = self.bert_model(input_ids=final_input_ids, token_type_ids=final_token_type_ids, attention_mask=final_attention_mask)['logits']
+                    temp_logits = temp_logits.reshape(this_step_real_query_num, this_step_real_candidate_num)
 
                     this_logits.append(temp_logits)
-                    temp_count += step_num
-                    torch.cuda.empty_cache()
+                    candidate_count += candidate_step_num
 
-                this_logits = torch.cat(this_logits, dim=0)
-                final_logits.append(this_logits.unsqueeze(0))
+                this_logits = torch.cat(this_logits, dim=-1)
+
+                final_logits.append(this_logits)
+                query_count += this_step_real_query_num
+
+                if query_count % query_backward_step_num == 0 or query_count == batch_size:
+                    dot_product = torch.cat(final_logits, dim=0)
+                    mask = torch.eye(batch_size).to(dot_product.device)[last_query_count:query_count, :]
+                    loss = F.log_softmax(dot_product, dim=-1) * mask
+                    loss = (-loss.sum(dim=1)).mean()
+
+                    # 误差反向传播
+                    if not APEX_FLAG or no_apex:
+                        loss.backward()
+                    else:
+                        with amp.scale_loss(loss, optimizer) as scaled_loss:
+                            scaled_loss.backward()
+
+                    final_logits = []
+                    last_query_count = query_count
+
+            return loss
         else:
             new_candidate_seq_len = b_input_ids.shape[-1]
             b_input_ids = b_input_ids.reshape(batch_size, candidate_num, new_candidate_seq_len)
@@ -471,14 +516,8 @@ class MatchCrossBERT(nn.Module):
                                               attention_mask=final_attention_mask)['logits'].squeeze(-1).unsqueeze(0)
                 final_logits.append(this_logits)
 
-        dot_product = torch.cat(final_logits, dim=0)
+            dot_product = torch.cat(final_logits, dim=0)
 
-        if train_flag:
-            mask = torch.eye(batch_size).to(dot_product.device)
-            loss = F.log_softmax(dot_product, dim=-1) * mask
-            loss = (-loss.sum(dim=1)).mean()
-            return loss
-        else:
             return dot_product
 
 
