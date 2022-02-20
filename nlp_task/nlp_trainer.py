@@ -454,14 +454,17 @@ class TrainWholeModel:
 
         this_datasets = this_datasets[0]
 
+        start_index = 0
+        end_index = 100
         # (query_num, candidate_num, seq_len)
         # dstc: (1000, 100, 327)
-        candidate_input_ids = this_datasets.b_input_ids
-        candidate_attention_mask = this_datasets.b_attention_mask
-        candidate_token_type_ids = this_datasets.b_token_type_ids
-        query_input_ids = this_datasets.a_input_ids
-        query_attention_mask = this_datasets.a_attention_mask
-        query_token_type_ids = this_datasets.a_token_type_ids
+        candidate_input_ids = this_datasets.b_input_ids[start_index:end_index]
+        candidate_attention_mask = this_datasets.b_attention_mask[start_index:end_index]
+        candidate_token_type_ids = this_datasets.b_token_type_ids[start_index:end_index]
+
+        query_input_ids = this_datasets.a_input_ids[start_index:end_index]
+        query_attention_mask = this_datasets.a_attention_mask[start_index:end_index]
+        query_token_type_ids = this_datasets.a_token_type_ids[start_index:end_index]
 
         query_num = candidate_input_ids.shape[0]
         candidate_num = candidate_input_ids.shape[1]
@@ -479,45 +482,51 @@ class TrainWholeModel:
         # pre-compute candidates
         with torch.no_grad():
             whole_candidate_embeddings = []
+
+            query_step = 10
+            now_query_count = 0
+            pbar = tqdm(total=query_num)
             # encoding one by one
-            for query_index in trange(query_num):
-                # (candidate_num, seq_len)
-                this_input_ids = candidate_input_ids[query_index]
-                this_attention_mask = candidate_attention_mask[query_index]
-                this_token_type_ids = candidate_token_type_ids[query_index]
+            while now_query_count < query_num:
+                # (query_step, candidate_num, seq_len)
+                this_input_ids = candidate_input_ids[now_query_count:(now_query_count+query_step)].to(self.device)
+                this_attention_mask = candidate_attention_mask[now_query_count:(now_query_count+query_step)].to(self.device)
+                this_token_type_ids = candidate_token_type_ids[now_query_count:(now_query_count+query_step)].to(self.device)
 
-                # encoding block by block
-                split_num = 1
-                each_split_candidate_num = math.ceil(candidate_num / split_num)
-                real_split_num = math.ceil(candidate_num / each_split_candidate_num)
+                this_batch_size = this_input_ids.shape[0]
 
-                this_query_candidate_embeddings = []
-                for split_index in range(real_split_num):
-                    # calculate vectors of candidates
-                    batch_input_ids = this_input_ids[split_index * each_split_candidate_num:(
-                                                                                                    split_index + 1) * each_split_candidate_num,
-                                      :].to(self.device)
-                    batch_attention_mask = this_attention_mask[split_index * each_split_candidate_num:(
-                                                                                                              split_index + 1) * each_split_candidate_num,
-                                           :].to(self.device)
-                    batch_token_type_ids = this_token_type_ids[split_index * each_split_candidate_num:(
-                                                                                                              split_index + 1) * each_split_candidate_num,
-                                           :].to(self.device)
+                if self.model_class == 'MatchDeformer':
+                    # (batch_size*candidate_num, seq_len, dim)
+                    this_input_ids = this_input_ids.reshape(this_batch_size*candidate_num, this_input_ids.shape[-1])
+                    this_attention_mask = this_attention_mask.reshape(this_batch_size*candidate_num, this_input_ids.shape[-1])
+                    this_token_type_ids = this_token_type_ids.reshape(this_batch_size*candidate_num, this_input_ids.shape[-1])
 
-                    batch_embeddings = self.model.prepare_candidates(input_ids=batch_input_ids,
-                                                                     token_type_ids=batch_token_type_ids,
-                                                                     attention_mask=batch_attention_mask)
+                    batch_embeddings, _ = self.model.prepare_candidates(input_ids=this_input_ids,
+                                                                        token_type_ids=this_token_type_ids,
+                                                                        attention_mask=this_attention_mask,
+                                                                        clean_flag=False)
+                else:
+                    # (batch_size*candidate_num, (context_num), dim)
+                    batch_embeddings = self.model.prepare_candidates(input_ids=this_input_ids,
+                                                                    token_type_ids=this_token_type_ids,
+                                                                    attention_mask=this_attention_mask)
 
-                    # add model
-                    # deformer take too much space to save
-                    if self.model_class in ['MatchDeformer']:
-                        this_query_candidate_embeddings.append(batch_embeddings.to("cpu"))
-                    else:
-                        this_query_candidate_embeddings.append(batch_embeddings)
+                if self.model_class in ['MatchParallelEncoder', 'MatchDeformer']:
+                    batch_embeddings = batch_embeddings.reshape(this_batch_size, candidate_num,
+                                                                *batch_embeddings.shape[-2:])
+                elif self.model_class in ['PolyEncoder', 'QAMatchModel']:
+                    batch_embeddings = batch_embeddings.reshape(this_batch_size, candidate_num,
+                                                                batch_embeddings.shape[-1])
+                else:
+                    raise Exception("This is not supported!!")
+
+                pbar.update(this_batch_size)
+                now_query_count += query_step
 
                 # (1, candidate_num(, context_num), dim)
-                this_query_candidate_embeddings = torch.cat(this_query_candidate_embeddings, dim=0).unsqueeze(0)
-                whole_candidate_embeddings.append(this_query_candidate_embeddings)
+                whole_candidate_embeddings.append(batch_embeddings)
+
+            pbar.close()
 
             # (query_num, candidate_num(, context_num), dim)
             whole_candidate_embeddings = torch.cat(whole_candidate_embeddings, dim=0).to("cpu")
@@ -544,14 +553,126 @@ class TrainWholeModel:
                 this_block_candidate_embeddings = whole_candidate_embeddings[
                                                   processed_query_count:processed_query_count + self.query_block_size].to(
                     self.device)
+
+                if self.model_class in ['MatchDeformer']:
+                    this_block_candidate_attention_mask = candidate_attention_mask[
+                                                          processed_query_count:processed_query_count + self.query_block_size].to(
+                        self.device)
+                    dot_products = self.model.do_queries_match(input_ids=this_block_query_input_ids,
+                                                               token_type_ids=this_block_query_token_type_ids,
+                                                               attention_mask=this_block_query_attention_mask,
+                                                               candidate_context_embeddings=this_block_candidate_embeddings,
+                                                               candidate_attention_mask=this_block_candidate_attention_mask)
+                else:
+                    dot_products = self.model.do_queries_match(input_ids=this_block_query_input_ids,
+                                                               token_type_ids=this_block_query_token_type_ids,
+                                                               attention_mask=this_block_query_attention_mask,
+                                                               candidate_context_embeddings=this_block_candidate_embeddings)
+
+                whole_dot_products.append(dot_products)
+                processed_query_count += self.query_block_size
+
+            whole_dot_products = torch.cat(whole_dot_products, dim=0)
+
+            # calculate R@K
+            r_k_result = ()
+
+            for k in self.r_k_num:
+                _, indices = torch.topk(whole_dot_products, k, dim=-1)
+                hit_num = ((indices == (self.val_candidate_num - 1)).sum(-1)).sum().item()
+                r_k_result += (hit_num / whole_dot_products.shape[0],)
+                print(f"R@" + str(k) + f": {r_k_result[-1]}", end="\t")
+
+            _, avg_r_k_result = sum_average_tuple(r_k_result)
+            print(f"Avg: {avg_r_k_result}")
+            print(f"Query Num is {query_num}, Candidate Num is {candidate_num}")
+            print(f"Model is {self.model_class}, Real scene testing takes", get_elapse_time(begin_time))
+            print("*" * 100)
+
+    def match_bi_real_test_for_match_cross(self, test_datasets: DoubleInputDataset = None, model_save_path=None, **kwargs):
+        """
+
+        :param test_datasets: contain queries: (query_num, query_seq_len), contain candidates: (query_num, val_candidate_num, candidate_seq_len)
+        :param model_save_path: use to load model if model is not created
+        :param kwargs: placeholder
+        :return: None
+        """
+        print("*" * 40 + " Begin Real Testing " + "*" * 40)
+
+        # prepare data
+        if not test_datasets:
+            _, _, this_datasets = self.__get_datasets(get_train=False, get_val=False)
+        else:
+            this_datasets = test_datasets
+        if len(this_datasets) > 1:
+            raise Exception("Test Datasets is more than 1 for match task!")
+
+        this_datasets = this_datasets[0]
+
+        start_index = 0
+        end_index = 100
+        # (query_num, candidate_num, seq_len)
+        # dstc: (1000, 100, 327)
+        candidate_input_ids = this_datasets.b_input_ids[start_index:end_index]
+        candidate_attention_mask = this_datasets.b_attention_mask[start_index:end_index]
+        candidate_token_type_ids = this_datasets.b_token_type_ids[start_index:end_index]
+
+        query_input_ids = this_datasets.a_input_ids[start_index:end_index]
+        query_attention_mask = this_datasets.a_attention_mask[start_index:end_index]
+        query_token_type_ids = this_datasets.a_token_type_ids[start_index:end_index]
+
+        query_num = candidate_input_ids.shape[0]
+        candidate_num = candidate_input_ids.shape[1]
+
+        print(f"Query shape {query_input_ids.shape}, Candidate shape {candidate_input_ids.shape}")
+
+        # create model if necessary
+        if self.model is None:
+            self.model = self.__create_model()
+            # self.model = load_model(self.model, model_save_path)
+            self.model.to(self.device)
+
+        self.model.eval()
+
+        # pre-compute candidates
+        with torch.no_grad():
+            # begin time
+            begin_time = time.time()
+
+            whole_dot_products = []
+            # calculate queries with or without candidates
+            processed_query_count = 0
+
+            # do match block by block
+            while processed_query_count < query_num:
+                this_block_query_input_ids = query_input_ids[
+                                             processed_query_count:processed_query_count + self.query_block_size,
+                                             :].to(self.device)
+                this_block_query_attention_mask = query_attention_mask[
+                                                  processed_query_count:processed_query_count + self.query_block_size,
+                                                  :].to(self.device)
+                this_block_query_token_type_ids = query_token_type_ids[
+                                                  processed_query_count:processed_query_count + self.query_block_size,
+                                                  :].to(self.device)
+
+                this_block_candidate_input_ids = candidate_input_ids[
+                                                 processed_query_count:processed_query_count + self.query_block_size,
+                                                 :].to(self.device)
                 this_block_candidate_attention_mask = candidate_attention_mask[
-                                                      processed_query_count:processed_query_count + self.query_block_size].to(
-                    self.device)
-                dot_products = self.model.do_queries_match(input_ids=this_block_query_input_ids,
-                                                           token_type_ids=this_block_query_token_type_ids,
-                                                           attention_mask=this_block_query_attention_mask,
-                                                           candidate_context_embeddings=this_block_candidate_embeddings,
-                                                           candidate_attention_mask=this_block_candidate_attention_mask)
+                                                      processed_query_count:processed_query_count + self.query_block_size,
+                                                      :].to(self.device)
+                this_block_candidate_token_type_ids = candidate_token_type_ids[
+                                                      processed_query_count:processed_query_count + self.query_block_size,
+                                                      :].to(self.device)
+
+                dot_products = self.model(a_input_ids=this_block_query_input_ids,
+                                          a_token_type_ids=this_block_query_token_type_ids,
+                                          a_attention_mask=this_block_query_attention_mask,
+                                          b_input_ids=this_block_candidate_input_ids,
+                                          b_token_type_ids=this_block_candidate_token_type_ids,
+                                          b_attention_mask=this_block_candidate_attention_mask,
+                                          train_flag=False)
+
                 whole_dot_products.append(dot_products)
                 processed_query_count += self.query_block_size
 

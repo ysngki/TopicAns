@@ -151,8 +151,8 @@ if __name__ == '__main__':
 					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 									my_args.model_class + "_" +
 									my_args.dataset_name)
-			elif my_args.model_class in ['CrossBERT']:
-				my_train_model.match_cross_real_test(
+			elif my_args.model_class in ['MatchCrossBERT']:
+				my_train_model.match_bi_real_test_for_match_cross(
 					model_save_path=my_args.save_model_dict + "/" + my_args.model_save_prefix +
 									my_args.model_class + "_" +
 									my_args.dataset_name)

@@ -403,9 +403,9 @@ class MatchCrossBERT(nn.Module):
 
         # (all_candidate_num, dim)
         candidate_seq_len = b_input_ids.shape[-1]
-        b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
-        b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
-        b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
+        # b_input_ids = b_input_ids.reshape(-1, candidate_seq_len)
+        # b_token_type_ids = b_token_type_ids.reshape(-1, candidate_seq_len)
+        # b_attention_mask = b_attention_mask.reshape(-1, candidate_seq_len)
 
         b_token_type_ids = b_token_type_ids + 1
 
@@ -424,7 +424,7 @@ class MatchCrossBERT(nn.Module):
         if train_flag:
             candidate_num = batch_size
         else:
-            candidate_num = b_input_ids.shape[0] // batch_size
+            candidate_num = b_input_ids.shape[1]
 
         # concatenate them
         final_logits = []
@@ -432,9 +432,9 @@ class MatchCrossBERT(nn.Module):
         if train_flag:
             last_query_count, query_count = 0, 0
 
-            query_forward_step_num = 16
+            query_forward_step_num = 8
             candidate_step_num = 16
-            query_backward_step_num = 16
+            query_backward_step_num = 8
 
             # query loop { candidate loop, backward }
             while query_count < batch_size:
@@ -493,11 +493,6 @@ class MatchCrossBERT(nn.Module):
 
             return loss
         else:
-            new_candidate_seq_len = b_input_ids.shape[-1]
-            b_input_ids = b_input_ids.reshape(batch_size, candidate_num, new_candidate_seq_len)
-            b_token_type_ids = b_token_type_ids.reshape(batch_size, candidate_num, new_candidate_seq_len)
-            b_attention_mask = b_attention_mask.reshape(batch_size, candidate_num, new_candidate_seq_len)
-
             for index, (this_a_input_ids, this_a_attention_mask, this_a_token_type_ids) in enumerate(
                     zip(a_input_ids, a_attention_mask, a_token_type_ids)):
                 this_a_input_ids = this_a_input_ids.repeat(candidate_num, 1)
@@ -1430,7 +1425,7 @@ class MatchDeformer(nn.Module):
         # take a vector in and out a logits
         self.classifier = self.bert_model.classifier
 
-    def prepare_candidates(self, input_ids, token_type_ids, attention_mask, candidate_flag=True):
+    def prepare_candidates(self, input_ids, token_type_ids, attention_mask, candidate_flag=True, clean_flag=True):
         """ Pre-compute representations. Used for time measuring. Return shape: (-1, dim) """
         if candidate_flag:
             token_type_ids = token_type_ids + 1
@@ -1438,7 +1433,7 @@ class MatchDeformer(nn.Module):
         lower_encoded_embeddings, clean_attention_mask = self.lower_encoding(input_ids=input_ids,
                                                                              attention_mask=attention_mask,
                                                                              token_type_ids=token_type_ids,
-                                                                             clean_flag=True)
+                                                                             clean_flag=clean_flag)
         return lower_encoded_embeddings, clean_attention_mask
 
     def do_queries_match(self, input_ids, token_type_ids, attention_mask, candidate_context_embeddings,
