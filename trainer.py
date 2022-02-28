@@ -125,14 +125,14 @@ class TrainWholeModel:
 			final_stage_flag = True
 
 		while True:
-			# 创建模型
+			# 创建模型，根据 model_class 的选择
 			self.model = self.__create_model()
 
-			# 读取预训练好的memory
+			# 读取预训练好的memory，适用于需要memory的模型，如 QAmemory
 			if self.load_memory_flag:
 				self.load_pretrained_memory(memory_save_name)
 
-			# 如果要进行第二阶段训练，那需要先读取上一阶段最好的model, for normal two stage
+			# 如果要进行第二阶段训练，那需要先读取上一阶段最好的model, for normal two stage（只对两阶段模型有用）
 			if final_stage_flag and train_two_stage_flag:
 				self.model = self.load_models(self.model, model_save_path + "_middle")
 
@@ -143,13 +143,13 @@ class TrainWholeModel:
 
 			self.__model_to_device()
 
-			# 这不不会出问题吧
+			# 这不不会出问题吧，设置多 GPU，应该不需要用到
 			self.__model_parallel()
 
-			# 优化器
+			# 优化器，调参用的
 			optimizer = self.__get_model_optimizer(final_stage_flag=final_stage_flag)
 
-			# 准备训练
+			# 准备训练，最优模型先设置为无
 			previous_best_r_1 = -1
 
 			if train_two_stage_flag:
@@ -160,19 +160,20 @@ class TrainWholeModel:
 			else:
 				print("~"*60 + " begin one stage train " + "~"*60)
 
-			# 设置早停变量
+			# 设置早停变量，如果超过 10 轮没有更新最优值，则结束
 			if final_stage_flag:
 				early_stop_threshold = 10
 			else:
 				early_stop_threshold = 5
 
-			# restore training settings
+			# restore training settings，保存模型用于恢复
 			early_stop_count, restore_epoch, scheduler_last_epoch, previous_best_r_1 = \
 				self.restore_settings(optimizer, restore_path, previous_best_r_1)
 
 			# avoid warning
 			scheduler = None
 
+			# 选择 cross，bi，或者其他 BERT
 			train_step_function = self.select_train_step_function()
 
 			for epoch in range(restore_epoch, self.num_train_epochs):
@@ -1386,10 +1387,11 @@ class TrainWholeModel:
 	# 读取命令行传入的有关config的参数
 	def __read_args_for_config(self, args):
 		if args.pretrained_bert_path in ['prajjwal1/bert-small', 'google/bert_uncased_L-6_H-512_A-8',
-										 'google/bert_uncased_L-8_H-512_A-8', '/data/yuanhang/pretrained_model/prajjwal1/bert-small']:
+										 'google/bert_uncased_L-8_H-512_A-8', '/data/yuanhang/pretrained_model/prajjwal1/bert-small',
+										 '/data/yuanhang/pretrained_model/prajjwal1/bert-medium']:
 			word_embedding_len = 512
 			sentence_embedding_len = 512
-		elif args.pretrained_bert_path == 'bert-base-uncased':
+		elif args.pretrained_bert_path in ['bert-base-uncased', '/data/yuanhang/pretrained_model/bert-base-uncased']:
 			word_embedding_len = 768
 			sentence_embedding_len = 768
 		elif args.pretrained_bert_path == 'google/bert_uncased_L-2_H-128_A-2':
@@ -1498,10 +1500,14 @@ class TrainWholeModel:
 				# 这几个一样
 				{'params': model.bert_model.parameters(), 'lr': 5e-5},
 				# 这几个一样
-				{'params': model.queries_for_answer.parameters(), 'lr': 1e-4},
-				{'params': model.memories_for_answer.parameters(), 'lr': 1e-4},
-				{'params': model.queries_for_question.parameters(), 'lr': 1e-4},
-				{'params': model.memories_for_question.parameters(), 'lr': 1e-4},
+				# {'params': model.queries_for_answer.parameters(), 'lr': 1e-4},
+				# {'params': model.memories_for_answer.parameters(), 'lr': 1e-4},
+				# {'params': model.queries_for_question.parameters(), 'lr': 1e-4},
+				# {'params': model.memories_for_question.parameters(), 'lr': 1e-4},
+				{'params': model.queries_for_answer, 'lr': 1e-4},
+				{'params': model.memories_for_answer, 'lr': 1e-4},
+				{'params': model.queries_for_question, 'lr': 1e-4},
+				{'params': model.memories_for_question, 'lr': 1e-4},
 				{'params': model.self_attention_weight_layer.parameters(), 'lr': 1e-4},
 				{'params': model.value_layer.parameters(), 'lr': 1e-4},
 				# 这个不设定
@@ -1570,10 +1576,14 @@ class TrainWholeModel:
 			elif self.model_class == 'PureMemorySelfAtt':
 				parameters_dict_list = [
 					# 这几个一样
-					{'params': model.queries_for_answer.parameters(), 'lr': 1e-4},
-					{'params': model.memories_for_answer.parameters(), 'lr': 1e-4},
-					{'params': model.queries_for_question.parameters(), 'lr': 1e-4},
-					{'params': model.memories_for_question.parameters(), 'lr': 1e-4},
+					# {'params': model.queries_for_answer.parameters(), 'lr': 1e-4},
+					# {'params': model.memories_for_answer.parameters(), 'lr': 1e-4},
+					# {'params': model.queries_for_question.parameters(), 'lr': 1e-4},
+					# {'params': model.memories_for_question.parameters(), 'lr': 1e-4},
+					{'params': model.queries_for_answer, 'lr': 1e-4},
+					{'params': model.memories_for_answer, 'lr': 1e-4},
+					{'params': model.queries_for_question, 'lr': 1e-4},
+					{'params': model.memories_for_question, 'lr': 1e-4},
 					{'params': model.self_attention_weight_layer.parameters(), 'lr': 1e-4},
 					{'params': model.value_layer.parameters(), 'lr': 1e-4},
 					# 这个不设定

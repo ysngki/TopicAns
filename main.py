@@ -39,15 +39,15 @@ def read_arguments():
 
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
-	parser.add_argument("--pretrained_bert_path", default='prajjwal1/bert-small', type=str)
+	parser.add_argument("--pretrained_bert_path", default='/data/yuanhang/pretrained_model/prajjwal1/bert-medium', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
 	parser.add_argument("--one_stage", action="store_true", default=False)
 	parser.add_argument("--model_save_prefix", default="", type=str)
 	parser.add_argument("--memory_save_prefix", default="", type=str)
-	parser.add_argument("--dataset_split_num", default=20, type=int)
+	parser.add_argument("--dataset_split_num", default=5, type=int)
 	parser.add_argument("--val_batch_size", default=64, type=int)
-	parser.add_argument("--train_batch_size", default=64, type=int)
-	parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+	parser.add_argument("--train_batch_size", default=32, type=int)
+	parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
 	parser.add_argument("--val_num_each_epoch", default=3, type=int)
 	parser.add_argument("--save_model_dict", default="./model/", type=str)
 	parser.add_argument("--last_model_dict", default="./last_model/", type=str)
@@ -102,6 +102,9 @@ def read_arguments():
 
 if __name__ == '__main__':
 	my_args = read_arguments()
+
+	# 创建路径
+	create_dir(my_args)
 
 	# 设置随机种子
 	set_seed(my_args.seed)

@@ -5,6 +5,7 @@ import torch.utils.data
 import numpy as np
 import torch.nn.functional
 from attention_module import attend
+from pprint import pprint
 
 
 # --------------------------------------
@@ -430,6 +431,8 @@ class PureMemorySelfAtt(nn.Module):
 
         super(PureMemorySelfAtt, self).__init__()
 
+        self.output_embedding_len = config.sentence_embedding_len
+
         # 毕竟num_label也算是memory的一部分
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
@@ -451,25 +454,38 @@ class PureMemorySelfAtt(nn.Module):
         # self.memory_for_question = nn.Parameter(
         #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
 
-        self.queries_for_answer = nn.ParameterList([nn.Parameter(
-            torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
+        # self.queries_for_answer = nn.ParameterList([nn.Parameter(
+        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
 
-        self.memories_for_answer = nn.ParameterList([nn.Parameter(
-            torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
+        # self.memories_for_answer = nn.ParameterList([nn.Parameter(
+        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
 
-        self.queries_for_question = nn.ParameterList([nn.Parameter(
-            torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
-
-        self.memories_for_question = nn.ParameterList([nn.Parameter(
-            torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
+        # self.queries_for_question = nn.ParameterList([nn.Parameter(
+        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
 
         # self.memories_for_question = nn.ParameterList([nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
-        #     for i in range(self.hop_num + 1)])
-        #
-        # self.memories_for_answer = nn.ParameterList([nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
-        #     for i in range(self.hop_num + 1)])
+        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
+
+        # try to fix bug : hop_num > 2, but I dont think it is a good idea
+        self.queries_for_answer = nn.Parameter(
+            torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
+
+        self.memories_for_answer = nn.Parameter(
+            torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
+
+        self.queries_for_question = nn.Parameter(
+            torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
+
+        self.memories_for_question = nn.Parameter(
+            torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
+
+        # 注意力模型
+        self.key_layer = nn.Sequential(
+            nn.Linear(config.word_embedding_len, 2*config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2*config.word_embedding_len, config.word_embedding_len),
+            nn.Sigmoid()
+        )
 
         self.value_layer = nn.Sequential(
             nn.Linear(config.word_embedding_len, 2 * config.sentence_embedding_len),
@@ -490,6 +506,8 @@ class PureMemorySelfAtt(nn.Module):
         self.relu = torch.nn.ReLU(inplace=True)
         self.softmax = torch.nn.Softmax(dim=-2)
 
+        # self.LayerNorm = nn.LayerNorm(config.sentence_embedding_len, eps=1e-05) # add yyh, comment hw
+
     def get_rep_by_self_att(self, input_ids, token_type_ids, attention_mask, is_question):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
@@ -500,18 +518,23 @@ class PureMemorySelfAtt(nn.Module):
         for i in range(self.hop_num):
             # 根据记忆丰富一下信息，之后可以考虑把latent一起传进去
             if is_question:
-                contexts = self.queries_for_answer[i].repeat(last_hidden_state.shape[0], 1, 1)
-                values = self.memories_for_answer[i].repeat(last_hidden_state.shape[0], 1, 1)
+                # contexts = self.queries_for_answer[i].repeat(last_hidden_state.shape[0], 1, 1)
+                # values = self.memories_for_answer[i].repeat(last_hidden_state.shape[0], 1, 1)
+                contexts = self.queries_for_answer.repeat(last_hidden_state.shape[0], 1, 1)
+                values = self.memories_for_answer.repeat(last_hidden_state.shape[0], 1, 1)
 
                 enrich_info = attend(query=last_hidden_state, context=contexts, value=values)
             else:
-                contexts = self.queries_for_question[i].repeat(last_hidden_state.shape[0], 1, 1)
-                values = self.memories_for_question[i].repeat(last_hidden_state.shape[0], 1, 1)
+                # contexts = self.queries_for_question[i].repeat(last_hidden_state.shape[0], 1, 1)
+                # values = self.memories_for_question[i].repeat(last_hidden_state.shape[0], 1, 1)
+                contexts = self.queries_for_question.repeat(last_hidden_state.shape[0], 1, 1)
+                values = self.memories_for_question.repeat(last_hidden_state.shape[0], 1, 1)
 
                 enrich_info = attend(query=last_hidden_state, context=contexts, value=values)
 
             # 这一步也有点草率
-            last_hidden_state = enrich_info + last_hidden_state
+            # last_hidden_state = self.LayerNorm(enrich_info + last_hidden_state) # add yyh, comment
+            last_hidden_state = enrich_info + last_hidden_state # comment yyh
             last_hidden_state = self.value_layer(last_hidden_state)
 
         # 接下来通过attention汇总信息----------------------------------------
@@ -541,6 +564,43 @@ class PureMemorySelfAtt(nn.Module):
         embedding = embedding.squeeze(1)
 
         final_embedding = self.relu(embedding)
+
+        return final_embedding
+
+    # add hw
+    def get_rep_by_multi_attention(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
+        # 这里 out 的三个参数不同
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
+                              attention_mask=attention_mask)
+
+        # 以下部分 Basic 和 OneSupreme 完全一样
+
+        last_hidden_state = out['last_hidden_state']
+
+        # (batch, sequence, output_embedding_len)
+        value = self.value_layer(last_hidden_state)
+
+        # 开始根据主题分布，进行信息压缩
+        # 创作出mask
+        with torch.no_grad():
+            mask = attention_mask.type(dtype=torch.float)
+            mask[mask == 0] = -np.inf
+            mask[mask == 1] = 0.0
+            mask = mask.repeat(self.output_embedding_len, 1, 1)
+            mask.transpose_(0, 1)
+            mask.transpose_(1, 2)
+
+        # (batch, sequence, output_embedding_len)
+        weight = self.key_layer(last_hidden_state)
+        mask_weight = mask + weight
+        final_weight = self.softmax(mask_weight)
+
+        # 求和
+        embedding = torch.mul(final_weight, value)
+
+        final_embedding = self.relu(embedding.sum(dim=-2))
 
         return final_embedding
 
@@ -583,23 +643,33 @@ class PureMemorySelfAtt(nn.Module):
                 b_input_ids, b_token_type_ids, b_attention_mask):
 
         # 获得表示
-        # q_embeddings = self.get_rep_by_self_att(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                         attention_mask=q_attention_mask, is_question=True)
-        #
-        # b_embeddings = self.get_rep_by_self_att(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-        #                                         attention_mask=b_attention_mask, is_question=True)
-        #
-        # a_embeddings = self.get_rep_by_self_att(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                         attention_mask=a_attention_mask, is_question=False)
+        q_embeddings = self.get_rep_by_self_att(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                                attention_mask=q_attention_mask, is_question=True)
 
-        q_embeddings = self.get_rep_simply(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-                                                attention_mask=q_attention_mask)
+        b_embeddings = self.get_rep_by_self_att(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                                attention_mask=b_attention_mask, is_question=True)
 
-        b_embeddings = self.get_rep_simply(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-                                                attention_mask=b_attention_mask)
+        a_embeddings = self.get_rep_by_self_att(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                                attention_mask=a_attention_mask, is_question=False)
 
-        a_embeddings = self.get_rep_simply(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-                                                attention_mask=a_attention_mask)
+        # q_embeddings = self.get_rep_simply(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+        #                                         attention_mask=q_attention_mask)
+
+        # b_embeddings = self.get_rep_simply(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+        #                                         attention_mask=b_attention_mask)
+
+        # a_embeddings = self.get_rep_simply(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+        #                                         attention_mask=a_attention_mask)
+
+        # 获得表示
+        # q_embeddings = self.get_rep_by_multi_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+        #                                                attention_mask=q_attention_mask)
+
+        # a_embeddings = self.get_rep_by_multi_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+        #                                                attention_mask=a_attention_mask)
+
+        # b_embeddings = self.get_rep_by_multi_attention(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+        #                                                attention_mask=b_attention_mask)
 
         # 根据输入，进行思考, 思考的结果要选择性遗忘
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
@@ -779,16 +849,17 @@ class BasicModel(nn.Module):
 
             b_embeddings = self.get_rep_by_self_attention(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
                                                           attention_mask=b_attention_mask)
+        elif self.composition == 'multi':
+            q_embeddings = self.get_rep_by_multi_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                                        attention_mask=q_attention_mask)
+
+            a_embeddings = self.get_rep_by_multi_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                                        attention_mask=a_attention_mask)
+
+            b_embeddings = self.get_rep_by_multi_attention(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                                        attention_mask=b_attention_mask)
         else:
-            raise Exception("This composition is not supported! Please use \'pooler\' or \'self\'")
-        # q_embeddings = self.get_rep_by_multi_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                                attention_mask=q_attention_mask)
-        #
-        # a_embeddings = self.get_rep_by_multi_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                                attention_mask=a_attention_mask)
-        #
-        # b_embeddings = self.get_rep_by_multi_attention(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-        #                                                attention_mask=b_attention_mask)
+            raise Exception("This composition is not supported! Please use \'pooler\' or \'self\'or \'multi\'")
 
         # 计算得到分类概率
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
