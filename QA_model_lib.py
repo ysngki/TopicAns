@@ -77,6 +77,8 @@ class QAModel(nn.Module):
         self.softmax = torch.nn.Softmax(dim=-2)
 
     def get_rep_by_self_att(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+        
         out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
                               token_type_ids=token_type_ids)
 
@@ -112,6 +114,8 @@ class QAModel(nn.Module):
         return final_embedding
 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
         out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
                               token_type_ids=token_type_ids)
 
@@ -121,6 +125,8 @@ class QAModel(nn.Module):
 
     # use the average embedding of last layer as sentence representation
     def get_rep_by_avg(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
         out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
                               token_type_ids=token_type_ids)
 
@@ -471,20 +477,22 @@ class QAClassifier(nn.Module):
     def forward(self, q_embedding, a_embedding):
         x = torch.cat((q_embedding, a_embedding), dim=-1)
 
+        res_x = x
         x = self.linear1(x)
         x = self.relu(x)
-        x = self.dropout(x)
-        x = self.bn1(x)
+        x = self.dropout(x) + res_x
+        # x = self.bn1(x)
 
         x = self.linear2(x)
         x = self.relu(x)
         x = self.dropout(x)
-        x = self.bn2(x)
+        # x = self.bn2(x)
 
+        res_x = x
         x = self.linear3(x)
         x = self.relu(x)
-        x = self.dropout(x)
-        x = self.bn3(x)
+        x = self.dropout(x) + res_x
+        # x = self.bn3(x)
 
         x = self.linear4(x)
 
@@ -493,3 +501,17 @@ class QAClassifier(nn.Module):
 
 def raise_test_exception():
     raise Exception("test end!")
+
+
+def clean_input_ids(input_ids, attention_mask, token_type_ids):
+    max_seq_len = torch.max(attention_mask.sum(-1))
+
+    # ensure only pad be filtered
+    dropped_input_ids = input_ids[:, max_seq_len:]
+    assert torch.max(dropped_input_ids.sum(-1)) == 0
+
+    input_ids = input_ids[:, :max_seq_len]
+    token_type_ids = token_type_ids[:, :max_seq_len]
+    attention_mask = attention_mask[:, :max_seq_len]
+
+    return input_ids, attention_mask, token_type_ids

@@ -122,6 +122,11 @@ if __name__ == '__main__':
 	if my_args.one_stage:
 		my_train_two_stage_flag = False
 
+	if my_train_two_stage_flag:
+		print("*"*20 + " Train [TWO] Stage!" + "*"*20)
+	else:
+		print("*"*20 + " Train [ONE] Stage!" + "*"*20)
+
 	if my_args.distill:
 		raise Exception("Distillation is not supported yes!")
 

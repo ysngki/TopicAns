@@ -2,3 +2,7 @@
 /nlp_task/output
 nlp_task/logs
 nlp_task/model
+super_user/
+/tokenizer/
+/logs/
+/__pycache__/

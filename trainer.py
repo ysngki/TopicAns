@@ -199,7 +199,7 @@ class TrainWholeModel:
 					# test_data = test_data.shuffle(seed=None)
 					# val_dataloader = self.__get_dataloader(data=test_data, batch_size=self.val_batch_size,
 					# 									   split_index=0, split_num=1)
-					# val_loss, val_acc = self.classify_validate_model(val_dataloader)
+					# val_loss, val_acc = self.classify_validate_model(xxxval_dataloader)
 					# print(val_loss, val_acc)
 
 					# add model
@@ -211,7 +211,7 @@ class TrainWholeModel:
 					# else:
 					# 	r_1 = self.ranking()
 
-					if self.model_class in ['QAMemory', 'QAModel', 'ADecoder', 'CrossBERT']:
+					if self.model_class in ['ADecoder', 'CrossBERT']:
 						raise Exception("Validation is not supported for this model class yet!")
 					else:
 						this_best_performance = self.do_val()
@@ -642,12 +642,23 @@ class TrainWholeModel:
 		begin_index = 0
 		end_index = len(evaluation_title) // 2
 
-		for row_index in range(begin_index, end_index):
-			evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
-										evaluation_answers[row_index]))
+		if self.model_class in ['QAModel']:
+			concatenated_question = []
+			for t, b in zip(evaluation_title, evaluation_body):
+				concatenated_question.append(t + " " + b)
 
-		# pass data into ranking method
-		return self.ranking(evaluation_qa_pairs)
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((concatenated_question[row_index], evaluation_answers[row_index]))
+			
+			# pass data into ranking method
+			return self.ranking_qa_input(evaluation_qa_pairs)
+		else:
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
+											evaluation_answers[row_index]))
+
+			# pass data into ranking method
+			return self.ranking(evaluation_qa_pairs)
 
 	# val use last 50% of previous test data
 	def do_test(self):
@@ -667,12 +678,23 @@ class TrainWholeModel:
 		begin_index = len(evaluation_title) // 2
 		end_index = len(evaluation_title)
 
-		for row_index in range(begin_index, end_index):
-			evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
-										evaluation_answers[row_index]))
+		if self.model_class in ['QAMemory']:
+			concatenated_question = []
+			for t, b in zip(evaluation_title, evaluation_body):
+				concatenated_question.append(t + " " + b)
 
-		# pass data into ranking method
-		return self.ranking(evaluation_qa_pairs)
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((concatenated_question[row_index], evaluation_answers[row_index]))
+
+			# pass data into ranking method
+			return self.ranking_qa_input(evaluation_qa_pairs)
+		else:
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
+											evaluation_answers[row_index]))
+
+			# pass data into ranking method
+			return self.ranking(evaluation_qa_pairs)
 
 	def ranking(self, ranking_qa_pairs):
 		"""
@@ -996,26 +1018,11 @@ class TrainWholeModel:
 
 		return model
 
-	def ranking_qa_input(self):
+	def ranking_qa_input(self, ranking_qa_pairs):
 		print("--------------------- begin ranking -----------------------")
 		self.model.eval()
 
-		# 稍加处理一下数据，把数据都存在元祖里
-		data_from_path = "./" + self.dataset_name + "/eva.dataset"
-		evaluation_data = datasets.load_from_disk(data_from_path)
-
-		# 汇总下数据
-		evaluation_qa_pairs = []
-
-		evaluation_title = evaluation_data['title']
-		evaluation_body = evaluation_data['body']
-		evaluation_answers = evaluation_data['answers']
-
-		for row_index in range(len(evaluation_title)):
-			evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
-										evaluation_answers[row_index]))
-
-		print(f"all {len(evaluation_qa_pairs)} qa pairs!")
+		print(f"all {len(ranking_qa_pairs)} qa pairs!")
 
 		# 开始逐条排序
 		model_ranking = []
@@ -1024,7 +1031,7 @@ class TrainWholeModel:
 		now_pair_index = 0
 		PAIR_STEP = 2000
 
-		while now_pair_index < len(evaluation_qa_pairs):
+		while now_pair_index < len(ranking_qa_pairs):
 			# 获得memory合并的字符串
 			q_memory_sequence = " "
 			for i in range(self.memory_num):
@@ -1038,26 +1045,25 @@ class TrainWholeModel:
 			questions = []
 			answers = []
 
-			for data in evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP]:
+			for data in ranking_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP]:
 				temp_question: str = data[0]
-				body = data[1]
-				candidate_answers = data[2]
+				candidate_answers: list = data[1]
 
 				for t_a in candidate_answers[1:self.ranking_candidate_num]:
 					# add model
 					if self.model_class in ['QAMemory']:
-						questions.append((temp_question + ' ' + body, q_memory_sequence))
+						questions.append((temp_question, q_memory_sequence))
 						answers.append((t_a, a_memory_sequence))
 					else:
-						questions.append(temp_question + ' ' + body)
+						questions.append(temp_question)
 						answers.append(t_a)
 
 				# 把最佳答案塞到最后
 				if self.model_class in ['QAMemory']:
-					questions.append((temp_question + ' ' + body, q_memory_sequence))
+					questions.append((temp_question, q_memory_sequence))
 					answers.append((candidate_answers[0], a_memory_sequence))
 				else:
-					questions.append(temp_question + ' ' + body)
+					questions.append(temp_question)
 					answers.append(candidate_answers[0])
 
 			# tokenize
@@ -1070,7 +1076,7 @@ class TrainWholeModel:
 				truncation=True, max_length=self.text_max_len, return_tensors='pt')
 
 			# 检查数据数量是否正确，length是问题数
-			length = len(evaluation_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
+			length = len(ranking_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
 
 			if len(encoded_q['input_ids']) != length * self.ranking_candidate_num:
 				raise Exception("encode while ranking no possible!")
@@ -1129,7 +1135,7 @@ class TrainWholeModel:
 
 			# 每排好10000个问题，打印下当前的结果
 			if (now_pair_index % 10000) == 0:
-				print(f"now processed: {now_pair_index}/{len(evaluation_qa_pairs)}")
+				print(f"now processed: {now_pair_index}/{len(ranking_qa_pairs)}")
 
 				metric_list = [i for i in range(1, self.ranking_candidate_num + 1)]
 				for k in metric_list:
