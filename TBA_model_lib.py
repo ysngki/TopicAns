@@ -6,6 +6,7 @@ import numpy as np
 import torch.nn.functional
 from attention_module import attend
 from pprint import pprint
+from vae import VAE
 
 
 # --------------------------------------
@@ -866,6 +867,184 @@ class BasicModel(nn.Module):
                                  b_embedding=b_embeddings)
 
         return logits
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class BasicTopicConfig:
+    def __init__(self, tokenizer_len, voc_size, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
+                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler', topic_num=50):
+
+        self.tokenizer_len = tokenizer_len
+        self.voc_size = voc_size
+        self.pretrained_bert_path = pretrained_bert_path
+        self.num_labels = num_labels
+        self.word_embedding_len = word_embedding_len
+        self.sentence_embedding_len = sentence_embedding_len
+        self.composition = composition
+        self.topic_num = topic_num
+
+    def __str__(self):
+        print("*"*20 + "config" + "*"*20)
+        print("tokenizer_len:", self.tokenizer_len)
+        print("voc_size:", self.tokenizvoc_sizeer_len)
+        print("pretrained_bert_path:", self.pretrained_bert_path)
+        print("num_labels:", self.num_labels)
+        print("word_embedding_len:", self.word_embedding_len)
+        print("sentence_embedding_len:", self.sentence_embedding_len)
+        print("composition:", self.composition)
+        print("topic_num:", self.topic_num)
+
+
+class BasicTopicModel(nn.Module):
+    def __init__(self, config: BasicTopicConfig):
+
+        super(BasicTopicModel, self).__init__()
+
+        self.vae = VAE(config.voc_size, n_topic=config.topic_num)
+        self.output_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        # 用来计算self-attention
+        # self.query_for_question = nn.Parameter(torch.randn(config.word_embedding_len))
+        # self.query_for_answer = nn.Parameter(torch.randn(config.word_embedding_len))
+
+        # 注意力模型
+        self.key_layer = nn.Sequential(
+            nn.Linear(config.word_embedding_len, 2*config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2*config.word_embedding_len, config.word_embedding_len),
+            nn.Sigmoid()
+        )
+
+        self.value_layer = nn.Sequential(
+            nn.Linear(config.word_embedding_len, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, config.sentence_embedding_len),
+            nn.Tanh()
+        )
+
+        self.query_layer = nn.Sequential(
+            nn.Linear(config.topic_num, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, config.word_embedding_len),
+        )
+        self.LayerNorm = nn.LayerNorm(config.word_embedding_len, eps=config.layer_norm_eps)
+
+        # 这些的学习率一样
+        self.classifier = BodyClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.softmax = torch.nn.Softmax(dim=-2)
+        self.composition = config.composition
+
+    def get_rep_by_topic_attention(self, input_ids, token_type_ids, attention_mask, topic_vector):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
+                              attention_mask=attention_mask)
+
+        last_hidden_state = out['last_hidden_state']
+
+        # 接下来通过attention汇总信息----------------------------------------
+        # (batch size, topic num) -> (batch size, word_embedding_len)
+        query = self.query_layer(topic_vector)
+        query = self.LayerNorm(query)
+        # (batch, 1, word_embedding_len)
+        query = query.unsqueeze(1)
+
+        # (batch, 1, sequence)
+        weight = query.bmm(last_hidden_state.transpose(1, 2))
+
+        # 创作出score mask
+        with torch.no_grad():
+            # (batch, sequence)
+            mask = attention_mask.type(dtype=torch.float)
+            mask[mask == 0] = -np.inf
+            mask[mask == 1] = 0.0
+            # (batch, 1, sequence)
+            mask = mask.unsqueeze(1)
+
+        mask_weight = mask + weight
+        # (batch, 1, sequence)
+        final_weight = nn.functional.softmax(mask_weight, dim=-1)
+
+        # 求和
+        # (batch, 1, sentence_embedding_len)
+        embedding = final_weight.bmm(last_hidden_state)
+        final_embedding = embedding.squeeze(1)
+
+        return final_embedding
+
+    def get_rep_by_multi_attention(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
+                              attention_mask=attention_mask)
+
+        last_hidden_state = out['last_hidden_state']
+
+        # (batch, sequence, output_embedding_len)
+        value = self.value_layer(last_hidden_state)
+
+        # 开始根据主题分布，进行信息压缩
+        # 创作出mask
+        with torch.no_grad():
+            mask = attention_mask.type(dtype=torch.float)
+            mask[mask == 0] = -np.inf
+            mask[mask == 1] = 0.0
+            mask = mask.repeat(self.output_embedding_len, 1, 1)
+            mask.transpose_(0, 1)
+            mask.transpose_(1, 2)
+
+        # (batch, sequence, output_embedding_len)
+        weight = self.key_layer(last_hidden_state)
+        mask_weight = mask + weight
+        final_weight = self.softmax(mask_weight)
+
+        # 求和
+        embedding = torch.mul(final_weight, value)
+
+        final_embedding = self.relu(embedding.sum(dim=-2))
+
+        return final_embedding
+
+    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
+                a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask, q_bow, a_bow):
+        q_reconst, q_mu, q_log_var = self.vae(q_bow, lambda x: torch.softmax(x, dim=1))
+        a_reconst, a_mu, a_log_var = self.vae(a_bow, lambda x: torch.softmax(x, dim=1))
+
+        logsoftmax = torch.log_softmax(q_reconst, dim=1)
+        q_rec_loss = -1.0 * torch.sum(q_bow * logsoftmax)
+        q_kl_div = -0.5 * torch.sum(1 + q_log_var - q_mu.pow(2) - q_log_var.exp())
+        
+        logsoftmax = torch.log_softmax(a_reconst, dim=1)
+        a_rec_loss = -1.0 * torch.sum(a_bow * logsoftmax)
+        a_kl_div = -0.5 * torch.sum(1 + a_log_var - a_mu.pow(2) - a_log_var.exp())
+
+        vae_loss = q_rec_loss + q_kl_div + a_rec_loss + a_kl_div
+
+        if self.composition == 'self':
+            q_embeddings = self.get_rep_by_topic_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+                                                          attention_mask=q_attention_mask, topic_vector=q_mu)
+
+            a_embeddings = self.get_rep_by_topic_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+                                                          attention_mask=a_attention_mask, topic_vector=a_mu)
+
+            b_embeddings = self.get_rep_by_topic_attention(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
+                                                          attention_mask=b_attention_mask, topic_vector=q_mu)
+        else:
+            raise Exception("This composition is not supported! Please use \'pooler\' or \'self\'or \'multi\'")
+
+        # 计算得到分类概率
+        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
+                                 b_embedding=b_embeddings)
+
+        return logits, vae_loss
 
 
 # --------------------------------------

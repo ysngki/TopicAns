@@ -1,5 +1,8 @@
 # %%
+from errno import ENETUNREACH
+import imp
 import datasets
+from regex import D
 from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch
@@ -8,15 +11,17 @@ import os
 import torch.utils.data
 import gc
 from transformers import AutoTokenizer, AutoConfig, BertForMaskedLM, \
-	DataCollatorForLanguageModeling, get_linear_schedule_with_warmup
+	DataCollatorForLanguageModeling, PrinterCallback, get_linear_schedule_with_warmup
 import numpy as np
 import sys
 from tqdm import tqdm
 
 from TBA_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
-	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig
-from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig
-from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset
+	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig, BasicTopicModel, BasicTopicConfig
+from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig, QATopicModel, QATopicConfig
+from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset, VaeSignleTextDataset, TBATopicClassifyDataset, QATopicClassifyDataset
+from vae import VAE
+from gensim.corpora import Dictionary
 
 
 class TrainWholeModel:
@@ -99,6 +104,10 @@ class TrainWholeModel:
 		self.origin_voc_size = len(self.tokenizer) - self.memory_num*2
 
 		# 获得模型配置-------------------------------------------------------------------
+		self.dictionary = None
+		if self.model_class in ['BasicTopicModel', 'QATopicModel']:
+			self.train_vae(args.latent_dim)
+
 		if config is None:
 			self.config = self.__read_args_for_config(args)
 		else:
@@ -127,7 +136,11 @@ class TrainWholeModel:
 		while True:
 			# 创建模型，根据 model_class 的选择
 			self.model = self.__create_model()
-
+			
+			# 读取事先训练好的
+			if self.model_class in ['BasicTopicModel', 'QATopicModel']:
+				self.model.vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim))['vae'])
+	
 			# 读取预训练好的memory，适用于需要memory的模型，如 QAmemory
 			if self.load_memory_flag:
 				self.load_pretrained_memory(memory_save_name)
@@ -142,6 +155,11 @@ class TrainWholeModel:
 				self.model = self.load_models(self.model, restore_path)
 
 			self.__model_to_device()
+
+			# topic_words = self.model.vae.show_topic_words(dictionary=self.dictionary, device=self.device)
+			# for t in topic_words:
+			# 	print(t)
+			# print("*"*50)
 
 			# 这不不会出问题吧，设置多 GPU，应该不需要用到
 			self.__model_parallel()
@@ -162,7 +180,7 @@ class TrainWholeModel:
 
 			# 设置早停变量，如果超过 10 轮没有更新最优值，则结束
 			if final_stage_flag:
-				early_stop_threshold = 10
+				early_stop_threshold = 5
 			else:
 				early_stop_threshold = 5
 
@@ -383,6 +401,204 @@ class TrainWholeModel:
 				final_stage_flag = True
 			else:
 				break
+
+	def train_vae(self, latent_dim, in_vae=None):
+		
+		# self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
+		# print(len(self.dictionary))
+
+		# vae = VAE(bow_dim=len(self.dictionary), n_topic=latent_dim).to(self.device)
+		# vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(latent_dim))['vae'])
+
+		
+		# topic_words = vae.show_topic_words(dictionary=self.dictionary, device=self.device)
+		# print(len(topic_words), len(topic_words[0]))
+		# for t in topic_words:
+		# 	print(t)
+		# exit()
+
+		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists("./model/vae/" + self.dataset_name + "_" + str(latent_dim)):
+			self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
+			print("Pretrained Dict is loaded & Pretrained VAE exists!")
+			return
+
+		train_data = datasets.load_from_disk("./" + self.dataset_name + "/string_train.dataset")
+		train_data = train_data.shuffle(seed=None)
+		
+		# eng_stopwords = set(stopwords.words('english'))
+
+		# 读取数据到内存
+		old_all_titles = train_data['title']
+		old_all_bodies = train_data['body']
+		old_all_answers = train_data['answers']
+		
+		# 去掉数字
+		all_bodies = []
+		for t, d in zip(old_all_titles, old_all_bodies):
+			new_t = ''.join([i for i in t if not i.isdigit()])
+			new_d = ''.join([i for i in d if not i.isdigit()])
+			all_bodies.append(new_t + new_d)
+
+		all_answers = []
+		for d in old_all_answers:
+			new_d = ''.join([i for i in d if not i.isdigit()])
+			all_answers.append(new_d)
+
+		# 创建词汇表
+		self.dictionary = Dictionary()
+
+		for documents in [all_bodies, all_answers]:
+			split_documents = [d.split() for d in documents]
+
+			self.dictionary.add_documents(split_documents)
+
+		# 过滤一些词
+		self.dictionary.filter_extremes(no_below=20, no_above=0.5, keep_n=None)
+		self.dictionary.compactify()
+		print(f"[Voc size is {len(self.dictionary)}].")
+		
+		# because id2token is empty by default, it is a bug.
+		self.dictionary.id2token = {v:k for k,v in self.dictionary.token2id.items()}
+
+		# convert the bodies and the answers into BO representation
+		q_bows = []
+		valid_q_docs = []
+		
+		a_bows = []
+		valid_a_docs = []
+
+		for d, a in zip(all_bodies, all_answers):
+			split_d = d.split()
+			d_bow = self.dictionary.doc2bow(split_d)
+
+			split_a = a.split()
+			a_bow = self.dictionary.doc2bow(split_a)
+
+			if d_bow != [] and a_bow != []:
+				valid_q_docs.append(d)
+				q_bows.append(d_bow)
+
+				valid_a_docs.append(a)
+				a_bows.append(a_bow)
+
+		print(f"q: {len(q_bows)}, {len(valid_q_docs)},\ta: {len(a_bows)}, {len(valid_a_docs)} \torigin: {len(all_bodies)}")
+
+		# save both dictionary and docs
+		self.dictionary.save("./" + self.dataset_name + "/vae_dictionary")
+		self.dictionary.save_as_text("./" + self.dataset_name + "/vae_text_dictionary")
+		
+		# 将question和answer混合训练
+		q_num = len(valid_q_docs)
+		a_num = len(valid_a_docs)
+
+		train_docs = valid_q_docs[:int(0.9*q_num)] + valid_a_docs[:int(0.9*a_num)]
+		train_bows = q_bows[:int(0.9*q_num)] + a_bows[:int(0.9*a_num)]
+
+		eval_docs = valid_q_docs[int(0.9*q_num):] + valid_a_docs[int(0.9*a_num):]
+		eval_bows = q_bows[int(0.9*q_num):] + a_bows[int(0.9*a_num):]
+
+		train_data = VaeSignleTextDataset(docs=train_docs, bows=train_bows, voc_size=len(self.dictionary))
+		eval_data = VaeSignleTextDataset(docs=eval_docs, bows=eval_bows, voc_size=len(self.dictionary))
+
+		train_dataloader = DataLoader(train_data, batch_size=128, shuffle=True, num_workers=4, drop_last=True)
+
+		# 创建模型
+		if in_vae is None:
+			print("VAE NUM is ", latent_dim)
+			vae = VAE(bow_dim=len(self.dictionary), n_topic=latent_dim).to(self.device)
+		else:
+			vae = in_vae
+
+		optimizer = torch.optim.Adam(vae.parameters(), lr=1e-3)
+		optimizer.zero_grad()
+		
+		t_total = len(train_dataloader) * 50
+		scheduler = get_linear_schedule_with_warmup(optimizer,
+													num_warmup_steps=int(t_total * 0.1),
+													num_training_steps=t_total)
+
+		print(f"[Train data len is {len(train_data)}. Eval data len is {len(eval_data)}]")
+
+		previous_min_loss = np.inf
+		early_stop_threshold = 5
+		early_stop_count = 0
+
+		for epoch in range(50):
+			print("*"*45 + f" EPOCH: {epoch} " + "*"*45)
+
+			train_dataloader = DataLoader(train_data, batch_size=64, shuffle=True, num_workers=4, drop_last=True)
+			vae.train()
+
+			for iter, data in enumerate(train_dataloader):
+				bows = data.to(self.device)
+
+				bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
+
+				logsoftmax = torch.log_softmax(bows_recon, dim=1)
+				rec_loss = -1.0 * torch.sum(bows * logsoftmax)
+		
+				# rec_loss = torch.nn.functional.mse_loss(logsoftmax, torch.softmax(bows, dim=1))
+
+				kl_div = -0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp())
+				# kl_div = torch.mean(-0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp()))
+
+				loss = rec_loss + kl_div
+
+				loss.backward()
+
+				optimizer.step()
+				optimizer.zero_grad()	
+				scheduler.step()
+
+			# do eval
+			eval_dataloader = DataLoader(eval_data, batch_size=128, shuffle=False, num_workers=4, drop_last=True)
+			vae.eval()
+
+			all_loss = 0.0
+			for data in eval_dataloader:
+				bows = data.to(self.device)
+
+				bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
+
+				logsoftmax = torch.log_softmax(bows_recon, dim=1)
+				rec_loss = -1.0 * torch.sum(bows * logsoftmax)
+		
+				# rec_loss = torch.nn.functional.mse_loss(logsoftmax, torch.softmax(bows, dim=1))
+
+				kl_div = -0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp())
+				# kl_div = torch.mean(-0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp()))
+
+				loss = rec_loss + kl_div
+
+				all_loss += loss.item()
+			
+			if previous_min_loss > all_loss:
+				print("*"*50)
+				print(f"NEW MIN LOSS: {all_loss}, PREVIOUS LOSS: {previous_min_loss}")
+
+				previous_min_loss = all_loss
+				early_stop_count = 0
+				
+				# save model
+				save_state = {'vae': vae.state_dict()}
+				torch.save(save_state, "./model/vae/" + self.dataset_name + "_" + str(latent_dim))
+				print(f"Model is saved at ./model/vae/{self.dataset_name }_" + str(latent_dim))
+				print("*"*50)
+			else:
+				early_stop_count += 1
+
+				if early_stop_count == early_stop_threshold:
+					break
+		
+		print()
+		self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
+
+		topic_words = vae.show_topic_words(dictionary=self.dictionary, device=self.device)
+		for t in topic_words:
+			print(t)
+		print("*"*50)
+
+		print("*"*45 + "VAE END!" + "*"*45)
 
 	def train_memory_by_mlm(self, memory_save_name):
 		scheduler = None
@@ -652,6 +868,16 @@ class TrainWholeModel:
 			
 			# pass data into ranking method
 			return self.ranking_qa_input(evaluation_qa_pairs)
+		elif self.model_class in ['QATopicModel']:
+			concatenated_question = []
+			for t, b in zip(evaluation_title, evaluation_body):
+				concatenated_question.append(t + " " + b)
+
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((concatenated_question[row_index], evaluation_answers[row_index]))
+			
+			# pass data into ranking method
+			return self.ranking_qa_topic_input(evaluation_qa_pairs)
 		else:
 			for row_index in range(begin_index, end_index):
 				evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
@@ -678,7 +904,7 @@ class TrainWholeModel:
 		begin_index = len(evaluation_title) // 2
 		end_index = len(evaluation_title)
 
-		if self.model_class in ['QAMemory']:
+		if self.model_class in ['QAModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -688,6 +914,74 @@ class TrainWholeModel:
 
 			# pass data into ranking method
 			return self.ranking_qa_input(evaluation_qa_pairs)
+		elif self.model_class in ['QATopicModel']:
+			concatenated_question = []
+			for t, b in zip(evaluation_title, evaluation_body):
+				concatenated_question.append(t + " " + b)
+
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((concatenated_question[row_index], evaluation_answers[row_index]))
+			
+			# pass data into ranking method
+			return self.ranking_qa_topic_input(evaluation_qa_pairs)
+		else:
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
+											evaluation_answers[row_index]))
+
+			# pass data into ranking method
+			return self.ranking(evaluation_qa_pairs)
+
+	def only_do_test(self):
+		model_save_name = self.model_save_prefix + self.model_class + "_" + self.dataset_name
+		# best model save path
+		model_save_path = self.save_model_dict + "/" + model_save_name
+
+		# 创建模型，根据 model_class 的选择
+		self.model = self.__create_model()
+		self.model = self.load_models(self.model, model_save_path)
+
+		self.__model_to_device()
+
+		# 这不不会出问题吧，设置多 GPU，应该不需要用到
+		self.__model_parallel()
+
+		print("--------------------- begin testing -----------------------")
+		# 稍加处理一下数据，把数据都存在元祖里
+		data_from_path = "./" + self.dataset_name + "/eva.dataset"
+		evaluation_data = datasets.load_from_disk(data_from_path)
+
+		# 汇总下数据
+		evaluation_qa_pairs = []
+
+		evaluation_title = evaluation_data['title']
+		evaluation_body = evaluation_data['body']
+		evaluation_answers = evaluation_data['answers']
+
+		# 权宜之计，懒得处理新的排序数据了，只好分一半之前的测试集当验证集，有机会改
+		begin_index = len(evaluation_title) // 2
+		end_index = len(evaluation_title)
+
+		if self.model_class in ['QAModel']:
+			concatenated_question = []
+			for t, b in zip(evaluation_title, evaluation_body):
+				concatenated_question.append(t + " " + b)
+
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((concatenated_question[row_index], evaluation_answers[row_index]))
+
+			# pass data into ranking method
+			return self.ranking_qa_input(evaluation_qa_pairs)
+		elif self.model_class in ['QATopicModel']:
+			concatenated_question = []
+			for t, b in zip(evaluation_title, evaluation_body):
+				concatenated_question.append(t + " " + b)
+
+			for row_index in range(begin_index, end_index):
+				evaluation_qa_pairs.append((concatenated_question[row_index], evaluation_answers[row_index]))
+			
+			# pass data into ranking method
+			return self.ranking_qa_topic_input(evaluation_qa_pairs)
 		else:
 			for row_index in range(begin_index, end_index):
 				evaluation_qa_pairs.append((evaluation_title[row_index], evaluation_body[row_index],
@@ -870,7 +1164,9 @@ class TrainWholeModel:
 								  'OneSupremeMemory']:
 			return self.__train_step_for_bi
 		elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
-			return self.__train_step_for_qa_input
+			return self.__train_step_for_qa_input 
+		elif self.model_class in ['QATopicModel']:
+			return self.__train_step_for_qa_topic_input
 		else:
 			raise Exception("Training step for this class is not supported!")
 
@@ -1157,6 +1453,168 @@ class TrainWholeModel:
 
 		return self.dcg_score(model_ranking, 1)
 
+	def ranking_qa_topic_input(self, ranking_qa_pairs):
+		print("--------------------- begin ranking -----------------------")
+		self.model.eval()
+
+		print(f"all {len(ranking_qa_pairs)} qa pairs!")
+
+		# 开始逐条排序
+		model_ranking = []
+
+		# 一点点处理数据
+		now_pair_index = 0
+		PAIR_STEP = 2000
+
+		while now_pair_index < len(ranking_qa_pairs):
+			# 取一定数量的数据
+			questions = []
+			answers = []
+
+			for data in ranking_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP]:
+				temp_question: str = data[0]
+				candidate_answers: list = data[1]
+
+				for t_a in candidate_answers[1:self.ranking_candidate_num]:
+					questions.append(temp_question)
+					answers.append(t_a)
+
+				# 把最佳答案塞到最后
+				questions.append(temp_question)
+				answers.append(candidate_answers[0])
+
+			# 获得词袋
+			q_bows = []
+			a_bows = []
+
+			voc_size = len(self.dictionary)
+
+			for d, a in zip(questions, answers):
+				new_d = ''.join([i for i in d if not i.isdigit()])
+				split_d = new_d.split()
+				d_bow = self.dictionary.doc2bow(split_d)
+				q_bows.append(d_bow)
+
+				new_a = ''.join([i for i in a if not i.isdigit()])
+				split_a = new_a.split()
+				a_bow = self.dictionary.doc2bow(split_a)
+				a_bows.append(a_bow)
+
+			tensor_q_bows = torch.zeros((len(q_bows), voc_size))
+			for index in range(len(q_bows)):
+				item = list(zip(*q_bows[index]))
+				if len(item) == 0:
+					continue 
+				tensor_q_bows[index][list(item[0])] = torch.tensor(list(item[1])).float()
+
+			tensor_a_bows = torch.zeros((len(a_bows), voc_size))
+			for index in range(len(a_bows)):
+				item = list(zip(*a_bows[index])) 
+				if len(item) == 0:
+					continue 
+				tensor_a_bows[index][list(item[0])] = torch.tensor(list(item[1])).float()
+
+			q_bows = tensor_q_bows
+			a_bows = tensor_a_bows
+
+			# tokenize
+			encoded_a = self.tokenizer(
+				answers, padding=True, verbose=False, add_special_tokens=True,
+				truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+			encoded_q = self.tokenizer(
+				questions, padding=True, verbose=False, add_special_tokens=True,
+				truncation=True, max_length=self.text_max_len, return_tensors='pt')
+
+			# 检查数据数量是否正确，length是问题数
+			length = len(ranking_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
+
+			if len(encoded_q['input_ids']) != length * self.ranking_candidate_num:
+				raise Exception("encode while ranking no possible!")
+
+			# 开始按照更小的批次进行训练，也就是每次计算step*candidate_answer_num条数据
+			now_index = 0
+			step = 40
+
+			while now_index < length:
+				q_input_ids = encoded_q['input_ids'][
+							  now_index * self.ranking_candidate_num:
+							  (now_index + step) * self.ranking_candidate_num].to(self.device)
+				q_token_type_ids = encoded_q['token_type_ids'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				q_attention_mask = encoded_q['attention_mask'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+
+				a_input_ids = encoded_a['input_ids'][
+							  now_index * self.ranking_candidate_num:
+							  (now_index + step) * self.ranking_candidate_num].to(self.device)
+				a_token_type_ids = encoded_a['token_type_ids'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				a_attention_mask = encoded_a['attention_mask'][
+								   now_index * self.ranking_candidate_num:
+								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+
+				q_bow = q_bows[now_index * self.ranking_candidate_num:
+							  (now_index + step) * self.ranking_candidate_num].to(self.device)
+				
+				a_bow = a_bows[now_index * self.ranking_candidate_num:
+							  (now_index + step) * self.ranking_candidate_num].to(self.device)
+
+				now_index += step
+
+				with torch.no_grad():
+					logits, _ = self.model(
+						q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
+						q_attention_mask=q_attention_mask,
+						a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+						a_attention_mask=a_attention_mask, q_bow=q_bow, a_bow=a_bow)
+
+					logits = logits.view(-1, self.ranking_candidate_num, 4)
+					logits = nn.functional.softmax(logits, dim=-1)
+
+					sorted_index_score = []
+					for q_index, q_item in enumerate(logits):
+						temp_index_score = []
+						for inner_index, inner_item in enumerate(q_item):
+							score = inner_item[0] * (-2) + inner_item[1] * (-1) + inner_item[2] * 1 + inner_item[3] * 2
+							temp_index_score.append((inner_index, score.item()))
+
+						stl = sorted(temp_index_score, key=lambda x: x[1], reverse=True)
+						sorted_index_score.append(stl)
+
+					model_ranking += [([y[0] for y in x].index(self.ranking_candidate_num - 1) + 1) for x in
+									  sorted_index_score]
+
+			now_pair_index += PAIR_STEP
+
+			# 每排好10000个问题，打印下当前的结果
+			if (now_pair_index % 10000) == 0:
+				print(f"now processed: {now_pair_index}/{len(ranking_qa_pairs)}")
+
+				metric_list = [i for i in range(1, self.ranking_candidate_num + 1)]
+				for k in metric_list:
+					print(
+						"DCG@%4d: %.3f | Hits@%4d: %.3f" % (k, self.dcg_score(model_ranking, k),
+															k, self.hits_count(model_ranking, k)))
+				sys.stdout.flush()
+
+		print()
+
+		# 输出最后的评估结果
+		metric_list = [i for i in range(1, self.ranking_candidate_num + 1)]
+		for k in metric_list:
+			print(
+				"DCG@%4d: %.3f | Hits@%4d: %.3f" % (k, self.dcg_score(model_ranking, k),
+													k, self.hits_count(model_ranking, k)))
+		print("---------------------- end ranking ------------------------")
+		self.model.train()
+
+		return self.dcg_score(model_ranking, 1)
+
+
 	def ranking_cross(self):
 		print("--------------------- begin ranking -----------------------")
 		self.model.eval()
@@ -1281,12 +1739,16 @@ class TrainWholeModel:
 		# add model
 		if self.model_class == 'BasicModel':
 			model = BasicModel(config=self.config)
+		elif self.model_class == 'BasicTopicModel':
+			model = BasicTopicModel(config=self.config)
 		elif self.model_class == 'InputMemorySelfAtt':
 			model = InputMemorySelfAtt(config=self.config)
 		elif self.model_class == 'PureMemorySelfAtt':
 			model = PureMemorySelfAtt(config=self.config)
 		elif self.model_class in ['QAMemory', 'QAModel']:
 			model = QAModel(config=self.config)
+		elif self.model_class in ['QATopicModel']:
+			model = QATopicModel(config=self.config)
 		elif self.model_class in ['CrossBERT']:
 			model = CrossBERT(config=self.config)
 		elif self.model_class in ['ADecoder']:
@@ -1414,6 +1876,15 @@ class TrainWholeModel:
 								 word_embedding_len=word_embedding_len,
 								 sentence_embedding_len=sentence_embedding_len,
 								 composition=self.composition)
+		elif self.model_class == 'BasicTopicModel':
+			config = BasicTopicConfig(len(self.tokenizer),
+										len(self.dictionary), 
+										pretrained_bert_path=args.pretrained_bert_path,
+										num_labels=args.label_num,
+										word_embedding_len=word_embedding_len,
+										sentence_embedding_len=sentence_embedding_len,
+										composition=self.composition,
+										topic_num=args.latent_dim)
 		elif self.model_class == 'InputMemorySelfAtt':
 			config = InputMemorySelfAttConfig(len(self.tokenizer),
 											  pretrained_bert_path=args.pretrained_bert_path,
@@ -1437,6 +1908,15 @@ class TrainWholeModel:
 										 word_embedding_len=word_embedding_len,
 										 sentence_embedding_len=sentence_embedding_len,
 										 composition=self.composition)
+		elif self.model_class in ['QATopicModel']:
+			config = QATopicConfig(len(self.tokenizer),
+									len(self.dictionary),
+										 pretrained_bert_path=args.pretrained_bert_path,
+										 num_labels=args.label_num,
+										 word_embedding_len=word_embedding_len,
+										 sentence_embedding_len=sentence_embedding_len,
+										 composition=self.composition,
+										 topic_num=self.latent_dim)
 		elif self.model_class in ['CrossBERT']:
 			config = CrossBERTConfig(len(self.tokenizer),
 									 pretrained_bert_path=args.pretrained_bert_path,
@@ -1482,6 +1962,17 @@ class TrainWholeModel:
 				{'params': model.value_layer.parameters(), 'lr': 1e-4},
 				{'params': model.query_for_question, 'lr': 1e-4},
 				{'params': model.query_for_answer, 'lr': 1e-4},
+				# 这个不设定
+				{'params': model.classifier.parameters(), 'lr': 1e-4}
+			]
+		elif self.model_class == 'QATopicModel':
+			parameters_dict_list = [
+				# 这几个一样
+				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				# 这几个一样
+				{'params': model.query_layer.parameters(), 'lr': 1e-4},
+				{'params': model.vae.parameters(), 'lr': 1e-4},
+				{'params': model.LayerNorm.parameters(), 'lr': 1e-4},
 				# 这个不设定
 				{'params': model.classifier.parameters(), 'lr': 1e-4}
 			]
@@ -1753,6 +2244,62 @@ class TrainWholeModel:
 
 		return step_loss, step_shoot_num, step_hit_num
 
+	# 输入为QA，以及词袋，而非title.body.answer的模型的训练步
+	def __train_step_for_qa_topic_input(self, batch, optimizer, now_batch_num, scheduler, final_stage_flag):
+		cross_entropy_function = nn.CrossEntropyLoss()
+
+		# 读取数据
+		q_input_ids = (batch['q_input_ids']).to(self.device)
+		q_token_type_ids = (batch['q_token_type_ids']).to(self.device)
+		q_attention_mask = (batch['q_attention_mask']).to(self.device)
+
+		a_input_ids = (batch['a_input_ids']).to(self.device)
+		a_token_type_ids = (batch['a_token_type_ids']).to(self.device)
+		a_attention_mask = (batch['a_attention_mask']).to(self.device)
+
+		q_bow = (batch['q_bow']).to(self.device)
+		a_bow = (batch['a_bow']).to(self.device)
+
+		qa_labels = (batch['label']).to(self.device)
+
+		# 得到模型的结果
+		logits, vae_loss = self.model(
+			q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
+			q_attention_mask=q_attention_mask,
+			a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
+			a_attention_mask=a_attention_mask, q_bow=q_bow, a_bow=a_bow)
+
+		# 计算损失
+		step_loss = cross_entropy_function(logits, qa_labels)
+
+		step_loss += vae_loss
+
+		# 误差反向传播
+		step_loss.backward()
+
+		# 更新模型参数
+		if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:
+			# add model
+			# only update memory in embeddings
+			if self.model_class in ['QAMemory'] and not final_stage_flag:
+				self.model.embeddings.weight.grad[:self.origin_voc_size] *= 0.0
+
+			optimizer.step()
+			optimizer.zero_grad()
+			scheduler.step()
+
+		# 统计命中率
+		step_shoot_num = logits.shape[0]
+		with torch.no_grad():
+			_, row_max_indices = logits.topk(k=1, dim=-1)
+			step_hit_num = 0
+			for i, max_index in enumerate(row_max_indices):
+				inner_index = max_index[0]
+				if inner_index == qa_labels[i]:
+					step_hit_num += 1
+
+		return step_loss, step_shoot_num, step_hit_num
+
 	# cross模型的训练步
 	def __train_step_for_cross(self, batch, optimizer, now_batch_num, scheduler, **kwargs):
 		cross_entropy_function = nn.CrossEntropyLoss()
@@ -1872,6 +2419,11 @@ class TrainWholeModel:
 			now_dataset = QAClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len)
+		elif self.model_class in ['QATopicModel']:
+			now_dataset = QATopicClassifyDataset(data=now_data_block,
+											tokenizer=self.tokenizer,
+											text_max_len=self.text_max_len,
+											dictionary=self.dictionary)
 		elif self.model_class in ['CrossBERT']:
 			now_dataset = CrossClassifyDataset(data=now_data_block,
 											   tokenizer=self.tokenizer,

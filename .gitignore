@@ -3,6 +3,12 @@
 nlp_task/logs
 nlp_task/model
 super_user/
+so_python/
+so_java/
+model/
+last_model/
+dataset/
+ask_ubuntu/
 /tokenizer/
 /logs/
 /__pycache__/

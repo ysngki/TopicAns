@@ -35,11 +35,11 @@ def read_arguments():
 	# must set
 	# add model
 	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory'])
+							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory', 'QATopicModel'])
 
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
-	parser.add_argument("--pretrained_bert_path", default='/data/yuanhang/pretrained_model/prajjwal1/bert-medium', type=str)
+	parser.add_argument("--pretrained_bert_path", default='/data/yuanhang/pretrained_model/prajjwal1/bert-small', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
 	parser.add_argument("--one_stage", action="store_true", default=False)
 	parser.add_argument("--model_save_prefix", default="", type=str)
@@ -88,13 +88,15 @@ def read_arguments():
 	parser.add_argument("--label_num", default=4, type=int)  # !!!
 	parser.add_argument("--num_train_epochs", "-e",type=int, default=50)
 
+	parser.add_argument("--latent_dim", default=50, type=int)
+	parser.add_argument("--train_vae", action="store_true", default=False)
+	parser.add_argument("--do_test", action="store_true", default=False)
+
 	# outdated
 	parser.add_argument("--print_num_each_epoch", default=20, type=int)
 	parser.add_argument("--val_candidate_num", default=100, type=int, help="candidates num for ranking")
 	parser.add_argument("--train_candidate_num", default=16, type=int, help="only need by cross")
-	parser.add_argument("--latent_dim", default=100, type=int)
-	parser.add_argument("--train_vae", action="store_true", default=False)
-
+	
 	args = parser.parse_args()
 	print("args:", args)
 	return args
@@ -115,7 +117,7 @@ if __name__ == '__main__':
 	# 设置训练参数
 	my_train_two_stage_flag = False
 	# add model
-	if my_args.model_class in ['OneSupremeMemory', 'PureMemory', 'VaeAttention', 'VaeAttentionPlus', 'BasicModel',
+	if my_args.model_class in ['OneSupremeMemory', 'PureMemory', 'VaeAttention', 'VaeAttentionPlus',
 							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'ADecoder', 'OneSupremeMemory']:
 		my_train_two_stage_flag = True
 
@@ -134,6 +136,12 @@ if __name__ == '__main__':
 	if my_args.mlm:
 		my_train_model.train_memory_by_mlm(memory_save_name=my_args.memory_save_prefix + "_" +
 															my_args.dataset_name)
+	
+	if my_args.train_vae:
+		my_train_model.train_vae(latent_dim=my_args.latent_dim)
+
+	if my_args.do_test:
+		my_train_model.only_do_test()
 
 	# 如果读取memory，或者不训练mlm，就要train
 	if (my_args.load_memory or (not my_args.mlm)) and (not my_args.no_train):

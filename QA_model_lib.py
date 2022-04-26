@@ -1,3 +1,4 @@
+import imp
 from transformers import BertModel, BertForSequenceClassification, BertConfig
 from transformers.models.bert.my_modeling_bert import MyBertModel, DecoderLayerChunk
 import torch
@@ -5,6 +6,7 @@ import torch.nn as nn
 import torch.utils.data
 import numpy as np
 import torch.nn.functional
+from vae import VAE
 
 
 # model list
@@ -189,6 +191,145 @@ class QAModel(nn.Module):
 
 
         return logits
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class QATopicConfig:
+    def __init__(self, tokenizer_len, voc_size, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
+                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler', topic_num=50):
+
+        self.tokenizer_len = tokenizer_len
+        self.voc_size = voc_size
+        self.pretrained_bert_path = pretrained_bert_path
+        self.num_labels = num_labels
+        self.word_embedding_len = word_embedding_len
+        self.sentence_embedding_len = sentence_embedding_len
+        self.composition = composition
+        self.topic_num = topic_num
+
+    def __str__(self):
+        print("*"*20 + "config" + "*"*20)
+        print("tokenizer_len:", self.tokenizer_len)
+        print("voc_size:", self.tokenizvoc_sizeer_len)
+        print("pretrained_bert_path:", self.pretrained_bert_path)
+        print("num_labels:", self.num_labels)
+        print("word_embedding_len:", self.word_embedding_len)
+        print("sentence_embedding_len:", self.sentence_embedding_len)
+        print("composition:", self.composition)
+        print("topic_num:", self.topic_num)
+
+
+class QATopicModel(nn.Module):
+    def __init__(self, config: QATopicConfig):
+
+        super(QATopicModel, self).__init__()
+
+        self.vae = VAE(config.voc_size, n_topic=config.topic_num)
+        self.output_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        # 用来计算self-attention
+        # self.query_for_question = nn.Parameter(torch.randn(config.word_embedding_len))
+        # self.query_for_answer = nn.Parameter(torch.randn(config.word_embedding_len))
+
+        # 注意力模型
+        self.query_layer = nn.Sequential(
+            nn.Linear(config.topic_num, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, config.word_embedding_len),
+        )
+        self.LayerNorm = nn.LayerNorm(config.word_embedding_len)
+
+        # 这些的学习率一样
+        # self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+        self.classifier = QATopicClassifier(input_len=config.sentence_embedding_len, topic_num=config.topic_num, num_labels=config.num_labels)
+
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.softmax = torch.nn.Softmax(dim=-2)
+        self.composition = config.composition
+
+    def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
+        out = self.bert_model(input_ids=input_ids, attention_mask=attention_mask,
+                              token_type_ids=token_type_ids)
+
+        out = out['pooler_output']
+
+        return out
+
+    def get_rep_by_topic_attention(self, input_ids, token_type_ids, attention_mask, topic_vector):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
+                              attention_mask=attention_mask)
+
+        last_hidden_state = out['last_hidden_state']
+
+        # 接下来通过attention汇总信息----------------------------------------
+        # (batch size, topic num) -> (batch size, word_embedding_len)
+        query = self.query_layer(topic_vector)
+        query = self.LayerNorm(query)
+        # (batch, 1, word_embedding_len)
+        query = query.unsqueeze(1)
+
+        # (batch, 1, sequence)
+        weight = query.bmm(last_hidden_state.transpose(1, 2))
+
+        # 创作出score mask
+        with torch.no_grad():
+            # (batch, sequence)
+            mask = attention_mask.type(dtype=torch.float)
+            mask[mask == 0] = -np.inf
+            mask[mask == 1] = 0.0
+            # (batch, 1, sequence)
+            mask = mask.unsqueeze(1)
+
+        mask_weight = mask + weight
+        # (batch, 1, sequence)
+        final_weight = nn.functional.softmax(mask_weight, dim=-1)
+
+        # 求和
+        # (batch, 1, sentence_embedding_len)
+        embedding = final_weight.bmm(last_hidden_state)
+        final_embedding = embedding.squeeze(1)
+
+        return final_embedding
+
+    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
+                a_input_ids, a_token_type_ids, a_attention_mask, q_bow, a_bow):
+        q_reconst, q_mu, q_log_var = self.vae(q_bow, lambda x: torch.softmax(x, dim=1))
+        a_reconst, a_mu, a_log_var = self.vae(a_bow, lambda x: torch.softmax(x, dim=1))
+
+        logsoftmax = torch.log_softmax(q_reconst, dim=1)
+        q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax)
+        q_kl_div = -0.5 * torch.mean(1 + q_log_var - q_mu.pow(2) - q_log_var.exp())
+        
+        logsoftmax = torch.log_softmax(a_reconst, dim=1)
+        a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax)
+        a_kl_div = -0.5 * torch.mean(1 + a_log_var - a_mu.pow(2) - a_log_var.exp())
+
+        vae_loss = q_rec_loss + a_rec_loss + q_kl_div  + a_kl_div
+
+        # q_embeddings = self.get_rep_by_topic_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+        #                                                 attention_mask=q_attention_mask, topic_vector=q_mu)
+
+        # a_embeddings = self.get_rep_by_topic_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+        #                                                 attention_mask=a_attention_mask, topic_vector=a_mu)
+
+        q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask)
+
+        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
+
+        # 计算得到分类概率
+        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings, q_topic=q_mu, a_topic=a_mu)
+
+        return logits, vae_loss
 
 
 # --------------------------------------
@@ -492,6 +633,55 @@ class QAClassifier(nn.Module):
         x = self.linear3(x)
         x = self.relu(x)
         x = self.dropout(x) + res_x
+        # x = self.bn3(x)
+
+        x = self.linear4(x)
+
+        return x
+
+
+class QATopicClassifier(nn.Module):
+    def __init__(self, input_len, topic_num, keep_prob=0.9, num_labels=4):
+        super(QATopicClassifier, self).__init__()
+
+        self.linear1 = torch.nn.Linear((input_len + topic_num)* 2, (input_len + topic_num)* 2, bias=True)
+        self.bn1 = nn.BatchNorm1d((input_len + topic_num)* 2)
+        self.linear2 = torch.nn.Linear((input_len + topic_num)* 2, (input_len + topic_num), bias=True)
+        self.bn2 = nn.BatchNorm1d((input_len + topic_num))
+        self.linear3 = torch.nn.Linear((input_len + topic_num), (input_len + topic_num), bias=True)
+        self.bn3 = nn.BatchNorm1d((input_len + topic_num))
+        self.linear4 = torch.nn.Linear((input_len + topic_num), num_labels, bias=True)
+
+        self.relu = torch.nn.ReLU()
+        self.tanh = torch.nn.Tanh()
+        self.sigmoid = torch.nn.Sigmoid()
+        self.dropout = torch.nn.Dropout(p=1 - keep_prob)
+        self.init_weights()
+
+    def init_weights(self):
+        torch.nn.init.xavier_uniform_(self.linear1.weight)
+        torch.nn.init.xavier_uniform_(self.linear2.weight)
+        torch.nn.init.xavier_uniform_(self.linear3.weight)
+        torch.nn.init.xavier_uniform_(self.linear4.weight)
+
+    def forward(self, q_embedding, a_embedding, q_topic, a_topic):
+        x = torch.cat((q_embedding, a_embedding, q_topic, a_topic), dim=-1)
+
+        res_x = x
+        x = self.linear1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        # x = self.bn1(x)
+
+        x = self.linear2(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        # x = self.bn2(x)
+
+        res_x = x
+        x = self.linear3(x)
+        x = self.relu(x)
+        x = self.dropout(x)
         # x = self.bn3(x)
 
         x = self.linear4(x)
