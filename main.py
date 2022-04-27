@@ -35,13 +35,14 @@ def read_arguments():
 	# must set
 	# add model
 	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory', 'QATopicModel'])
+							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory', 'QATopicModel', 'QATopicMemoryModel'])
 
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
 	parser.add_argument("--memory_num", "-m", default=50, type=int)
 	parser.add_argument("--pretrained_bert_path", default='/data/yuanhang/pretrained_model/prajjwal1/bert-small', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
 	parser.add_argument("--one_stage", action="store_true", default=False)
+	parser.add_argument("--two_stage", action="store_true", default=False)
 	parser.add_argument("--model_save_prefix", default="", type=str)
 	parser.add_argument("--memory_save_prefix", default="", type=str)
 	parser.add_argument("--dataset_split_num", default=5, type=int)
@@ -121,8 +122,14 @@ if __name__ == '__main__':
 							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'ADecoder', 'OneSupremeMemory']:
 		my_train_two_stage_flag = True
 
+	# 人工调控
+	if my_args.one_stage and my_args.two_stage:
+		raise Exception("One or Two Stage?")
+
 	if my_args.one_stage:
 		my_train_two_stage_flag = False
+	if my_args.two_stage:
+		my_train_two_stage_flag = True
 
 	if my_train_two_stage_flag:
 		print("*"*20 + " Train [TWO] Stage!" + "*"*20)

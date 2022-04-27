@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from TBA_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig, BasicTopicModel, BasicTopicConfig
-from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig, QATopicModel, QATopicConfig
+from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig, QATopicModel, QATopicConfig, QATopicMemoryModel
 from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset, VaeSignleTextDataset, TBATopicClassifyDataset, QATopicClassifyDataset
 from vae import VAE
 from gensim.corpora import Dictionary
@@ -70,6 +70,9 @@ class TrainWholeModel:
 		if self.model_class in ['QAMemory']:
 			tokenizer_path += "_" + str(self.memory_num) + "_" + self.model_class
 
+		if self.dataset_name in ['so_python', 'so_java']:
+			tokenizer_path += "_" + str("SC_EC")
+
 		# read from disk or save to disk
 		if os.path.exists("./tokenizer/" + tokenizer_path):
 			self.tokenizer = AutoTokenizer.from_pretrained("./tokenizer/" + tokenizer_path)
@@ -77,6 +80,15 @@ class TrainWholeModel:
 			print("first time use this tokenizer, downloading...")
 			self.tokenizer = AutoTokenizer.from_pretrained(args.pretrained_bert_path)
 			tokenizer_config = AutoConfig.from_pretrained(args.pretrained_bert_path)
+
+			if self.dataset_name in ['so_python', 'so_java']:
+				special_tokens_dict = {'additional_special_tokens': ["[SC]", "[EC]"]}
+
+				print("-" * 30)
+				print(f"previous token num:{len(self.tokenizer)}")
+				self.tokenizer.add_special_tokens(special_tokens_dict)
+				print(f"now token num:{len(self.tokenizer)}")
+				print("-" * 30 + "\n")
 
 			# add model
 			# add memory tokens to tokenizer
@@ -100,12 +112,15 @@ class TrainWholeModel:
 			self.tokenizer.save_pretrained("./tokenizer/" + tokenizer_path)
 			tokenizer_config.save_pretrained("./tokenizer/" + tokenizer_path)
 
-		# only used by QAMemory...
-		self.origin_voc_size = len(self.tokenizer) - self.memory_num*2
+		if self.dataset_name in ['so_python', 'so_java']:
+			self.origin_voc_size = len(self.tokenizer) - 2
+
+		if self.model_class in ['QAMemory']:
+			self.origin_voc_size = len(self.tokenizer) - self.memory_num*2
 
 		# 获得模型配置-------------------------------------------------------------------
 		self.dictionary = None
-		if self.model_class in ['BasicTopicModel', 'QATopicModel']:
+		if self.model_class in ['BasicTopicModel', 'QATopicModel', 'QATopicMemoryModel']:
 			self.train_vae(args.latent_dim)
 
 		if config is None:
@@ -138,7 +153,7 @@ class TrainWholeModel:
 			self.model = self.__create_model()
 			
 			# 读取事先训练好的
-			if self.model_class in ['BasicTopicModel', 'QATopicModel']:
+			if self.model_class in ['BasicTopicModel', 'QATopicModel', 'QATopicMemoryModel']:
 				self.model.vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim))['vae'])
 	
 			# 读取预训练好的memory，适用于需要memory的模型，如 QAmemory
@@ -868,7 +883,7 @@ class TrainWholeModel:
 			
 			# pass data into ranking method
 			return self.ranking_qa_input(evaluation_qa_pairs)
-		elif self.model_class in ['QATopicModel']:
+		elif self.model_class in ['QATopicModel', 'QATopicMemoryModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -914,7 +929,7 @@ class TrainWholeModel:
 
 			# pass data into ranking method
 			return self.ranking_qa_input(evaluation_qa_pairs)
-		elif self.model_class in ['QATopicModel']:
+		elif self.model_class in ['QATopicModel', 'QATopicMemoryModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -972,7 +987,7 @@ class TrainWholeModel:
 
 			# pass data into ranking method
 			return self.ranking_qa_input(evaluation_qa_pairs)
-		elif self.model_class in ['QATopicModel']:
+		elif self.model_class in ['QATopicModel', 'QATopicMemoryModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -1165,7 +1180,7 @@ class TrainWholeModel:
 			return self.__train_step_for_bi
 		elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 			return self.__train_step_for_qa_input 
-		elif self.model_class in ['QATopicModel']:
+		elif self.model_class in ['QATopicModel', 'QATopicMemoryModel']:
 			return self.__train_step_for_qa_topic_input
 		else:
 			raise Exception("Training step for this class is not supported!")
@@ -1457,6 +1472,11 @@ class TrainWholeModel:
 		print("--------------------- begin ranking -----------------------")
 		self.model.eval()
 
+		if self.model_class in ['QATopicMemoryModel']:
+			max_len = self.text_max_len - self.latent_dim
+		else:
+			max_len = self.text_max_len
+
 		print(f"all {len(ranking_qa_pairs)} qa pairs!")
 
 		# 开始逐条排序
@@ -1520,11 +1540,11 @@ class TrainWholeModel:
 			# tokenize
 			encoded_a = self.tokenizer(
 				answers, padding=True, verbose=False, add_special_tokens=True,
-				truncation=True, max_length=self.text_max_len, return_tensors='pt')
+				truncation=True, max_length=max_len, return_tensors='pt')
 
 			encoded_q = self.tokenizer(
 				questions, padding=True, verbose=False, add_special_tokens=True,
-				truncation=True, max_length=self.text_max_len, return_tensors='pt')
+				truncation=True, max_length=max_len, return_tensors='pt')
 
 			# 检查数据数量是否正确，length是问题数
 			length = len(ranking_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
@@ -1749,6 +1769,8 @@ class TrainWholeModel:
 			model = QAModel(config=self.config)
 		elif self.model_class in ['QATopicModel']:
 			model = QATopicModel(config=self.config)
+		elif self.model_class in ['QATopicMemoryModel']:
+			model = QATopicMemoryModel(config=self.config)
 		elif self.model_class in ['CrossBERT']:
 			model = CrossBERT(config=self.config)
 		elif self.model_class in ['ADecoder']:
@@ -1908,7 +1930,7 @@ class TrainWholeModel:
 										 word_embedding_len=word_embedding_len,
 										 sentence_embedding_len=sentence_embedding_len,
 										 composition=self.composition)
-		elif self.model_class in ['QATopicModel']:
+		elif self.model_class in ['QATopicModel', 'QATopicMemoryModel']:
 			config = QATopicConfig(len(self.tokenizer),
 									len(self.dictionary),
 										 pretrained_bert_path=args.pretrained_bert_path,
@@ -1973,6 +1995,19 @@ class TrainWholeModel:
 				{'params': model.query_layer.parameters(), 'lr': 1e-4},
 				{'params': model.vae.parameters(), 'lr': 1e-4},
 				{'params': model.LayerNorm.parameters(), 'lr': 1e-4},
+				# 这个不设定
+				{'params': model.classifier.parameters(), 'lr': 1e-4}
+			]
+		elif self.model_class == 'QATopicMemoryModel':
+			parameters_dict_list = [
+				# 这几个一样
+				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				# 这几个一样
+				{'params': model.query_layer.parameters(), 'lr': 1e-4},
+				{'params': model.memory_layer.parameters(), 'lr': 1e-4},
+				{'params': model.vae.parameters(), 'lr': 1e-4},
+				{'params': model.LayerNorm.parameters(), 'lr': 1e-4},
+				{'params': model.memory_LayerNorm.parameters(), 'lr': 1e-4},
 				# 这个不设定
 				{'params': model.classifier.parameters(), 'lr': 1e-4}
 			]
@@ -2055,6 +2090,31 @@ class TrainWholeModel:
 					{'params': model.value_layer.parameters(), 'lr': 1e-4},
 					{'params': model.query_for_question, 'lr': 1e-4},
 					{'params': model.query_for_answer, 'lr': 1e-4},
+					# 这个不设定
+					{'params': model.classifier.parameters(), 'lr': 1e-4}
+				]
+			elif self.model_class == 'QATopicModel':
+				parameters_dict_list = [
+					# 这几个一样
+					# {'params': model.bert_model.parameters(), 'lr': 5e-5},
+					# 这几个一样
+					# {'params': model.query_layer.parameters(), 'lr': 1e-4},
+					# {'params': model.vae.parameters(), 'lr': 1e-4},
+					{'params': model.embeddings.parameters(), 'lr': 1e-4},
+					{'params': model.LayerNorm.parameters(), 'lr': 1e-4},
+					# 这个不设定
+					{'params': model.classifier.parameters(), 'lr': 1e-4}
+				]
+			elif self.model_class == 'QATopicMemoryModel':
+				parameters_dict_list = [
+					# 这几个一样
+					# {'params': model.query_layer.parameters(), 'lr': 1e-4},
+					{'params': model.memory_layer.parameters(), 'lr': 1e-4},
+					# {'params': model.vae.parameters(), 'lr': 1e-4},
+					{'params': model.LayerNorm.parameters(), 'lr': 1e-4},
+					{'params': model.memory_LayerNorm.parameters(), 'lr': 1e-4},
+					# 这个很重要！！！！！需要评估下作用
+					{'params': model.embeddings.parameters(), 'lr': 1e-4},
 					# 这个不设定
 					{'params': model.classifier.parameters(), 'lr': 1e-4}
 				]
@@ -2423,6 +2483,11 @@ class TrainWholeModel:
 			now_dataset = QATopicClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len,
+											dictionary=self.dictionary)
+		elif self.model_class in ['QATopicMemoryModel']:
+			now_dataset = QATopicClassifyDataset(data=now_data_block,
+											tokenizer=self.tokenizer,
+											text_max_len=self.text_max_len - self.latent_dim,
 											dictionary=self.dictionary)
 		elif self.model_class in ['CrossBERT']:
 			now_dataset = CrossClassifyDataset(data=now_data_block,

@@ -233,6 +233,9 @@ class QATopicModel(nn.Module):
         self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
+        # 这个embedding的grad会被计入bert model里，很好
+        self.embeddings = self.bert_model.get_input_embeddings()
+        
         # 用来计算self-attention
         # self.query_for_question = nn.Parameter(torch.randn(config.word_embedding_len))
         # self.query_for_answer = nn.Parameter(torch.randn(config.word_embedding_len))
@@ -328,6 +331,187 @@ class QATopicModel(nn.Module):
 
         # 计算得到分类概率
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings, q_topic=q_mu, a_topic=a_mu)
+
+        return logits, vae_loss
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class QATopicMemoryModel(nn.Module):
+    def __init__(self, config: QATopicConfig):
+
+        super(QATopicMemoryModel, self).__init__()
+
+        self.vae = VAE(config.voc_size, n_topic=config.topic_num)
+        self.output_embedding_len = config.sentence_embedding_len
+
+        self.config = config
+
+        # 这个学习率不一样
+        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        # 这个embedding的grad会被计入bert model里，很好
+        self.embeddings = self.bert_model.get_input_embeddings()
+
+        # memory transformation
+        self.memory_layer = nn.Sequential(
+            nn.Linear(config.voc_size, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, config.word_embedding_len),
+        )
+        self.memory_LayerNorm = nn.LayerNorm(config.word_embedding_len)
+
+        # 注意力模型
+        self.query_layer = nn.Sequential(
+            nn.Linear(config.topic_num, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, config.word_embedding_len),
+        )
+        self.LayerNorm = nn.LayerNorm(config.word_embedding_len)
+
+        # 这些的学习率一样
+        # self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+        self.classifier = QATopicClassifier(input_len=config.sentence_embedding_len, topic_num=config.topic_num, num_labels=config.num_labels)
+
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.softmax = torch.nn.Softmax(dim=-2)
+        self.composition = config.composition
+
+    # use topic memory to enrich 
+    def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
+        # print(input_ids.shape)
+
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+        device = input_ids.device
+
+        # ----------------------通过memory来丰富信息---------------------
+        # get topic memory
+        idxes = torch.eye(self.config.topic_num).to(device)
+
+        word_dist = self.vae.decode(idxes)
+        word_dist = torch.softmax(word_dist,dim=1)
+        
+        # print(word_dist.shape)
+
+        topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
+
+        # 获得隐藏层输出, (batch, sequence, embedding)
+        temp_embeddings = self.embeddings(input_ids)
+
+        final_embeddings = None
+        final_attention_mask = None
+        final_token_type_ids = None
+
+        # concatenate memory
+        # input_ids (batch, sequence)
+        memory_len_one_tensor = torch.tensor([1] * self.config.topic_num, requires_grad=False, device=device)
+        one_tensor = torch.tensor([1], requires_grad=False, device=device)
+
+        for index, batch_attention_mask in enumerate(attention_mask):
+            input_embeddings = temp_embeddings[index][batch_attention_mask == 1]
+            pad_embeddings = temp_embeddings[index][batch_attention_mask == 0]
+
+            whole_embeddings = torch.cat((input_embeddings, topic_memory, pad_embeddings), dim=0)
+
+            # 处理attention_mask
+            whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
+                                              batch_attention_mask[batch_attention_mask == 0]), dim=-1)
+
+            # 处理token_type_id
+            remain_token_type_ids_len = batch_attention_mask.shape[0] + self.config.topic_num - input_embeddings.shape[0]
+            whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
+                                              one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
+
+            whole_embeddings = whole_embeddings.unsqueeze(0)
+            whole_attention_mask = whole_attention_mask.unsqueeze(0)
+            whole_token_type_ids = whole_token_type_ids.unsqueeze(0)
+
+            if final_embeddings is None:
+                final_embeddings = whole_embeddings
+                final_attention_mask = whole_attention_mask
+                final_token_type_ids = whole_token_type_ids
+            else:
+                final_embeddings = torch.cat((final_embeddings, whole_embeddings), dim=0)
+                final_attention_mask = torch.cat((final_attention_mask, whole_attention_mask), dim=0)
+                final_token_type_ids = torch.cat((final_token_type_ids, whole_token_type_ids), dim=0)
+
+        out = self.bert_model(inputs_embeds=final_embeddings, attention_mask=final_attention_mask,
+                              token_type_ids=final_token_type_ids)
+
+        out = out['pooler_output']
+
+        return out
+
+    def get_rep_by_topic_attention(self, input_ids, token_type_ids, attention_mask, topic_vector):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
+                              attention_mask=attention_mask)
+
+        last_hidden_state = out['last_hidden_state']
+
+        # 接下来通过attention汇总信息----------------------------------------
+        # (batch size, topic num) -> (batch size, word_embedding_len)
+        query = self.query_layer(topic_vector)
+        query = self.LayerNorm(query)
+        # (batch, 1, word_embedding_len)
+        query = query.unsqueeze(1)
+
+        # (batch, 1, sequence)
+        weight = query.bmm(last_hidden_state.transpose(1, 2))
+
+        # 创作出score mask
+        with torch.no_grad():
+            # (batch, sequence)
+            mask = attention_mask.type(dtype=torch.float)
+            mask[mask == 0] = -np.inf
+            mask[mask == 1] = 0.0
+            # (batch, 1, sequence)
+            mask = mask.unsqueeze(1)
+
+        mask_weight = mask + weight
+        # (batch, 1, sequence)
+        final_weight = nn.functional.softmax(mask_weight, dim=-1)
+
+        # 求和
+        # (batch, 1, sentence_embedding_len)
+        embedding = final_weight.bmm(last_hidden_state)
+        final_embedding = embedding.squeeze(1)
+
+        return final_embedding
+
+    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
+                a_input_ids, a_token_type_ids, a_attention_mask, q_bow, a_bow):
+        q_reconst, q_mu, q_log_var = self.vae(q_bow, lambda x: torch.softmax(x, dim=1))
+        a_reconst, a_mu, a_log_var = self.vae(a_bow, lambda x: torch.softmax(x, dim=1))
+
+        logsoftmax = torch.log_softmax(q_reconst, dim=1)
+        q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax)
+        q_kl_div = -0.5 * torch.mean(1 + q_log_var - q_mu.pow(2) - q_log_var.exp())
+        
+        logsoftmax = torch.log_softmax(a_reconst, dim=1)
+        a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax)
+        a_kl_div = -0.5 * torch.mean(1 + a_log_var - a_mu.pow(2) - a_log_var.exp())
+
+        vae_loss = q_rec_loss + a_rec_loss + q_kl_div  + a_kl_div
+
+        # q_embeddings = self.get_rep_by_topic_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+        #                                                 attention_mask=q_attention_mask, topic_vector=q_mu)
+
+        # a_embeddings = self.get_rep_by_topic_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+        #                                                 attention_mask=a_attention_mask, topic_vector=a_mu)
+
+        q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask)
+
+        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
+
+        # 计算得到分类概率
+        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings, q_topic=q_mu, a_topic=a_mu)
+
+        # only memory
+        # logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
 
         return logits, vae_loss
 
