@@ -15,6 +15,7 @@ from transformers import AutoTokenizer, AutoConfig, BertForMaskedLM, \
 import numpy as np
 import sys
 from tqdm import tqdm
+import re
 
 from TBA_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig, BasicTopicModel, BasicTopicConfig
@@ -22,6 +23,7 @@ from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADe
 from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset, VaeSignleTextDataset, TBATopicClassifyDataset, QATopicClassifyDataset
 from vae import VAE
 from gensim.corpora import Dictionary
+from nltk.corpus import stopwords
 
 
 class TrainWholeModel:
@@ -440,24 +442,36 @@ class TrainWholeModel:
 		train_data = datasets.load_from_disk("./" + self.dataset_name + "/string_train.dataset")
 		train_data = train_data.shuffle(seed=None)
 		
-		# eng_stopwords = set(stopwords.words('english'))
-
 		# 读取数据到内存
 		old_all_titles = train_data['title']
 		old_all_bodies = train_data['body']
 		old_all_answers = train_data['answers']
 		
-		# 去掉数字
+		GOOD_SYMBOLS_RE = re.compile('[^0-9a-z #+_]')
+
+		# 进行文本处理
 		all_bodies = []
 		for t, d in zip(old_all_titles, old_all_bodies):
 			new_t = ''.join([i for i in t if not i.isdigit()])
 			new_d = ''.join([i for i in d if not i.isdigit()])
-			all_bodies.append(new_t + new_d)
-
+			this_txt = new_t + " " + new_d
+   
+			this_txt = re.sub(r"[\.\[\]()=]", " ", this_txt)
+			all_bodies.append(GOOD_SYMBOLS_RE.sub('', this_txt))
+   
+		# for i in range(10):
+		# 	print(all_bodies[i])
+		# 	print("*"*50)
+		# 	print()
+		# exit()
+  
 		all_answers = []
 		for d in old_all_answers:
-			new_d = ''.join([i for i in d if not i.isdigit()])
-			all_answers.append(new_d)
+			this_txt = ''.join([i for i in d if not i.isdigit()])
+
+			this_txt = re.sub(r"[\.\[\]()=]", " ", this_txt)
+			
+			all_answers.append(GOOD_SYMBOLS_RE.sub('', this_txt))
 
 		if os.path.exists("./" + self.dataset_name + "/vae_dictionary"):
 			self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
@@ -472,11 +486,17 @@ class TrainWholeModel:
 
 			# 过滤一些词
 			if self.dataset_name in ["so_python", "so_java"]:
-				below_num = 100
+				below_num = 40
 			else:
 				below_num = 20
 
 			self.dictionary.filter_extremes(no_below=below_num, no_above=0.5, keep_n=None)
+
+			# remove stopwords
+			eng_stopwords = list(stopwords.words('english'))
+			target_token = self.dictionary.doc2idx(eng_stopwords)
+			self.dictionary.filter_tokens(bad_ids=target_token)
+
 			self.dictionary.compactify()
    
 		print(f"[Voc size is {len(self.dictionary)}].")
@@ -558,6 +578,10 @@ class TrainWholeModel:
 			for iter, data in enumerate(bar):
 				bows = data.to(self.device)
 
+				# print(bows.shape)
+				# print(torch.max(torch.max(bows, 1)[0]))
+				# exit()
+
 				bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
 
 				logsoftmax = torch.log_softmax(bows_recon, dim=1)
@@ -609,7 +633,18 @@ class TrainWholeModel:
 				save_state = {'vae': vae.state_dict()}
 				torch.save(save_state, "./model/vae/" + self.dataset_name + "_" + str(latent_dim))
 				print(f"Model is saved at ./model/vae/{self.dataset_name }_" + str(latent_dim))
+
 				print("*"*50)
+				topic_words = vae.show_topic_words(dictionary=self.dictionary, device=self.device)
+				temp_count = 0
+				for t in topic_words:
+					print(t)
+					if temp_count == 9:
+						break
+					temp_count += 1
+
+				print("*"*50)
+				
 			else:
 				early_stop_count += 1
 

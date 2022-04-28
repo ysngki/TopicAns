@@ -1,4 +1,5 @@
 import torch.utils.data
+import re
 
 
 class TBAClassifyDataset(torch.torch.utils.data.Dataset):
@@ -365,6 +366,8 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		# 读取一块数据
 		self.dataset = data
 
+		self.GOOD_SYMBOLS_RE = re.compile('[^0-9a-z #+_]')
+
 		# 保存传入的参数
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
@@ -379,12 +382,13 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		self.a_bows = []
 
 		for t, d, a in zip(all_titles, all_bodies, all_answers):
-			new_t = ''.join([i for i in t if not i.isdigit()])
-			new_d = new_t + " " + ''.join([i for i in d if not i.isdigit()])
+			new_d = t + " " + d
+			new_d = self.process_text(new_d)
+
 			split_d = new_d.split()
 			d_bow = self.dictionary.doc2bow(split_d)
 
-			new_a = ''.join([i for i in a if not i.isdigit()])
+			new_a = self.process_text(a)
 			split_a = new_a.split()
 			a_bow = self.dictionary.doc2bow(split_a)
 
@@ -406,6 +410,15 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 
 		self.all_labels = all_labels
 
+	def process_text(self, text):
+		new_text = ''.join([i for i in text if not i.isdigit()])
+
+		new_text = re.sub(r"[\.\[\]()=]", " ", new_text)
+		
+		new_text = self.GOOD_SYMBOLS_RE.sub('', new_text)
+
+		return new_text
+   
 	def __len__(self):  # 返回整个数据集的大小
 		return len(self.encoded_questions['input_ids'])
 
@@ -417,12 +430,17 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		if len(item) != 0:
 			this_q_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
+		# set max num
+		# this_q_bow[this_q_bow > 5] = 5
+
 		this_a_bow = torch.zeros(self.voc_size)
 		# bow = [[token_id1,token_id2,...],[freq1,freq2,...]]
 		item = list(zip(*self.a_bows[index])) 
 		if len(item) != 0:
 			this_a_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 		
+		# this_a_bow[this_a_bow > 5] = 5
+
 		item_dic = {'q_input_ids': self.encoded_questions['input_ids'][index],
 					'q_token_type_ids': self.encoded_questions['token_type_ids'][index],
 					'q_attention_mask': self.encoded_questions['attention_mask'][index],
