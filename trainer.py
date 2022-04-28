@@ -459,22 +459,26 @@ class TrainWholeModel:
 			new_d = ''.join([i for i in d if not i.isdigit()])
 			all_answers.append(new_d)
 
-		# 创建词汇表
-		self.dictionary = Dictionary()
-
-		for documents in [all_bodies, all_answers]:
-			split_documents = [d.split() for d in documents]
-
-			self.dictionary.add_documents(split_documents)
-
-		# 过滤一些词
-		if self.dataset_name in ["so_python", "so_java"]:
-			below_num = 100
+		if os.path.exists("./" + self.dataset_name + "/vae_dictionary"):
+			self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
 		else:
-			below_num = 20
+			# 创建词汇表
+			self.dictionary = Dictionary()
 
-		self.dictionary.filter_extremes(no_below=below_num, no_above=0.5, keep_n=None)
-		self.dictionary.compactify()
+			for documents in [all_bodies, all_answers]:
+				split_documents = [d.split() for d in documents]
+
+				self.dictionary.add_documents(split_documents)
+
+			# 过滤一些词
+			if self.dataset_name in ["so_python", "so_java"]:
+				below_num = 100
+			else:
+				below_num = 20
+
+			self.dictionary.filter_extremes(no_below=below_num, no_above=0.5, keep_n=None)
+			self.dictionary.compactify()
+   
 		print(f"[Voc size is {len(self.dictionary)}].")
 		
 		# because id2token is empty by default, it is a bug.
@@ -549,7 +553,9 @@ class TrainWholeModel:
 			train_dataloader = DataLoader(train_data, batch_size=64, shuffle=True, num_workers=4, drop_last=True)
 			vae.train()
 
-			for iter, data in enumerate(train_dataloader):
+			bar = tqdm(train_dataloader, total=len(train_dataloader))
+   
+			for iter, data in enumerate(bar):
 				bows = data.to(self.device)
 
 				bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
