@@ -20,6 +20,8 @@ def set_seed(seed):
 def create_dir(this_args):
 	if not os.path.exists(this_args.save_model_dict):
 		os.makedirs(this_args.save_model_dict)
+	if not os.path.exists(this_args.save_model_dict + "/vae/"):
+		os.makedirs(this_args.save_model_dict + "/vae/")
 	if not os.path.exists(this_args.last_model_dict):
 		os.makedirs(this_args.last_model_dict)
 	if not os.path.exists("./tokenizer"):
