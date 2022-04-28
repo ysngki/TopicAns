@@ -468,7 +468,12 @@ class TrainWholeModel:
 			self.dictionary.add_documents(split_documents)
 
 		# 过滤一些词
-		self.dictionary.filter_extremes(no_below=20, no_above=0.5, keep_n=None)
+		if self.dataset_name in ["so_python", "so_java"]:
+			below_num = 100
+		else:
+			below_num = 20
+
+		self.dictionary.filter_extremes(no_below=below_num, no_above=0.5, keep_n=None)
 		self.dictionary.compactify()
 		print(f"[Voc size is {len(self.dictionary)}].")
 		
@@ -2550,3 +2555,5 @@ class TrainWholeModel:
 			if rank <= k:
 				score += 1 / np.log2(1 + rank)
 		return score / (len(candidate_ranks) + 1e-8)
+
+# %%
