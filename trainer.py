@@ -197,7 +197,7 @@ class TrainWholeModel:
 			if final_stage_flag:
 				early_stop_threshold = 5
 			else:
-				early_stop_threshold = 5
+				early_stop_threshold = 1
 
 			# restore training settings，保存模型用于恢复
 			early_stop_count, restore_epoch, scheduler_last_epoch, previous_best_r_1 = \
