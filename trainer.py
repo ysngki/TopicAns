@@ -446,6 +446,7 @@ class TrainWholeModel:
 		old_all_titles = train_data['title']
 		old_all_bodies = train_data['body']
 		old_all_answers = train_data['answers']
+		label = train_data['label']
 		
 		GOOD_SYMBOLS_RE = re.compile('[^0-9a-z #+_]')
 
@@ -511,12 +512,18 @@ class TrainWholeModel:
 		a_bows = []
 		valid_a_docs = []
 
-		for d, a in zip(all_bodies, all_answers):
+		positive_bows = []
+
+		for d, a, l in zip(all_bodies, all_answers, label):
 			split_d = d.split()
 			d_bow = self.dictionary.doc2bow(split_d)
 
 			split_a = a.split()
 			a_bow = self.dictionary.doc2bow(split_a)
+
+			if l == 2:
+				split_txt = split_d + split_a
+				positive_bow = self.dictionary.doc2bow(split_txt)
 
 			if d_bow != [] and a_bow != []:
 				valid_q_docs.append(d)
@@ -525,7 +532,9 @@ class TrainWholeModel:
 				valid_a_docs.append(a)
 				a_bows.append(a_bow)
 
-		print(f"q: {len(q_bows)}, {len(valid_q_docs)},\ta: {len(a_bows)}, {len(valid_a_docs)} \torigin: {len(all_bodies)}")
+				positive_bows.append(positive_bow)
+
+		print(f"q: {len(q_bows)}, {len(valid_q_docs)},\ta: {len(a_bows)}, {len(valid_a_docs)} \tpositive: {len(positive_bows)} \torigin: {len(all_bodies)}")
 
 		# save both dictionary and docs
 		self.dictionary.save("./" + self.dataset_name + "/vae_dictionary")
@@ -534,12 +543,13 @@ class TrainWholeModel:
 		# 将question和answer混合训练
 		q_num = len(valid_q_docs)
 		a_num = len(valid_a_docs)
+		postive_num = len(positive_bows)
 
 		train_docs = valid_q_docs[:int(0.9*q_num)] + valid_a_docs[:int(0.9*a_num)]
-		train_bows = q_bows[:int(0.9*q_num)] + a_bows[:int(0.9*a_num)]
+		train_bows = q_bows[:int(0.9*q_num)] + a_bows[:int(0.9*a_num)] + positive_bows[:int(0.9*postive_num)]
 
 		eval_docs = valid_q_docs[int(0.9*q_num):] + valid_a_docs[int(0.9*a_num):]
-		eval_bows = q_bows[int(0.9*q_num):] + a_bows[int(0.9*a_num):]
+		eval_bows = q_bows[int(0.9*q_num):] + a_bows[int(0.9*a_num):] + positive_bows[int(0.9*postive_num):]
 
 		train_data = VaeSignleTextDataset(docs=train_docs, bows=train_bows, voc_size=len(self.dictionary))
 		eval_data = VaeSignleTextDataset(docs=eval_docs, bows=eval_bows, voc_size=len(self.dictionary))
