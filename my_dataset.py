@@ -431,7 +431,7 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 			this_q_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
 		# set max num
-		# this_q_bow[this_q_bow > 5] = 5
+		this_q_bow[this_q_bow > 5] = 5
 
 		this_a_bow = torch.zeros(self.voc_size)
 		# bow = [[token_id1,token_id2,...],[freq1,freq2,...]]
@@ -439,7 +439,7 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		if len(item) != 0:
 			this_a_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 		
-		# this_a_bow[this_a_bow > 5] = 5
+		this_a_bow[this_a_bow > 5] = 5
 
 		item_dic = {'q_input_ids': self.encoded_questions['input_ids'][index],
 					'q_token_type_ids': self.encoded_questions['token_type_ids'][index],

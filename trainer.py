@@ -1533,7 +1533,7 @@ class TrainWholeModel:
 		# print("Acc dis:\t", acc_dis)
 		for index, a in enumerate(acc_dis):
 			# acc_dis[index] = a/len_dis[index]
-			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/len_dis[index]}")
+			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/(len_dis[index]+1)}")
 
 		# print("Acc dis:\t", acc_dis)
 		print("---------------------- end ranking ------------------------")
@@ -1728,7 +1728,7 @@ class TrainWholeModel:
 		# print("Acc dis:\t", acc_dis)
 		for index, a in enumerate(acc_dis):
 			# acc_dis[index] = a/len_dis[index]
-			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/len_dis[index]}")
+			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/(len_dis[index]+1)}")
 
 		# print("Acc dis:\t", acc_dis)
 		print("---------------------- end ranking ------------------------")
