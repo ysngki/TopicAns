@@ -1,6 +1,4 @@
 # %%
-from errno import ENETUNREACH
-import imp
 import datasets
 from regex import D
 from torch.utils.data import DataLoader
@@ -11,7 +9,7 @@ import os
 import torch.utils.data
 import gc
 from transformers import AutoTokenizer, AutoConfig, BertForMaskedLM, \
-	DataCollatorForLanguageModeling, PrinterCallback, get_linear_schedule_with_warmup
+	DataCollatorForLanguageModeling, get_linear_schedule_with_warmup
 import numpy as np
 import sys
 from tqdm import tqdm
@@ -1388,6 +1386,13 @@ class TrainWholeModel:
 		now_pair_index = 0
 		PAIR_STEP = 2000
 
+		# 统计长度和准确率相关
+		len_dis = []
+		acc_dis = []
+		for _ in range(16):
+			len_dis.append(0)
+			acc_dis.append(0)
+
 		while now_pair_index < len(ranking_qa_pairs):
 			# 获得memory合并的字符串
 			q_memory_sequence = " "
@@ -1465,6 +1470,15 @@ class TrainWholeModel:
 
 				now_index += step
 
+				real_step = int(a_attention_mask.shape[0] / self.ranking_candidate_num)
+				question_length = q_attention_mask.sum(-1).view(-1, self.ranking_candidate_num)[:, 0]
+				answer_length = torch.mean(a_attention_mask.sum(-1).view(-1, self.ranking_candidate_num).type(torch.FloatTensor), dim=-1)
+				
+				considered_length = question_length
+
+				for l in considered_length:
+					len_dis[int((l.item()-1)//32)] += 1
+
 				with torch.no_grad():
 					logits = self.model(
 						q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
@@ -1487,6 +1501,10 @@ class TrainWholeModel:
 
 					model_ranking += [([y[0] for y in x].index(self.ranking_candidate_num - 1) + 1) for x in
 									  sorted_index_score]
+				
+				for index, r in enumerate(model_ranking[-real_step:]):
+					if r == 1:
+						acc_dis[int((considered_length[index].item()-1)//32)] += 1
 
 			now_pair_index += PAIR_STEP
 
@@ -1509,6 +1527,15 @@ class TrainWholeModel:
 			print(
 				"DCG@%4d: %.3f | Hits@%4d: %.3f" % (k, self.dcg_score(model_ranking, k),
 													k, self.hits_count(model_ranking, k)))
+		
+		print()
+		# print("Len dis:\t", len_dis)
+		# print("Acc dis:\t", acc_dis)
+		for index, a in enumerate(acc_dis):
+			# acc_dis[index] = a/len_dis[index]
+			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/len_dis[index]}")
+
+		# print("Acc dis:\t", acc_dis)
 		print("---------------------- end ranking ------------------------")
 		self.model.train()
 
@@ -1531,6 +1558,13 @@ class TrainWholeModel:
 		# 一点点处理数据
 		now_pair_index = 0
 		PAIR_STEP = 2000
+
+		# 统计长度和准确率相关
+		len_dis = []
+		acc_dis = []
+		for _ in range(16):
+			len_dis.append(0)
+			acc_dis.append(0)
 
 		while now_pair_index < len(ranking_qa_pairs):
 			# 取一定数量的数据
@@ -1631,6 +1665,15 @@ class TrainWholeModel:
 
 				now_index += step
 
+				real_step = int(a_attention_mask.shape[0] / self.ranking_candidate_num)
+				question_length = q_attention_mask.sum(-1).view(-1, self.ranking_candidate_num)[:, 0]
+				answer_length = torch.mean(a_attention_mask.sum(-1).view(-1, self.ranking_candidate_num).type(torch.FloatTensor), dim=-1)
+				
+				considered_length = question_length
+
+				for l in considered_length:
+					len_dis[int((l.item()-1)//32)] += 1
+
 				with torch.no_grad():
 					logits, _ = self.model(
 						q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
@@ -1653,6 +1696,10 @@ class TrainWholeModel:
 
 					model_ranking += [([y[0] for y in x].index(self.ranking_candidate_num - 1) + 1) for x in
 									  sorted_index_score]
+				
+				for index, r in enumerate(model_ranking[-real_step:]):
+					if r == 1:
+						acc_dis[int((considered_length[index].item()-1)//32)] += 1
 
 			now_pair_index += PAIR_STEP
 
@@ -1675,6 +1722,15 @@ class TrainWholeModel:
 			print(
 				"DCG@%4d: %.3f | Hits@%4d: %.3f" % (k, self.dcg_score(model_ranking, k),
 													k, self.hits_count(model_ranking, k)))
+				
+		print()
+		# print("Len dis:\t", len_dis)
+		# print("Acc dis:\t", acc_dis)
+		for index, a in enumerate(acc_dis):
+			# acc_dis[index] = a/len_dis[index]
+			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/len_dis[index]}")
+
+		# print("Acc dis:\t", acc_dis)
 		print("---------------------- end ranking ------------------------")
 		self.model.train()
 
