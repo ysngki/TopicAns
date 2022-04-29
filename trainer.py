@@ -155,11 +155,6 @@ class TrainWholeModel:
 			# 读取事先训练好的
 			if self.model_class in ['BasicTopicModel', 'QATopicModel', 'QATopicMemoryModel']:
 				self.model.vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim))['vae'])
-
-				topic_words = self.model.vae.show_topic_words(dictionary=self.dictionary, device=self.device)
-				for t in topic_words:
-					print(t)
-				print("*"*50)
 	
 			# 读取预训练好的memory，适用于需要memory的模型，如 QAmemory
 			if self.load_memory_flag:
@@ -176,10 +171,12 @@ class TrainWholeModel:
 
 			self.__model_to_device()
 
-			# topic_words = self.model.vae.show_topic_words(dictionary=self.dictionary, device=self.device)
-			# for t in topic_words:
-			# 	print(t)
-			# print("*"*50)
+			# 读取事先训练好的
+			if self.model_class in ['BasicTopicModel', 'QATopicModel', 'QATopicMemoryModel']:
+				topic_words = self.model.vae.show_topic_words(dictionary=self.dictionary, device=self.device)
+				for t in topic_words:
+					print(t)
+				print("*"*50)
 
 			# 这不不会出问题吧，设置多 GPU，应该不需要用到
 			self.__model_parallel()
@@ -657,6 +654,7 @@ class TrainWholeModel:
 		print()
 		self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
 
+		vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim))['vae'])
 		topic_words = vae.show_topic_words(dictionary=self.dictionary, device=self.device)
 		for t in topic_words:
 			print(t)
