@@ -132,6 +132,8 @@ class TrainWholeModel:
 		self.model = None
 		self.teacher_model = None
 
+		self.bert_lr = 5e-5
+
 	def train(self, train_two_stage_flag, only_final=False):
 		# 用来判断是哪一阶段的训练
 		final_stage_flag = not train_two_stage_flag
