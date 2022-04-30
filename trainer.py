@@ -70,8 +70,8 @@ class TrainWholeModel:
 		if self.model_class in ['QAMemory']:
 			tokenizer_path += "_" + str(self.memory_num) + "_" + self.model_class
 
-		if self.dataset_name in ['so_python', 'so_java']:
-			tokenizer_path += "_" + str("SC_EC")
+		# if self.dataset_name in ['so_python', 'so_java']:
+		# 	tokenizer_path += "_" + str("SC_EC")
 
 		# read from disk or save to disk
 		if os.path.exists("./tokenizer/" + tokenizer_path):
@@ -81,14 +81,14 @@ class TrainWholeModel:
 			self.tokenizer = AutoTokenizer.from_pretrained(args.pretrained_bert_path)
 			tokenizer_config = AutoConfig.from_pretrained(args.pretrained_bert_path)
 
-			if self.dataset_name in ['so_python', 'so_java']:
-				special_tokens_dict = {'additional_special_tokens': ["[SC]", "[EC]"]}
+			# if self.dataset_name in ['so_python', 'so_java']:
+			# 	special_tokens_dict = {'additional_special_tokens': ["[SC]", "[EC]"]}
 
-				print("-" * 30)
-				print(f"previous token num:{len(self.tokenizer)}")
-				self.tokenizer.add_special_tokens(special_tokens_dict)
-				print(f"now token num:{len(self.tokenizer)}")
-				print("-" * 30 + "\n")
+			# 	print("-" * 30)
+			# 	print(f"previous token num:{len(self.tokenizer)}")
+			# 	self.tokenizer.add_special_tokens(special_tokens_dict)
+			# 	print(f"now token num:{len(self.tokenizer)}")
+			# 	print("-" * 30 + "\n")
 
 			# add model
 			# add memory tokens to tokenizer
@@ -1571,10 +1571,12 @@ class TrainWholeModel:
 		print("--------------------- begin ranking -----------------------")
 		self.model.eval()
 
-		if self.model_class in ['QATopicMemoryModel']:
-			max_len = self.text_max_len - self.latent_dim
-		else:
-			max_len = self.text_max_len
+		# if self.model_class in ['QATopicMemoryModel']:
+		# 	max_len = self.text_max_len - self.latent_dim
+		# else:
+		# 	max_len = self.text_max_len
+
+		max_len = self.text_max_len - self.latent_dim
 
 		print(f"all {len(ranking_qa_pairs)} qa pairs!")
 
