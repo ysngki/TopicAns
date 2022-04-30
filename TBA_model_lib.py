@@ -1,4 +1,4 @@
-from transformers import BertModel, BertConfig
+from transformers import BertConfig, AutoModel
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -49,7 +49,7 @@ class InputMemorySelfAtt(nn.Module):
         self.memory_num = config.memory_num
 
         # 这个学习率不一样
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
         # 这个embedding的grad会被计入bert model里，很好
         self.embeddings = self.bert_model.get_input_embeddings()
@@ -440,7 +440,7 @@ class PureMemorySelfAtt(nn.Module):
         self.sentence_embedding_len = config.sentence_embedding_len
 
         # 这个学习率不一样
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
 
         # 记忆力模块
         self.hop_num = config.hop_num
@@ -712,7 +712,7 @@ class BasicModel(nn.Module):
         self.output_embedding_len = config.sentence_embedding_len
 
         # 这个学习率不一样
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
         # 用来计算self-attention
@@ -907,7 +907,7 @@ class BasicTopicModel(nn.Module):
         self.output_embedding_len = config.sentence_embedding_len
 
         # 这个学习率不一样
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
         # 用来计算self-attention
@@ -1087,7 +1087,7 @@ class BasicDeformer(nn.Module):
         this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
         this_bert_config.num_labels = self.num_labels
 
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path, config=this_bert_config)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path, config=this_bert_config)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
         self.embeddings = self.bert_model.bert.embeddings
 
@@ -1228,7 +1228,7 @@ class OneSupremeMemory(nn.Module):
         self.memory_num = config.memory_num
 
         # 这个学习率不一样
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
         # 这个embedding的grad会被计入bert model里，很好
         self.embeddings = self.bert_model.get_input_embeddings()
@@ -1409,7 +1409,7 @@ def clean_input_ids(input_ids, attention_mask, token_type_ids):
     max_seq_len = torch.max(attention_mask.sum(-1))
 
     # ensure only pad be filtered
-    dropped_input_ids = input_ids[:, max_seq_len:]
+    dropped_input_ids = attention_mask[:, max_seq_len:]
     assert torch.max(dropped_input_ids.sum(-1)) == 0
 
     input_ids = input_ids[:, :max_seq_len]

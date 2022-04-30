@@ -1,3 +1,4 @@
+from torch import device
 import torch.utils.data
 import re
 
@@ -35,6 +36,17 @@ class TBAClassifyDataset(torch.torch.utils.data.Dataset):
 			all_answers, padding=True, verbose=False, add_special_tokens=True,
 			truncation=True, max_length=answer_max_len, return_tensors='pt')
 
+		try:
+			self.body_token_type_ids = self.encoded_body['token_type_ids']
+			self.a_token_type_ids = self.encoded_a['token_type_ids']
+			self.title_token_type_ids = self.encoded_title['token_type_ids']
+		except KeyError:
+			device = self.encoded_body['input_ids'].device
+
+			self.body_token_type_ids = torch.zeros_like(self.encoded_body['input_ids'], device=device)
+			self.a_token_type_ids = torch.zeros_like(self.encoded_a['input_ids'], device=device)
+			self.title_token_type_ids = torch.zeros_like(self.encoded_title['input_ids'], device=device)
+
 		self.all_labels = all_labels
 
 	def __len__(self):  # 返回整个数据集的大小
@@ -42,13 +54,13 @@ class TBAClassifyDataset(torch.torch.utils.data.Dataset):
 
 	def __getitem__(self, index):
 		item_dic = {'title_input_ids': self.encoded_title['input_ids'][index],
-					'title_token_type_ids': self.encoded_title['token_type_ids'][index],
+					'title_token_type_ids': self.title_token_type_ids[index],
 					'title_attention_mask': self.encoded_title['attention_mask'][index],
 					'body_input_ids': self.encoded_body['input_ids'][index],
-					'body_token_type_ids': self.encoded_body['token_type_ids'][index],
+					'body_token_type_ids': self.body_token_type_ids[index],
 					'body_attention_mask': self.encoded_body['attention_mask'][index],
 					'a_input_ids': self.encoded_a['input_ids'][index],
-					'a_token_type_ids': self.encoded_a['token_type_ids'][index],
+					'a_token_type_ids': self.a_token_type_ids[index],
 					'a_attention_mask': self.encoded_a['attention_mask'][index],
 					'label': torch.tensor(self.all_labels[index])}
 
@@ -99,6 +111,17 @@ class TBATopicClassifyDataset(torch.torch.utils.data.Dataset):
 			all_answers, padding=True, verbose=False, add_special_tokens=True,
 			truncation=True, max_length=self.text_max_len, return_tensors='pt')
 
+		try:
+			self.body_token_type_ids = self.encoded_body['token_type_ids']
+			self.a_token_type_ids = self.encoded_a['token_type_ids']
+			self.title_token_type_ids = self.encoded_title['token_type_ids']
+		except KeyError:
+			device = self.encoded_body['input_ids'].device
+
+			self.body_token_type_ids = torch.zeros_like(self.encoded_body['input_ids'], device=device)
+			self.a_token_type_ids = torch.zeros_like(self.encoded_a['input_ids'], device=device)
+			self.title_token_type_ids = torch.zeros_like(self.encoded_title['input_ids'], device=device)
+
 		self.all_labels = all_labels
 
 	def __len__(self):  # 返回整个数据集的大小
@@ -117,13 +140,13 @@ class TBATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		this_a_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 		
 		item_dic = {'title_input_ids': self.encoded_title['input_ids'][index],
-					'title_token_type_ids': self.encoded_title['token_type_ids'][index],
+					'title_token_type_ids': self.title_token_type_ids[index],
 					'title_attention_mask': self.encoded_title['attention_mask'][index],
 					'body_input_ids': self.encoded_body['input_ids'][index],
-					'body_token_type_ids': self.encoded_body['token_type_ids'][index],
+					'body_token_type_ids': self.body_token_type_ids[index],
 					'body_attention_mask': self.encoded_body['attention_mask'][index],
 					'a_input_ids': self.encoded_a['input_ids'][index],
-					'a_token_type_ids': self.encoded_a['token_type_ids'][index],
+					'a_token_type_ids': self.a_token_type_ids[index],
 					'a_attention_mask': self.encoded_a['attention_mask'][index],
 					'q_bow': this_q_bow,
 					'a_bow': this_a_bow,
@@ -284,7 +307,16 @@ class QAClassifyDataset(torch.torch.utils.data.Dataset):
 		self.encoded_answers = self.tokenizer(
 			new_answers, padding=True, verbose=False, add_special_tokens=True,
 			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+		
+		try:
+			self.question_token_type_ids = self.encoded_questions['token_type_ids']
+			self.a_token_type_ids = self.encoded_answers['token_type_ids']
+		except KeyError:
+			device = self.encoded_questions['input_ids'].device
 
+			self.question_token_type_ids = torch.zeros_like(self.question_token_type_ids['input_ids'], device=device)
+			self.a_token_type_ids = torch.zeros_like(self.encoded_answers['input_ids'], device=device)
+			
 		self.all_labels = all_labels
 
 	def __len__(self):  # 返回整个数据集的大小
@@ -292,10 +324,10 @@ class QAClassifyDataset(torch.torch.utils.data.Dataset):
 
 	def __getitem__(self, index):
 		item_dic = {'q_input_ids': self.encoded_questions['input_ids'][index],
-					'q_token_type_ids': self.encoded_questions['token_type_ids'][index],
+					'q_token_type_ids': self.question_token_type_ids[index],
 					'q_attention_mask': self.encoded_questions['attention_mask'][index],
 					'a_input_ids': self.encoded_answers['input_ids'][index],
-					'a_token_type_ids': self.encoded_answers['token_type_ids'][index],
+					'a_token_type_ids': self.a_token_type_ids[index],
 					'a_attention_mask': self.encoded_answers['attention_mask'][index],
 					'label': torch.tensor(self.all_labels[index])}
 
@@ -361,7 +393,7 @@ class VaeSignleTextDataset(torch.torch.utils.data.Dataset):
 		this_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
 		# text = self.docs[index]
-		max_num = 50
+		max_num = 1000
 		this_bow[this_bow > max_num] = max_num
 
 		return this_bow
@@ -417,6 +449,15 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 			all_answers, padding=True, verbose=False, add_special_tokens=True,
 			truncation=True, max_length=self.text_max_len, return_tensors='pt')
 
+		try:
+			self.question_token_type_ids = self.encoded_questions['token_type_ids']
+			self.a_token_type_ids = self.encoded_answers['token_type_ids']
+		except KeyError:
+			device = self.encoded_questions['input_ids'].device
+
+			self.question_token_type_ids = torch.zeros_like(self.question_token_type_ids['input_ids'], device=device)
+			self.a_token_type_ids = torch.zeros_like(self.encoded_answers['input_ids'], device=device)
+
 		self.all_labels = all_labels
 
 	def process_text(self, text):
@@ -440,7 +481,7 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 			this_q_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
 		# set max num
-		max_num = 50
+		max_num = 1000
 		this_q_bow[this_q_bow > max_num] = max_num
 
 		this_a_bow = torch.zeros(self.voc_size)
@@ -452,10 +493,10 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		this_a_bow[this_a_bow > max_num] = max_num
 
 		item_dic = {'q_input_ids': self.encoded_questions['input_ids'][index],
-					'q_token_type_ids': self.encoded_questions['token_type_ids'][index],
+					'q_token_type_ids': self.question_token_type_ids[index],
 					'q_attention_mask': self.encoded_questions['attention_mask'][index],
 					'a_input_ids': self.encoded_answers['input_ids'][index],
-					'a_token_type_ids': self.encoded_answers['token_type_ids'][index],
+					'a_token_type_ids': self.a_token_type_ids[index],
 					'a_attention_mask': self.encoded_answers['attention_mask'][index],
 					'q_bow': this_q_bow,
 					'a_bow': this_a_bow,

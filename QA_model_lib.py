@@ -1,5 +1,5 @@
 import imp
-from transformers import BertModel, BertForSequenceClassification, BertConfig
+from transformers import AutoModel, BertForSequenceClassification, BertConfig
 from transformers.models.bert.my_modeling_bert import MyBertModel, DecoderLayerChunk
 import torch
 import torch.nn as nn
@@ -55,7 +55,7 @@ class QAModel(nn.Module):
         self.sentence_embedding_len = config.sentence_embedding_len
 
         # 这个学习率不一样
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
         self.embeddings = self.bert_model.get_input_embeddings()
 
@@ -230,7 +230,7 @@ class QATopicModel(nn.Module):
         self.output_embedding_len = config.sentence_embedding_len
 
         # 这个学习率不一样
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
         # 这个embedding的grad会被计入bert model里，很好
@@ -349,7 +349,7 @@ class QATopicMemoryModel(nn.Module):
         self.config = config
 
         # 这个学习率不一样
-        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
         # 这个embedding的grad会被计入bert model里，很好
@@ -805,6 +805,7 @@ class QAClassifier(nn.Module):
         res_x = x
         x = self.linear1(x)
         x = self.relu(x)
+        # print(x.shape, res_x.shape)
         x = self.dropout(x) + res_x
         # x = self.bn1(x)
 
@@ -881,8 +882,12 @@ def clean_input_ids(input_ids, attention_mask, token_type_ids):
     max_seq_len = torch.max(attention_mask.sum(-1))
 
     # ensure only pad be filtered
-    dropped_input_ids = input_ids[:, max_seq_len:]
+    dropped_input_ids = attention_mask[:, max_seq_len:]
+    # try:
     assert torch.max(dropped_input_ids.sum(-1)) == 0
+    # except AssertionError:
+    #     print(input_ids[:, max_seq_len:][0])
+    #     exit()
 
     input_ids = input_ids[:, :max_seq_len]
     token_type_ids = token_type_ids[:, :max_seq_len]

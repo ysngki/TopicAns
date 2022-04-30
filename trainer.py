@@ -1178,9 +1178,14 @@ class TrainWholeModel:
 				q_input_ids = encoded_q['input_ids'][
 							  now_index * self.ranking_candidate_num:
 							  (now_index + step) * self.ranking_candidate_num].to(self.device)
-				q_token_type_ids = encoded_q['token_type_ids'][
-								   now_index * self.ranking_candidate_num:
-								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				# roberta tokenizer has no token type ids
+				try:
+					q_token_type_ids = encoded_q['token_type_ids'][
+									now_index * self.ranking_candidate_num:
+									(now_index + step) * self.ranking_candidate_num].to(self.device)
+				except KeyError:
+					q_token_type_ids = torch.zeros_like(q_input_ids, device=self.device)
+
 				q_attention_mask = encoded_q['attention_mask'][
 								   now_index * self.ranking_candidate_num:
 								   (now_index + step) * self.ranking_candidate_num].to(self.device)
@@ -1188,9 +1193,13 @@ class TrainWholeModel:
 				a_input_ids = encoded_a['input_ids'][
 							  now_index * self.ranking_candidate_num:
 							  (now_index + step) * self.ranking_candidate_num].to(self.device)
-				a_token_type_ids = encoded_a['token_type_ids'][
-								   now_index * self.ranking_candidate_num:
-								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				try:
+					a_token_type_ids = encoded_a['token_type_ids'][
+									now_index * self.ranking_candidate_num:
+									(now_index + step) * self.ranking_candidate_num].to(self.device)
+				except KeyError:
+					a_token_type_ids = torch.zeros_like(a_input_ids, device=self.device)
+
 				a_attention_mask = encoded_a['attention_mask'][
 								   now_index * self.ranking_candidate_num:
 								   (now_index + step) * self.ranking_candidate_num].to(self.device)
@@ -1198,9 +1207,13 @@ class TrainWholeModel:
 				b_input_ids = encoded_b['input_ids'][
 							  now_index * self.ranking_candidate_num:
 							  (now_index + step) * self.ranking_candidate_num].to(self.device)
-				b_token_type_ids = encoded_b['token_type_ids'][
-								   now_index * self.ranking_candidate_num:
-								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				try:
+					b_token_type_ids = encoded_b['token_type_ids'][
+									   now_index * self.ranking_candidate_num:
+									   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				except KeyError:
+					b_token_type_ids = torch.zeros_like(b_input_ids, device=self.device)
+
 				b_attention_mask = encoded_b['attention_mask'][
 								   now_index * self.ranking_candidate_num:
 								   (now_index + step) * self.ranking_candidate_num].to(self.device)
@@ -1515,12 +1528,18 @@ class TrainWholeModel:
 			step = 40
 
 			while now_index < length:
+				# print(self.tokenizer.pad_token_id, self.tokenizer.sep_token_id)
+				# exit()
 				q_input_ids = encoded_q['input_ids'][
 							  now_index * self.ranking_candidate_num:
 							  (now_index + step) * self.ranking_candidate_num].to(self.device)
-				q_token_type_ids = encoded_q['token_type_ids'][
-								   now_index * self.ranking_candidate_num:
-								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				try:
+					q_token_type_ids = encoded_q['token_type_ids'][
+									now_index * self.ranking_candidate_num:
+									(now_index + step) * self.ranking_candidate_num].to(self.device)
+				except KeyError:
+					q_token_type_ids = torch.zeros_like(q_input_ids, device=self.device)
+
 				q_attention_mask = encoded_q['attention_mask'][
 								   now_index * self.ranking_candidate_num:
 								   (now_index + step) * self.ranking_candidate_num].to(self.device)
@@ -1528,9 +1547,13 @@ class TrainWholeModel:
 				a_input_ids = encoded_a['input_ids'][
 							  now_index * self.ranking_candidate_num:
 							  (now_index + step) * self.ranking_candidate_num].to(self.device)
-				a_token_type_ids = encoded_a['token_type_ids'][
-								   now_index * self.ranking_candidate_num:
-								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				try:
+					a_token_type_ids = encoded_a['token_type_ids'][
+									now_index * self.ranking_candidate_num:
+									(now_index + step) * self.ranking_candidate_num].to(self.device)
+				except KeyError:
+					a_token_type_ids = torch.zeros_like(a_input_ids, device=self.device)
+
 				a_attention_mask = encoded_a['attention_mask'][
 								   now_index * self.ranking_candidate_num:
 								   (now_index + step) * self.ranking_candidate_num].to(self.device)
@@ -1709,9 +1732,13 @@ class TrainWholeModel:
 				q_input_ids = encoded_q['input_ids'][
 							  now_index * self.ranking_candidate_num:
 							  (now_index + step) * self.ranking_candidate_num].to(self.device)
-				q_token_type_ids = encoded_q['token_type_ids'][
-								   now_index * self.ranking_candidate_num:
-								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				try:
+					q_token_type_ids = encoded_q['token_type_ids'][
+									now_index * self.ranking_candidate_num:
+									(now_index + step) * self.ranking_candidate_num].to(self.device)
+				except KeyError:
+					q_token_type_ids = torch.zeros_like(q_input_ids, device=self.device)
+
 				q_attention_mask = encoded_q['attention_mask'][
 								   now_index * self.ranking_candidate_num:
 								   (now_index + step) * self.ranking_candidate_num].to(self.device)
@@ -1719,9 +1746,13 @@ class TrainWholeModel:
 				a_input_ids = encoded_a['input_ids'][
 							  now_index * self.ranking_candidate_num:
 							  (now_index + step) * self.ranking_candidate_num].to(self.device)
-				a_token_type_ids = encoded_a['token_type_ids'][
-								   now_index * self.ranking_candidate_num:
-								   (now_index + step) * self.ranking_candidate_num].to(self.device)
+				try:
+					a_token_type_ids = encoded_a['token_type_ids'][
+									now_index * self.ranking_candidate_num:
+									(now_index + step) * self.ranking_candidate_num].to(self.device)
+				except KeyError:
+					a_token_type_ids = torch.zeros_like(a_input_ids, device=self.device)
+
 				a_attention_mask = encoded_a['attention_mask'][
 								   now_index * self.ranking_candidate_num:
 								   (now_index + step) * self.ranking_candidate_num].to(self.device)
@@ -2055,7 +2086,7 @@ class TrainWholeModel:
 										 '/data/yuanhang/pretrained_model/prajjwal1/bert-medium']:
 			word_embedding_len = 512
 			sentence_embedding_len = 512
-		elif args.pretrained_bert_path in ['bert-base-uncased', '/data/yuanhang/pretrained_model/bert-base-uncased']:
+		elif args.pretrained_bert_path in ['bert-base-uncased', '/data/yuanhang/pretrained_model/bert-base-uncased', 'huggingface/CodeBERTa-small-v1']:
 			word_embedding_len = 768
 			sentence_embedding_len = 768
 		elif args.pretrained_bert_path == 'google/bert_uncased_L-2_H-128_A-2':
