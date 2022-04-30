@@ -16,10 +16,10 @@ from tqdm import tqdm
 import re
 
 from TBA_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
-	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig, BasicTopicModel, BasicTopicConfig
+	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig, BasicTopicModel, BasicTopicConfig, BasicDeformer, BasicDeformerConfig
 from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig, QATopicModel, QATopicConfig, QATopicMemoryModel
 from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset, VaeSignleTextDataset, TBATopicClassifyDataset, QATopicClassifyDataset
-from vae import VAE
+from vae import VAE, WAE
 from gensim.corpora import Dictionary
 from nltk.corpus import stopwords
 
@@ -578,7 +578,7 @@ class TrainWholeModel:
 		print(f"[Train data len is {len(train_data)}. Eval data len is {len(eval_data)}]")
 
 		previous_min_loss = np.inf
-		early_stop_threshold = 10
+		early_stop_threshold = 5
 		early_stop_count = 0
 
 		# all_element_num = 0
@@ -592,7 +592,7 @@ class TrainWholeModel:
 
 			bar = tqdm(train_dataloader, total=len(train_dataloader))
    
-			for iter, data in enumerate(bar):
+			for _, data in enumerate(bar):
 				bows = data.to(self.device)
 
 				# all_element_num += torch.sum(torch.sum(bows > 0, -1))
@@ -604,17 +604,33 @@ class TrainWholeModel:
 				# print(torch.max(torch.max(bows, 1)[0]))
 				# exit()
 
-				bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
+				if isinstance(vae, VAE):
+					bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
 
-				logsoftmax = torch.log_softmax(bows_recon, dim=1)
-				rec_loss = -1.0 * torch.sum(bows * logsoftmax)
-		
-				# rec_loss = torch.nn.functional.mse_loss(logsoftmax, torch.softmax(bows, dim=1))
+					logsoftmax = torch.log_softmax(bows_recon, dim=1)
+					rec_loss = -1.0 * torch.sum(bows * logsoftmax)
+			
+					# rec_loss = torch.nn.functional.mse_loss(logsoftmax, torch.softmax(bows, dim=1))
 
-				kl_div = -0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp())
-				# kl_div = torch.mean(-0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp()))
+					kl_div = -0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp())
+					# kl_div = torch.mean(-0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp()))
 
-				loss = rec_loss + kl_div
+					loss = rec_loss + kl_div
+				elif isinstance(vae, WAE):
+					# wae
+					bows_recon, theta_q = vae(bows)
+
+					theta_prior = vae.sample(dist="gmm_std", batch_size=bows.shape[0], ori_data=bows).to(self.device)
+
+					logsoftmax = torch.log_softmax(bows_recon, dim=1)
+					rec_loss = -1.0 * torch.sum(bows*logsoftmax)
+
+					mmd = vae.mmd_loss(theta_q, theta_prior, device=self.device, t=0.1)
+					s = torch.sum(bows)/bows.shape[0]
+					lamb = (5.0*s*torch.log(torch.tensor(1.0 *bows.shape[-1]))/torch.log(torch.tensor(2.0)))
+					mmd = mmd * lamb
+
+					loss = rec_loss + mmd * 1.0
 
 				loss.backward()
 
@@ -633,17 +649,33 @@ class TrainWholeModel:
 			for data in eval_dataloader:
 				bows = data.to(self.device)
 
-				bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
+				if isinstance(vae, VAE):
+					bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
 
-				logsoftmax = torch.log_softmax(bows_recon, dim=1)
-				rec_loss = -1.0 * torch.sum(bows * logsoftmax)
-		
-				# rec_loss = torch.nn.functional.mse_loss(logsoftmax, torch.softmax(bows, dim=1))
+					logsoftmax = torch.log_softmax(bows_recon, dim=1)
+					rec_loss = -1.0 * torch.sum(bows * logsoftmax)
+			
+					# rec_loss = torch.nn.functional.mse_loss(logsoftmax, torch.softmax(bows, dim=1))
 
-				kl_div = -0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp())
-				# kl_div = torch.mean(-0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp()))
+					kl_div = -0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp())
+					# kl_div = torch.mean(-0.5 * torch.sum(1 + log_vars - mus.pow(2) - log_vars.exp()))
 
-				loss = rec_loss + kl_div
+					loss = rec_loss + kl_div
+				elif isinstance(vae, WAE):
+					# wae
+					bows_recon, theta_q = vae(bows)
+
+					theta_prior = vae.sample(dist="gmm_std", batch_size=bows.shape[0], ori_data=bows).to(self.device)
+
+					logsoftmax = torch.log_softmax(bows_recon, dim=1)
+					rec_loss = -1.0 * torch.sum(bows*logsoftmax)
+
+					mmd = vae.mmd_loss(theta_q, theta_prior, device=self.device, t=0.1)
+					s = torch.sum(bows)/bows.shape[0]
+					lamb = (5.0*s*torch.log(torch.tensor(1.0 *bows.shape[-1]))/torch.log(torch.tensor(2.0)))
+					mmd = mmd * lamb
+
+					loss = rec_loss + mmd * 1.0
 
 				all_loss += loss.item()
 			
@@ -1113,17 +1145,24 @@ class TrainWholeModel:
 				answers.append(candidate_answers[0])
 
 			# tokenize
+			if self.model_class in ['BasicDeformer']:
+				title_max_len = 64
+				body_max_len = self.text_max_len - self.memory_num - title_max_len
+				answer_max_len = self.text_max_len - self.memory_num
+			else:
+				title_max_len = body_max_len = answer_max_len = self.text_max_len - self.memory_num
+
 			encoded_a = self.tokenizer(
 				answers, padding=True, verbose=False, add_special_tokens=True,
-				truncation=True, max_length=self.text_max_len - self.memory_num, return_tensors='pt')
+				truncation=True, max_length=answer_max_len, return_tensors='pt')
 
 			encoded_q = self.tokenizer(
 				questions, padding=True, verbose=False, add_special_tokens=True,
-				truncation=True, max_length=self.text_max_len - self.memory_num, return_tensors='pt')
+				truncation=True, max_length=title_max_len, return_tensors='pt')
 
 			encoded_b = self.tokenizer(
 				bodies, padding=True, verbose=False, add_special_tokens=True,
-				truncation=True, max_length=self.text_max_len - self.memory_num, return_tensors='pt')
+				truncation=True, max_length=body_max_len, return_tensors='pt')
 
 			# 检查数据数量是否正确，length是问题数
 			length = len(ranking_qa_pairs[now_pair_index: now_pair_index + PAIR_STEP])
@@ -1248,7 +1287,7 @@ class TrainWholeModel:
 		if self.model_class == "CrossBERT":
 			return self.__train_step_for_cross
 		elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt',
-								  'OneSupremeMemory']:
+								  'OneSupremeMemory', 'BasicDeformer']:
 			return self.__train_step_for_bi
 		elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 			return self.__train_step_for_qa_input 
@@ -1281,7 +1320,7 @@ class TrainWholeModel:
 			for index, batch in enumerate(classify_dataloader):
 				# 读取数据
 				# add model
-				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory']:
+				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory', 'BasicDeformer']:
 					logits = self.__val_step_for_bi(batch)
 				elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 					logits = self.__val_step_for_qa_input(batch)
@@ -1891,6 +1930,8 @@ class TrainWholeModel:
 		# add model
 		if self.model_class == 'BasicModel':
 			model = BasicModel(config=self.config)
+		if self.model_class == 'BasicDeformer':
+			model = BasicDeformer(config=self.config)
 		elif self.model_class == 'BasicTopicModel':
 			model = BasicTopicModel(config=self.config)
 		elif self.model_class == 'InputMemorySelfAtt':
@@ -1956,6 +1997,7 @@ class TrainWholeModel:
 
 		self.composition = args.composition
 		self.restore_flag = args.restore
+		self.top_layer_num = args.top_layer_num
 
 		self.classifier_path = args.classifier_path
 
@@ -2030,6 +2072,13 @@ class TrainWholeModel:
 								 word_embedding_len=word_embedding_len,
 								 sentence_embedding_len=sentence_embedding_len,
 								 composition=self.composition)
+		elif self.model_class == 'BasicDeformer':
+			config = BasicDeformerConfig(len(self.tokenizer),
+								 pretrained_bert_path=args.pretrained_bert_path,
+								 num_labels=args.label_num,
+								 word_embedding_len=word_embedding_len,
+								 sentence_embedding_len=sentence_embedding_len,
+								 top_layer_num=self.top_layer_num)
 		elif self.model_class == 'BasicTopicModel':
 			config = BasicTopicConfig(len(self.tokenizer),
 										len(self.dictionary), 
@@ -2119,6 +2168,12 @@ class TrainWholeModel:
 				# 这个不设定
 				{'params': model.classifier.parameters(), 'lr': 1e-4}
 			]
+		elif self.model_class == "BasicDeformer":
+			parameters_dict_list = [
+                # 这几个一样
+                {'params': model.bert_model.parameters(), 'lr': 5e-5},
+                {'params': model.classifier.parameters(), 'lr': 1e-4},
+            ]
 		elif self.model_class == 'QATopicModel':
 			parameters_dict_list = [
 				# 这几个一样
@@ -2603,6 +2658,11 @@ class TrainWholeModel:
 			now_dataset = TBAClassifyDataset(data=now_data_block,
 											 tokenizer=self.tokenizer,
 											 text_max_len=self.text_max_len - self.memory_num)
+		elif self.model_class in ['BasicDeformer']:
+			now_dataset = TBAClassifyDataset(data=now_data_block,
+											 tokenizer=self.tokenizer,
+											 text_max_len=self.text_max_len,
+											 deformer=True)
 		elif self.model_class in ['QAMemory']:
 			now_dataset = QAMemClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,

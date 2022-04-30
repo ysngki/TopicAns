@@ -3,7 +3,7 @@ import re
 
 
 class TBAClassifyDataset(torch.torch.utils.data.Dataset):
-	def __init__(self, data, tokenizer, text_max_len):
+	def __init__(self, data, tokenizer, text_max_len, deformer=False):
 		# 读取一块数据
 		self.dataset = data
 
@@ -17,16 +17,23 @@ class TBAClassifyDataset(torch.torch.utils.data.Dataset):
 		all_answers = data['answers']
 		all_labels = data['label']
 
+		if deformer:
+			title_max_len = 64
+			body_max_len = text_max_len - title_max_len
+			answer_max_len = text_max_len
+		else:
+			title_max_len = body_max_len = answer_max_len = text_max_len
+
 		# tokenize
 		self.encoded_title = self.tokenizer(
 			all_titles, padding=True, verbose=False, add_special_tokens=True,
-			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+			truncation=True, max_length=title_max_len, return_tensors='pt')
 		self.encoded_body = self.tokenizer(
 			all_bodies, padding=True, verbose=False, add_special_tokens=True,
-			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+			truncation=True, max_length=body_max_len, return_tensors='pt')
 		self.encoded_a = self.tokenizer(
 			all_answers, padding=True, verbose=False, add_special_tokens=True,
-			truncation=True, max_length=self.text_max_len, return_tensors='pt')
+			truncation=True, max_length=answer_max_len, return_tensors='pt')
 
 		self.all_labels = all_labels
 
@@ -354,7 +361,7 @@ class VaeSignleTextDataset(torch.torch.utils.data.Dataset):
 		this_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
 		# text = self.docs[index]
-		max_num = 20
+		max_num = 50
 		this_bow[this_bow > max_num] = max_num
 
 		return this_bow
@@ -433,7 +440,7 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 			this_q_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
 		# set max num
-		max_num = 20
+		max_num = 50
 		this_q_bow[this_q_bow > max_num] = max_num
 
 		this_a_bow = torch.zeros(self.voc_size)

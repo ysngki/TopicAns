@@ -1,4 +1,4 @@
-from transformers import BertModel
+from transformers import BertModel, BertConfig
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -7,6 +7,7 @@ import torch.nn.functional
 from attention_module import attend
 from pprint import pprint
 from vae import VAE
+from QA_model_lib import QAClassifier
 
 
 # --------------------------------------
@@ -1045,6 +1046,149 @@ class BasicTopicModel(nn.Module):
                                  b_embedding=b_embeddings)
 
         return logits, vae_loss
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class BasicDeformerConfig:
+    def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
+                 word_embedding_len=512, sentence_embedding_len=512, top_layer_num=3):
+
+        self.tokenizer_len = tokenizer_len
+        self.pretrained_bert_path = pretrained_bert_path
+        self.num_labels = num_labels
+        self.word_embedding_len = word_embedding_len
+        self.sentence_embedding_len = sentence_embedding_len
+        self.top_layer_num = top_layer_num
+
+    def __str__(self):
+        print("*"*20 + "config" + "*"*20)
+        print("tokenizer_len:", self.tokenizer_len)
+        print("pretrained_bert_path:", self.pretrained_bert_path)
+        print("num_labels:", self.num_labels)
+        print("word_embedding_len:", self.word_embedding_len)
+        print("sentence_embedding_len:", self.sentence_embedding_len)
+        print("top_layer_num:", self.top_layer_num)
+
+
+class BasicDeformer(nn.Module):
+    def __init__(self, config: BasicDeformerConfig):
+
+        super(BasicDeformer, self).__init__()
+
+        self.config = config
+
+        # 毕竟num_label也算是memory的一部分
+        self.num_labels = config.num_labels
+        self.sentence_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
+        this_bert_config.num_labels = self.num_labels
+
+        self.bert_model = BertModel.from_pretrained(config.pretrained_bert_path, config=this_bert_config)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+        self.embeddings = self.bert_model.bert.embeddings
+
+        whole_encoder = self.bert_model.bert.encoder
+
+        self.lower_encoder = whole_encoder.layer[:this_bert_config.num_hidden_layers - self.config.top_layer_num]
+        self.upper_encoder = whole_encoder.layer[this_bert_config.num_hidden_layers - self.config.top_layer_num:]
+        # take cls in and out a new vector
+        self.pooler_layer = self.bert_model.bert.pooler
+
+        # take a vector in and out a logits
+        self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+
+    def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
+        # 获得隐藏层输出
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+        out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
+                              attention_mask=attention_mask)
+        pooler_out = out['pooler_output']
+
+        return pooler_out
+
+    # encode a text using lower layers
+    def lower_encoding(self, input_ids, attention_mask, token_type_id, **kwargs):
+        clean_flag = kwargs.get('clean_flag', True)
+        if clean_flag:
+            input_ids, attention_mask, token_type_id = clean_input_ids(input_ids, attention_mask, token_type_id)
+
+        embeddings = self.embeddings(input_ids=input_ids,
+                                     token_type_ids=token_type_id)
+        hidden_states = embeddings
+
+        # process attention mask
+        input_shape = input_ids.size()
+        device = input_ids.device
+        extended_attention_mask = self.bert_model.get_extended_attention_mask(attention_mask, input_shape, device)
+
+        for layer_module in self.lower_encoder:
+            layer_outputs = layer_module(
+                hidden_states,
+                extended_attention_mask
+            )
+            hidden_states = layer_outputs[0]
+        return hidden_states
+
+    # concatenate embeddings of two texts and encoding them using top layers
+    # dims of a_embeddings, b_embeddings are both 3, (batch size, seq len, dim)
+    # dims of a_attention_mask, b_attention_mask are both 2, (batch size, seq len)
+    def joint_encoding(self, a_embeddings, b_embeddings, a_attention_mask, b_attention_mask):
+        device = a_embeddings.device
+
+        # simplest case
+        final_attention_mask = torch.cat((a_attention_mask, b_attention_mask), dim=-1)
+        final_hidden_states = torch.cat((a_embeddings, b_embeddings), dim=-2)
+
+        # process attention mask
+        input_shape = final_attention_mask.size()
+        final_attention_mask = self.bert_model.get_extended_attention_mask(final_attention_mask, input_shape, device)
+
+        for layer_module in self.upper_encoder:
+            layer_outputs = layer_module(
+                final_hidden_states,
+                final_attention_mask
+            )
+            final_hidden_states = layer_outputs[0]
+        return final_hidden_states
+
+    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
+                a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
+
+        # 先编码question
+        q_input_ids, q_attention_mask, q_token_type_ids = clean_input_ids(q_input_ids, q_attention_mask, q_token_type_ids)
+        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask, b_token_type_ids)
+
+        # encoding a
+        t_lower_encoded_embeddings = self.lower_encoding(input_ids=q_input_ids,
+                                                         attention_mask=q_attention_mask,
+                                                         token_type_id=q_token_type_ids)
+
+        # encoding b
+        b_token_type_ids = b_token_type_ids + 1
+
+        b_lower_encoded_embeddings = self.lower_encoding(input_ids=b_input_ids,
+                                                         attention_mask=b_attention_mask,
+                                                         token_type_id=b_token_type_ids)
+
+        # encoding together
+        joint_embeddings = self.joint_encoding(a_embeddings=t_lower_encoded_embeddings,
+                                               b_embeddings=b_lower_encoded_embeddings,
+                                               a_attention_mask=q_attention_mask,
+                                               b_attention_mask=b_attention_mask)
+
+        q_embeddings = self.pooler_layer(joint_embeddings)
+
+        # 编码answer
+        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
+
+        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
+
+        return logits
 
 
 # --------------------------------------

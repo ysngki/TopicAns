@@ -40,7 +40,8 @@ def read_arguments():
 							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory', 'QATopicModel', 'QATopicMemoryModel'])
 
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
-	parser.add_argument("--memory_num", "-m", default=50, type=int)
+	parser.add_argument("--memory_num", "-m", default=0, type=int)
+	parser.add_argument("--top_layer_num", "-m", default=3, type=int)
 	parser.add_argument("--pretrained_bert_path", default='/data/yuanhang/pretrained_model/prajjwal1/bert-small', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
 	parser.add_argument("--one_stage", action="store_true", default=False)
@@ -147,7 +148,7 @@ if __name__ == '__main__':
 															my_args.dataset_name)
 	
 	if my_args.train_vae:
-		my_train_model.train_vae(latent_dim=my_args.latent_dim, postfix="_test")
+		my_train_model.train_vae(latent_dim=my_args.latent_dim, postfix="_wae_test")
 
 	if my_args.do_test:
 		my_train_model.only_do_test()
