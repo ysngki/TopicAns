@@ -163,6 +163,7 @@ class TrainWholeModel:
 			# 如果要进行第二阶段训练，那需要先读取上一阶段最好的model, for normal two stage（只对两阶段模型有用）
 			if final_stage_flag and train_two_stage_flag:
 				self.model = self.load_models(self.model, model_save_path + "_middle")
+				self.bert_lr = 1e-4
 
 			# load model to restore training
 			restore_path = self.get_restore_path(model_save_name=model_save_name, final_stage_flag=final_stage_flag)
@@ -386,7 +387,7 @@ class TrainWholeModel:
 				# 存储最新的模型
 				self.save_model(model_save_path=last_model_save_path + postfix, epoch=epoch, optimizer=optimizer,
 								scheduler=scheduler, previous_best_performance=previous_best_r_1,
-								early_stop_count=early_stop_count, postfix=postfix)
+								early_stop_count=early_stop_count)
 
 				torch.cuda.empty_cache()
 				gc.collect()
@@ -419,7 +420,7 @@ class TrainWholeModel:
 			else:
 				break
 
-	def train_vae(self, latent_dim, in_vae=None):
+	def train_vae(self, latent_dim, in_vae=None, postfix=""):
 		
 		# self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
 		# print(len(self.dictionary))
@@ -434,7 +435,7 @@ class TrainWholeModel:
 		# 	print(t)
 		# exit()
 
-		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists("./model/vae/" + self.dataset_name + "_" + str(latent_dim)):
+		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists("./model/vae/" + self.dataset_name + "_" + str(latent_dim) + postfix):
 			self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
 			print("Pretrained Dict is loaded & Pretrained VAE exists!")
 			return
@@ -521,10 +522,6 @@ class TrainWholeModel:
 			split_a = a.split()
 			a_bow = self.dictionary.doc2bow(split_a)
 
-			if l == 2:
-				split_txt = split_d + split_a
-				positive_bow = self.dictionary.doc2bow(split_txt)
-
 			if d_bow != [] and a_bow != []:
 				valid_q_docs.append(d)
 				q_bows.append(d_bow)
@@ -532,7 +529,10 @@ class TrainWholeModel:
 				valid_a_docs.append(a)
 				a_bows.append(a_bow)
 
-				positive_bows.append(positive_bow)
+				if l == 2:
+					split_txt = split_d + split_a
+					positive_bow = self.dictionary.doc2bow(split_txt)
+					positive_bows.append(positive_bow)
 
 		print(f"q: {len(q_bows)}, {len(valid_q_docs)},\ta: {len(a_bows)}, {len(valid_a_docs)} \tpositive: {len(positive_bows)} \torigin: {len(all_bodies)}")
 
@@ -546,10 +546,12 @@ class TrainWholeModel:
 		postive_num = len(positive_bows)
 
 		train_docs = valid_q_docs[:int(0.9*q_num)] + valid_a_docs[:int(0.9*a_num)]
-		train_bows = q_bows[:int(0.9*q_num)] + a_bows[:int(0.9*a_num)] + positive_bows[:int(0.9*postive_num)]
+		# train_bows = q_bows[:int(0.9*q_num)] + a_bows[:int(0.9*a_num)] + positive_bows[:int(0.9*postive_num)]
+		train_bows = q_bows[:int(0.9*q_num)] + a_bows[:int(0.9*a_num)]
 
 		eval_docs = valid_q_docs[int(0.9*q_num):] + valid_a_docs[int(0.9*a_num):]
-		eval_bows = q_bows[int(0.9*q_num):] + a_bows[int(0.9*a_num):] + positive_bows[int(0.9*postive_num):]
+		# eval_bows = q_bows[int(0.9*q_num):] + a_bows[int(0.9*a_num):] + positive_bows[int(0.9*postive_num):]
+		eval_bows = q_bows[int(0.9*q_num):] + a_bows[int(0.9*a_num):]
 
 		train_data = VaeSignleTextDataset(docs=train_docs, bows=train_bows, voc_size=len(self.dictionary))
 		eval_data = VaeSignleTextDataset(docs=eval_docs, bows=eval_bows, voc_size=len(self.dictionary))
@@ -574,8 +576,11 @@ class TrainWholeModel:
 		print(f"[Train data len is {len(train_data)}. Eval data len is {len(eval_data)}]")
 
 		previous_min_loss = np.inf
-		early_stop_threshold = 5
+		early_stop_threshold = 10
 		early_stop_count = 0
+
+		# all_element_num = 0
+		# all_appear_num = 0
 
 		for epoch in range(50):
 			print("*"*45 + f" EPOCH: {epoch} " + "*"*45)
@@ -587,6 +592,11 @@ class TrainWholeModel:
    
 			for iter, data in enumerate(bar):
 				bows = data.to(self.device)
+
+				# all_element_num += torch.sum(torch.sum(bows > 0, -1))
+				# all_appear_num += torch.sum(torch.sum(bows, -1))
+
+				# continue
 
 				# print(bows.shape)
 				# print(torch.max(torch.max(bows, 1)[0]))
@@ -609,6 +619,9 @@ class TrainWholeModel:
 				optimizer.step()
 				optimizer.zero_grad()	
 				scheduler.step()
+
+			# print(all_element_num / all_appear_num)
+			# exit()
 
 			# do eval
 			eval_dataloader = DataLoader(eval_data, batch_size=128, shuffle=False, num_workers=4, drop_last=True)
@@ -641,8 +654,8 @@ class TrainWholeModel:
 				
 				# save model
 				save_state = {'vae': vae.state_dict()}
-				torch.save(save_state, "./model/vae/" + self.dataset_name + "_" + str(latent_dim))
-				print(f"Model is saved at ./model/vae/{self.dataset_name }_" + str(latent_dim))
+				torch.save(save_state, "./model/vae/" + self.dataset_name + "_" + str(latent_dim) + postfix)
+				print(f"Model is saved at ./model/vae/{self.dataset_name }_" + str(latent_dim) +  postfix)
 
 				print("*"*50)
 				topic_words = vae.show_topic_words(dictionary=self.dictionary, device=self.device)
@@ -664,7 +677,7 @@ class TrainWholeModel:
 		print()
 		self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
 
-		vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim))['vae'])
+		vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim) + postfix)['vae'])
 		topic_words = vae.show_topic_words(dictionary=self.dictionary, device=self.device)
 		for t in topic_words:
 			print(t)
@@ -1487,7 +1500,7 @@ class TrainWholeModel:
 				question_length = q_attention_mask.sum(-1).view(-1, self.ranking_candidate_num)[:, 0]
 				answer_length = torch.mean(a_attention_mask.sum(-1).view(-1, self.ranking_candidate_num).type(torch.FloatTensor), dim=-1)
 				
-				considered_length = question_length
+				considered_length = answer_length
 
 				for l in considered_length:
 					len_dis[int((l.item()-1)//32)] += 1
@@ -1682,7 +1695,7 @@ class TrainWholeModel:
 				question_length = q_attention_mask.sum(-1).view(-1, self.ranking_candidate_num)[:, 0]
 				answer_length = torch.mean(a_attention_mask.sum(-1).view(-1, self.ranking_candidate_num).type(torch.FloatTensor), dim=-1)
 				
-				considered_length = question_length
+				considered_length = answer_length
 
 				for l in considered_length:
 					len_dis[int((l.item()-1)//32)] += 1
@@ -2093,7 +2106,7 @@ class TrainWholeModel:
 		if self.model_class == 'BasicModel':
 			parameters_dict_list = [
 				# 这几个一样
-				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				{'params': model.bert_model.parameters(), 'lr': self.bert_lr},
 				# 这几个一样
 				{'params': model.key_layer.parameters(), 'lr': 1e-4},
 				{'params': model.value_layer.parameters(), 'lr': 1e-4},
@@ -2105,7 +2118,7 @@ class TrainWholeModel:
 		elif self.model_class == 'QATopicModel':
 			parameters_dict_list = [
 				# 这几个一样
-				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				{'params': model.bert_model.parameters(), 'lr': self.bert_lr},
 				# 这几个一样
 				{'params': model.query_layer.parameters(), 'lr': 1e-4},
 				{'params': model.vae.parameters(), 'lr': 1e-4},
@@ -2116,7 +2129,7 @@ class TrainWholeModel:
 		elif self.model_class == 'QATopicMemoryModel':
 			parameters_dict_list = [
 				# 这几个一样
-				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				{'params': model.bert_model.parameters(), 'lr': self.bert_lr},
 				# 这几个一样
 				{'params': model.query_layer.parameters(), 'lr': 1e-4},
 				{'params': model.memory_layer.parameters(), 'lr': 1e-4},
@@ -2163,7 +2176,7 @@ class TrainWholeModel:
 		elif self.model_class in ['QAMemory', 'QAModel']:
 			parameters_dict_list = [
 				# 这几个一样
-				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				{'params': model.bert_model.parameters(), 'lr': self.bert_lr},
 				# 这几个一样
 				{'params': model.self_attention_weight_layer.parameters(), 'lr': 1e-4},
 				{'params': model.value_layer.parameters(), 'lr': 1e-4},
@@ -2215,7 +2228,7 @@ class TrainWholeModel:
 					# 这几个一样
 					# {'params': model.query_layer.parameters(), 'lr': 1e-4},
 					# {'params': model.vae.parameters(), 'lr': 1e-4},
-					{'params': model.embeddings.parameters(), 'lr': 1e-4},
+					# {'params': model.embeddings.parameters(), 'lr': 1e-4},
 					{'params': model.LayerNorm.parameters(), 'lr': 1e-4},
 					# 这个不设定
 					{'params': model.classifier.parameters(), 'lr': 1e-4}
@@ -2229,7 +2242,7 @@ class TrainWholeModel:
 					{'params': model.LayerNorm.parameters(), 'lr': 1e-4},
 					{'params': model.memory_LayerNorm.parameters(), 'lr': 1e-4},
 					# 这个很重要！！！！！需要评估下作用
-					{'params': model.embeddings.parameters(), 'lr': 1e-4},
+					# {'params': model.embeddings.parameters(), 'lr': 1e-4},
 					# 这个不设定
 					{'params': model.classifier.parameters(), 'lr': 1e-4}
 				]

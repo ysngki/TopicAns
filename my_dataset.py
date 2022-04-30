@@ -353,7 +353,9 @@ class VaeSignleTextDataset(torch.torch.utils.data.Dataset):
 
 		this_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
-		text = self.docs[index]
+		# text = self.docs[index]
+		max_num = 20
+		this_bow[this_bow > max_num] = max_num
 
 		return this_bow
 
@@ -431,7 +433,8 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 			this_q_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
 		# set max num
-		this_q_bow[this_q_bow > 5] = 5
+		max_num = 20
+		this_q_bow[this_q_bow > max_num] = max_num
 
 		this_a_bow = torch.zeros(self.voc_size)
 		# bow = [[token_id1,token_id2,...],[freq1,freq2,...]]
@@ -439,7 +442,7 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		if len(item) != 0:
 			this_a_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 		
-		this_a_bow[this_a_bow > 5] = 5
+		this_a_bow[this_a_bow > max_num] = max_num
 
 		item_dic = {'q_input_ids': self.encoded_questions['input_ids'][index],
 					'q_token_type_ids': self.encoded_questions['token_type_ids'][index],
