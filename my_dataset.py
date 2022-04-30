@@ -314,7 +314,7 @@ class QAClassifyDataset(torch.torch.utils.data.Dataset):
 		except KeyError:
 			device = self.encoded_questions['input_ids'].device
 
-			self.question_token_type_ids = torch.zeros_like(self.question_token_type_ids['input_ids'], device=device)
+			self.question_token_type_ids = torch.zeros_like(self.encoded_questions['input_ids'], device=device)
 			self.a_token_type_ids = torch.zeros_like(self.encoded_answers['input_ids'], device=device)
 			
 		self.all_labels = all_labels
@@ -455,7 +455,7 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		except KeyError:
 			device = self.encoded_questions['input_ids'].device
 
-			self.question_token_type_ids = torch.zeros_like(self.question_token_type_ids['input_ids'], device=device)
+			self.question_token_type_ids = torch.zeros_like(self.encoded_questions['input_ids'], device=device)
 			self.a_token_type_ids = torch.zeros_like(self.encoded_answers['input_ids'], device=device)
 
 		self.all_labels = all_labels
