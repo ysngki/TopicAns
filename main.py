@@ -48,7 +48,7 @@ def read_arguments():
 	parser.add_argument("--two_stage", action="store_true", default=False)
 	parser.add_argument("--model_save_prefix", default="", type=str)
 	parser.add_argument("--memory_save_prefix", default="", type=str)
-	parser.add_argument("--dataset_split_num", default=1, type=int)
+	parser.add_argument("--dataset_split_num", default=4, type=int)
 	parser.add_argument("--val_batch_size", default=64, type=int)
 	parser.add_argument("--train_batch_size", default=32, type=int)
 	parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
