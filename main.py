@@ -42,6 +42,7 @@ def read_arguments():
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
 	parser.add_argument("--memory_num", "-m", default=0, type=int)
 	parser.add_argument("--top_layer_num", default=4, type=int)
+	parser.add_argument("--idf_min", default=1.0, type=float)
 	parser.add_argument("--pretrained_bert_path", default='/data/yuanhang/pretrained_model/prajjwal1/bert-small', type=str)
 	parser.add_argument("--nvidia_number", "-n", required=True, type=str)
 	parser.add_argument("--one_stage", action="store_true", default=False)

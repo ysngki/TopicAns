@@ -438,9 +438,9 @@ class TrainWholeModel:
 		# 	print(t)
 		# exit()
 
-		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists("./model/vae/" + self.dataset_name + "_" + str(latent_dim) + postfix) and os.path.exists("./" + self.dataset_name + "/word_idf"):
+		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists("./model/vae/" + self.dataset_name + "_" + str(latent_dim) + postfix) and os.path.exists("./" + self.dataset_name + "/word_idf_" + str(self.idf_min)):
 			self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
-			self.word_idf = torch.load("./" + self.dataset_name + "/word_idf").to(self.device)
+			self.word_idf = torch.load("./" + self.dataset_name + "/word_idf_" + str(self.idf_min)).to(self.device)
 			print("Pretrained Dict is loaded & Pretrained VAE exists!")
 			return
 
@@ -570,8 +570,8 @@ class TrainWholeModel:
 		eval_data = VaeSignleTextDataset(docs=eval_docs, bows=eval_bows, voc_size=len(self.dictionary))
 
 		# get idf
-		if os.path.exists("./" + self.dataset_name + "/word_idf"):
-			word_idf = torch.load("./" + self.dataset_name + "/word_idf")
+		if os.path.exists("./" + self.dataset_name + "/word_idf_" + str(self.idf_min)):
+			word_idf = torch.load("./" + self.dataset_name + "/word_idf_" + str(self.idf_min))
 		else:
 			print("*"*20 + " prepare idf " + "*"*20)
 			word_appear_num = torch.ones(len(self.dictionary))
@@ -586,8 +586,9 @@ class TrainWholeModel:
 			word_idf = document_count / word_appear_num
 			word_idf = torch.log(word_idf)
 			word_idf = word_idf/torch.max(word_idf)
+			word_idf[word_idf < self.idf_min] = self.idf_min
 			# save word idf
-			torch.save(word_idf, "./" + self.dataset_name + "/word_idf")
+			torch.save(word_idf, "./" + self.dataset_name + "/word_idf_" + str(self.idf_min))
 
 		word_idf = word_idf.to(self.device)
 		self.word_idf = word_idf
@@ -2065,6 +2066,7 @@ class TrainWholeModel:
 		self.top_layer_num = args.top_layer_num
 
 		self.classifier_path = args.classifier_path
+		self.idf_min = args.idf_min
 
 	# get path to restore training
 	@staticmethod
