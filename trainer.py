@@ -157,7 +157,7 @@ class TrainWholeModel:
 			
 			# 读取事先训练好的
 			if self.model_class in ['BasicTopicModel', 'QATopicModel', 'QATopicMemoryModel']:
-				self.model.vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim))['vae'])
+				self.model.vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim) + "_" + str(self.idf_min))['vae'])
 	
 			# 读取预训练好的memory，适用于需要memory的模型，如 QAmemory
 			if self.load_memory_flag:
@@ -437,10 +437,12 @@ class TrainWholeModel:
 		# for t in topic_words:
 		# 	print(t)
 		# exit()
+		vae_save_path = "./model/vae/" + self.dataset_name + "_" + str(latent_dim) + "_" + str(self.idf_min) + postfix
+		word_idf_save_path = "./" + self.dataset_name + "/word_idf_" + str(self.idf_min)
 
-		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists("./model/vae/" + self.dataset_name + "_" + str(latent_dim) + postfix) and os.path.exists("./" + self.dataset_name + "/word_idf_" + str(self.idf_min)):
+		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists(vae_save_path) and os.path.exists(word_idf_save_path):
 			self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
-			self.word_idf = torch.load("./" + self.dataset_name + "/word_idf_" + str(self.idf_min)).to(self.device)
+			self.word_idf = torch.load(word_idf_save_path).to(self.device)
 			print("Pretrained Dict is loaded & Pretrained VAE exists!")
 			return
 
@@ -570,8 +572,8 @@ class TrainWholeModel:
 		eval_data = VaeSignleTextDataset(docs=eval_docs, bows=eval_bows, voc_size=len(self.dictionary))
 
 		# get idf
-		if os.path.exists("./" + self.dataset_name + "/word_idf_" + str(self.idf_min)):
-			word_idf = torch.load("./" + self.dataset_name + "/word_idf_" + str(self.idf_min))
+		if os.path.exists(word_idf_save_path):
+			word_idf = torch.load(word_idf_save_path)
 		else:
 			print("*"*20 + " prepare idf " + "*"*20)
 			word_appear_num = torch.ones(len(self.dictionary))
@@ -588,7 +590,7 @@ class TrainWholeModel:
 			word_idf = word_idf/torch.max(word_idf)
 			word_idf[word_idf < self.idf_min] = self.idf_min
 			# save word idf
-			torch.save(word_idf, "./" + self.dataset_name + "/word_idf_" + str(self.idf_min))
+			torch.save(word_idf, word_idf_save_path)
 
 		word_idf = word_idf.to(self.device)
 		self.word_idf = word_idf
@@ -723,8 +725,8 @@ class TrainWholeModel:
 				
 				# save model
 				save_state = {'vae': vae.state_dict()}
-				torch.save(save_state, "./model/vae/" + self.dataset_name + "_" + str(latent_dim) + postfix)
-				print(f"Model is saved at ./model/vae/{self.dataset_name }_" + str(latent_dim) +  postfix)
+				torch.save(save_state, vae_save_path)
+				print(f"Model is saved at {vae_save_path}.")
 
 				print("*"*50)
 				topic_words = vae.show_topic_words(dictionary=self.dictionary, device=self.device)
@@ -746,7 +748,7 @@ class TrainWholeModel:
 		print()
 		self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
 
-		vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim) + postfix)['vae'])
+		vae.load_state_dict(torch.load(vae_save_path)['vae'])
 		topic_words = vae.show_topic_words(dictionary=self.dictionary, device=self.device)
 		for t in topic_words:
 			print(t)
