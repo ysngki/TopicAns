@@ -305,16 +305,24 @@ class QATopicModel(nn.Module):
         return final_embedding
 
     def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
-                a_input_ids, a_token_type_ids, a_attention_mask, q_bow, a_bow):
+                a_input_ids, a_token_type_ids, a_attention_mask, q_bow, a_bow, word_idf=None):
         q_reconst, q_mu, q_log_var = self.vae(q_bow, lambda x: torch.softmax(x, dim=1))
         a_reconst, a_mu, a_log_var = self.vae(a_bow, lambda x: torch.softmax(x, dim=1))
 
         logsoftmax = torch.log_softmax(q_reconst, dim=1)
-        q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax)
+        if word_idf is None:
+            q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax)
+        else:
+            q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax * word_idf)
+
         q_kl_div = -0.5 * torch.mean(1 + q_log_var - q_mu.pow(2) - q_log_var.exp())
         
         logsoftmax = torch.log_softmax(a_reconst, dim=1)
-        a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax)
+        if word_idf is None:
+            a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax)
+        else:
+            a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax * word_idf)
+
         a_kl_div = -0.5 * torch.mean(1 + a_log_var - a_mu.pow(2) - a_log_var.exp())
 
         vae_loss = q_rec_loss + a_rec_loss + q_kl_div  + a_kl_div
@@ -483,16 +491,24 @@ class QATopicMemoryModel(nn.Module):
         return final_embedding
 
     def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
-                a_input_ids, a_token_type_ids, a_attention_mask, q_bow, a_bow):
+                a_input_ids, a_token_type_ids, a_attention_mask, q_bow, a_bow, word_idf=None):
         q_reconst, q_mu, q_log_var = self.vae(q_bow, lambda x: torch.softmax(x, dim=1))
         a_reconst, a_mu, a_log_var = self.vae(a_bow, lambda x: torch.softmax(x, dim=1))
 
         logsoftmax = torch.log_softmax(q_reconst, dim=1)
-        q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax)
+        if word_idf is None:
+            q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax)
+        else:
+            q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax *  word_idf)
+
         q_kl_div = -0.5 * torch.mean(1 + q_log_var - q_mu.pow(2) - q_log_var.exp())
         
         logsoftmax = torch.log_softmax(a_reconst, dim=1)
-        a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax)
+        if word_idf is None:
+            a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax)
+        else:
+            a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax * word_idf)
+
         a_kl_div = -0.5 * torch.mean(1 + a_log_var - a_mu.pow(2) - a_log_var.exp())
 
         vae_loss = q_rec_loss + a_rec_loss + q_kl_div  + a_kl_div

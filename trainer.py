@@ -120,6 +120,7 @@ class TrainWholeModel:
 
 		# 获得模型配置-------------------------------------------------------------------
 		self.dictionary = None
+		self.idf = None
 		if self.model_class in ['BasicTopicModel', 'QATopicModel', 'QATopicMemoryModel']:
 			self.train_vae(args.latent_dim)
 
@@ -437,8 +438,9 @@ class TrainWholeModel:
 		# 	print(t)
 		# exit()
 
-		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists("./model/vae/" + self.dataset_name + "_" + str(latent_dim) + postfix):
+		if os.path.exists("./" + self.dataset_name + "/vae_dictionary") and os.path.exists("./model/vae/" + self.dataset_name + "_" + str(latent_dim) + postfix) and os.path.exists("./" + self.dataset_name + "/word_idf"):
 			self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
+			self.word_idf = torch.load("./" + self.dataset_name + "/word_idf").to(self.device)
 			print("Pretrained Dict is loaded & Pretrained VAE exists!")
 			return
 
@@ -453,34 +455,43 @@ class TrainWholeModel:
 		
 		GOOD_SYMBOLS_RE = re.compile('[^0-9a-z #+_]')
 
-		# 进行文本处理
-		all_bodies = []
-		for t, d in zip(old_all_titles, old_all_bodies):
-			new_t = ''.join([i for i in t if not i.isdigit()])
-			new_d = ''.join([i for i in d if not i.isdigit()])
-			this_txt = new_t + " " + new_d
-   
-			this_txt = re.sub(r"[\.\[\]()=]", " ", this_txt)
-			all_bodies.append(GOOD_SYMBOLS_RE.sub('', this_txt))
-   
-		# for i in range(10):
-		# 	print(all_bodies[i])
-		# 	print("*"*50)
-		# 	print()
-		# exit()
-  
-		all_answers = []
-		for d in old_all_answers:
-			this_txt = ''.join([i for i in d if not i.isdigit()])
+		# 进行文本处理，获得all_bodies和all_answers
+		if os.path.exists("./" + self.dataset_name + "/vae_docs.dict"):
+			vae_docs = torch.load("./" + self.dataset_name + "/vae_docs.dict")
+			all_bodies = vae_docs['all_bodies']
+			all_answers = vae_docs['all_answers']
+		else:
+			all_bodies = []
+			for t, d in zip(old_all_titles, old_all_bodies):
+				new_t = ''.join([i for i in t if not i.isdigit()])
+				new_d = ''.join([i for i in d if not i.isdigit()])
+				this_txt = new_t + " " + new_d
+	
+				this_txt = re.sub(r"[\.\[\]()=]", " ", this_txt)
+				all_bodies.append(GOOD_SYMBOLS_RE.sub('', this_txt))
+	
+			# for i in range(10):
+			# 	print(all_bodies[i])
+			# 	print("*"*50)
+			# 	print()
+			# exit()
+	
+			all_answers = []
+			for d in old_all_answers:
+				this_txt = ''.join([i for i in d if not i.isdigit()])
 
-			this_txt = re.sub(r"[\.\[\]()=]", " ", this_txt)
+				this_txt = re.sub(r"[\.\[\]()=]", " ", this_txt)
+				
+				all_answers.append(GOOD_SYMBOLS_RE.sub('', this_txt))
 			
-			all_answers.append(GOOD_SYMBOLS_RE.sub('', this_txt))
+			# save to save time
+			vae_docs = {'all_bodies':all_bodies, 'all_answers':all_answers}
+			torch.save(vae_docs, "./" + self.dataset_name + "/vae_docs.dict")
 
+		# 创建或读取词汇表
 		if os.path.exists("./" + self.dataset_name + "/vae_dictionary"):
 			self.dictionary = Dictionary().load("./" + self.dataset_name + "/vae_dictionary")
 		else:
-			# 创建词汇表
 			self.dictionary = Dictionary()
 
 			for documents in [all_bodies, all_answers]:
@@ -508,7 +519,11 @@ class TrainWholeModel:
 		# because id2token is empty by default, it is a bug.
 		self.dictionary.id2token = {v:k for k,v in self.dictionary.token2id.items()}
 
-		# convert the bodies and the answers into BO representation
+		# save both dictionary
+		self.dictionary.save("./" + self.dataset_name + "/vae_dictionary")
+		self.dictionary.save_as_text("./" + self.dataset_name + "/vae_text_dictionary")
+
+		# convert the bodies and the answers into BoW representation
 		q_bows = []
 		valid_q_docs = []
 		
@@ -538,10 +553,6 @@ class TrainWholeModel:
 
 		print(f"q: {len(q_bows)}, {len(valid_q_docs)},\ta: {len(a_bows)}, {len(valid_a_docs)} \tpositive: {len(positive_bows)} \torigin: {len(all_bodies)}")
 
-		# save both dictionary and docs
-		self.dictionary.save("./" + self.dataset_name + "/vae_dictionary")
-		self.dictionary.save_as_text("./" + self.dataset_name + "/vae_text_dictionary")
-		
 		# 将question和answer混合训练
 		q_num = len(valid_q_docs)
 		a_num = len(valid_a_docs)
@@ -557,6 +568,29 @@ class TrainWholeModel:
 
 		train_data = VaeSignleTextDataset(docs=train_docs, bows=train_bows, voc_size=len(self.dictionary))
 		eval_data = VaeSignleTextDataset(docs=eval_docs, bows=eval_bows, voc_size=len(self.dictionary))
+
+		# get idf
+		if os.path.exists("./" + self.dataset_name + "/word_idf"):
+			word_idf = torch.load("./" + self.dataset_name + "/word_idf")
+		else:
+			print("*"*20 + " prepare idf " + "*"*20)
+			word_appear_num = torch.ones(len(self.dictionary))
+			document_count = 0
+			for bow in train_data:
+				word_appear_num += bow
+				document_count += 1
+			for bow in eval_data:
+				word_appear_num += bow
+				document_count += 1
+			
+			word_idf = document_count / word_appear_num
+			word_idf = torch.log(word_idf)
+			word_idf = word_idf/torch.max(word_idf)
+			# save word idf
+			torch.save(word_idf, "./" + self.dataset_name + "/word_idf")
+
+		word_idf = word_idf.to(self.device)
+		self.word_idf = word_idf
 
 		train_dataloader = DataLoader(train_data, batch_size=128, shuffle=True, num_workers=4, drop_last=True)
 
@@ -608,7 +642,7 @@ class TrainWholeModel:
 					bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
 
 					logsoftmax = torch.log_softmax(bows_recon, dim=1)
-					rec_loss = -1.0 * torch.sum(bows * logsoftmax)
+					rec_loss = -1.0 * torch.sum(bows * logsoftmax * self.word_idf)
 			
 					# rec_loss = torch.nn.functional.mse_loss(logsoftmax, torch.softmax(bows, dim=1))
 
@@ -623,7 +657,7 @@ class TrainWholeModel:
 					theta_prior = vae.sample(dist="gmm_std", batch_size=bows.shape[0], ori_data=bows).to(self.device)
 
 					logsoftmax = torch.log_softmax(bows_recon, dim=1)
-					rec_loss = -1.0 * torch.sum(bows*logsoftmax)
+					rec_loss = -1.0 * torch.sum(bows * logsoftmax * self.word_idf)
 
 					mmd = vae.mmd_loss(theta_q, theta_prior, device=self.device, t=0.1)
 					s = torch.sum(bows)/bows.shape[0]
@@ -653,7 +687,7 @@ class TrainWholeModel:
 					bows_recon, mus, log_vars = vae(bows, lambda x: torch.softmax(x, dim=1))
 
 					logsoftmax = torch.log_softmax(bows_recon, dim=1)
-					rec_loss = -1.0 * torch.sum(bows * logsoftmax)
+					rec_loss = -1.0 * torch.sum(bows * logsoftmax * self.word_idf)
 			
 					# rec_loss = torch.nn.functional.mse_loss(logsoftmax, torch.softmax(bows, dim=1))
 
@@ -668,7 +702,7 @@ class TrainWholeModel:
 					theta_prior = vae.sample(dist="gmm_std", batch_size=bows.shape[0], ori_data=bows).to(self.device)
 
 					logsoftmax = torch.log_softmax(bows_recon, dim=1)
-					rec_loss = -1.0 * torch.sum(bows*logsoftmax)
+					rec_loss = -1.0 * torch.sum(bows * logsoftmax * self.word_idf)
 
 					mmd = vae.mmd_loss(theta_q, theta_prior, device=self.device, t=0.1)
 					s = torch.sum(bows)/bows.shape[0]
@@ -2545,7 +2579,7 @@ class TrainWholeModel:
 			q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
 			q_attention_mask=q_attention_mask,
 			a_input_ids=a_input_ids, a_token_type_ids=a_token_type_ids,
-			a_attention_mask=a_attention_mask, q_bow=q_bow, a_bow=a_bow)
+			a_attention_mask=a_attention_mask, q_bow=q_bow, a_bow=a_bow, word_idf=self.word_idf)
 
 		# 计算损失
 		step_loss = cross_entropy_function(logits, qa_labels)

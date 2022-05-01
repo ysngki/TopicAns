@@ -148,7 +148,7 @@ if __name__ == '__main__':
 															my_args.dataset_name)
 	
 	if my_args.train_vae:
-		my_train_model.train_vae(latent_dim=my_args.latent_dim, postfix="_wae_test")
+		my_train_model.train_vae(latent_dim=my_args.latent_dim, postfix="_idf")
 
 	if my_args.do_test:
 		my_train_model.only_do_test()
