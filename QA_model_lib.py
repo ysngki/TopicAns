@@ -439,11 +439,11 @@ class QATopicMemoryModel(nn.Module):
             if final_embeddings is None:
                 final_embeddings = whole_embeddings
                 final_attention_mask = whole_attention_mask
-                final_token_type_ids = whole_token_type_ids
+                # final_token_type_ids = whole_token_type_ids
             else:
                 final_embeddings = torch.cat((final_embeddings, whole_embeddings), dim=0)
                 final_attention_mask = torch.cat((final_attention_mask, whole_attention_mask), dim=0)
-                final_token_type_ids = torch.cat((final_token_type_ids, whole_token_type_ids), dim=0)
+                # final_token_type_ids = torch.cat((final_token_type_ids, whole_token_type_ids), dim=0)
 
         out = self.bert_model(inputs_embeds=final_embeddings, attention_mask=final_attention_mask,
                               token_type_ids=final_token_type_ids)
