@@ -2493,6 +2493,7 @@ class TrainWholeModel:
 
 		qa_labels = (batch['label']).to(self.device)
 
+		# print("a")
 		# 得到模型的结果
 		logits = self.model(
 			q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
@@ -2502,11 +2503,15 @@ class TrainWholeModel:
 			b_input_ids=b_input_ids, b_token_type_ids=b_token_type_ids,
 			b_attention_mask=b_attention_mask)
 
+		# print("b")
 		# 计算损失
 		step_loss = cross_entropy_function(logits, qa_labels)
-
+		
+		# print("c")
 		# 误差反向传播
 		step_loss.backward()
+		# print("d")
+		# print("*"*10)
 
 		# 更新模型参数
 		if (now_batch_num + 1) % self.gradient_accumulation_steps == 0:

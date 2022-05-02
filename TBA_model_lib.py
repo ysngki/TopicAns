@@ -1213,7 +1213,7 @@ class DeepAnsModel(nn.Module):
 
         super(DeepAnsModel, self).__init__()
 
-        self.output_embedding_len = config.sentence_embedding_len
+        # self.output_embedding_len = config.sentence_embedding_len
 
         # 这个学习率不一样
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
@@ -1224,7 +1224,7 @@ class DeepAnsModel(nn.Module):
         self.convs = nn.ModuleList([nn.Conv2d(1, kernel_dim, (K, embedding_dim)) for K in kernel_sizes])
         
         # kernal_size = (K,D) 
-        self.dropout = nn.Dropout(dropout)
+        # self.dropout = nn.Dropout(dropout)
         # self.fc = nn.Linear(len(kernel_sizes) * kernel_dim, output_size)
         self.linear1 = torch.nn.Linear(600, 1028, bias=True)
         self.layer_norm1 = torch.nn.LayerNorm(1028)
@@ -1244,8 +1244,10 @@ class DeepAnsModel(nn.Module):
         if is_static:
             self.embedding.weight.requires_grad = False
     
-    def encode(self, input_ids, attention_mask):
+    def encode(self, input_ids, attention_mask, token_type_ids):
         # padding_len = (inputs == 0).sum(-1)
+
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
         padding_len = (attention_mask == 0).sum(-1)
 
@@ -1280,9 +1282,8 @@ class DeepAnsModel(nn.Module):
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):     
         
-        encode_xq = self.encode(q_input_ids, q_attention_mask)
-        encode_xa = self.encode(a_input_ids, a_attention_mask)
-
+        encode_xq = self.encode(q_input_ids, q_attention_mask, q_token_type_ids)
+        encode_xa = self.encode(a_input_ids, a_attention_mask, a_token_type_ids)
 
         x = torch.cat((encode_xq, encode_xa), 1)
 
