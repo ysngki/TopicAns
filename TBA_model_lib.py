@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.utils.data
 import numpy as np
 import torch.nn.functional
+import torch.nn.functional as F
 from attention_module import attend
 from pprint import pprint
 from vae import VAE
@@ -1189,6 +1190,115 @@ class BasicDeformer(nn.Module):
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
 
         return logits
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class DeepAnsConfig:
+    def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4):
+
+        self.tokenizer_len = tokenizer_len
+        self.pretrained_bert_path = pretrained_bert_path
+        self.num_labels = num_labels
+
+    def __str__(self):
+        print("*"*20 + "config" + "*"*20)
+        print("tokenizer_len:", self.tokenizer_len)
+        print("pretrained_bert_path:", self.pretrained_bert_path)
+
+class DeepAnsModel(nn.Module):
+    def __init__(self, config: DeepAnsConfig, embedding_dim=512, output_size=3, kernel_dim=100, 
+                 kernel_sizes=(3, 4, 5), dropout=0.5):
+
+        super(DeepAnsModel, self).__init__()
+
+        self.output_embedding_len = config.sentence_embedding_len
+
+        # 这个学习率不一样
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        # 这个embedding的grad会被计入bert model里，很好
+        self.embeddings = self.bert_model.get_input_embeddings()
+        self.convs = nn.ModuleList([nn.Conv2d(1, kernel_dim, (K, embedding_dim)) for K in kernel_sizes])
+        
+        # kernal_size = (K,D) 
+        self.dropout = nn.Dropout(dropout)
+        # self.fc = nn.Linear(len(kernel_sizes) * kernel_dim, output_size)
+        self.linear1 = torch.nn.Linear(600, 1028, bias=True)
+        self.layer_norm1 = torch.nn.LayerNorm(1028)
+        self.linear2 = torch.nn.Linear(1028, 128, bias=True)
+        self.layer_norm2 = torch.nn.LayerNorm(128)
+        self.linear3 = torch.nn.Linear(128, config.num_labels, bias=True)
+        
+        # torch.nn.init.xavier_uniform(self.linear1.weight)
+        self.relu = torch.nn.ReLU()
+    
+    def init_weights(self, pretrained_word_vectors, is_static=True):
+        torch.nn.init.xavier_uniform_(self.linear1.weight)
+        torch.nn.init.xavier_uniform_(self.linear2.weight)
+        torch.nn.init.xavier_uniform_(self.linear3.weight)
+        self.embedding.weight = nn.Parameter(torch.from_numpy(pretrained_word_vectors).float())
+        # self.embedding.weight.requires_grad = False
+        if is_static:
+            self.embedding.weight.requires_grad = False
+    
+    def encode(self, input_ids, attention_mask):
+        # padding_len = (inputs == 0).sum(-1)
+
+        padding_len = (attention_mask == 0).sum(-1)
+
+        # inputs = self.embedding(inputs).unsqueeze(1) # (B,1,T,D)
+        embedding = self.embeddings(input_ids).unsqueeze(1) # (B,1,T,D)
+        inputs = [F.relu(conv(embedding)).squeeze(3) for conv in self.convs] 
+
+        # remove padding here!!!!
+        # i = [batch size, out channel, seq_len - kernel_size + 1]
+        for i in inputs:
+            new_l = padding_len.unsqueeze(-1).unsqueeze(-1).expand_as(i).cuda()
+
+            temp = torch.arange(0, i.shape[-1]).cuda()
+            new_temp = temp.unsqueeze(0).unsqueeze(0).expand_as(i).cuda()
+
+            mask = (new_temp < new_l)
+            
+            ones = torch.ones_like(i)
+            ones[mask] = 0.0
+            ones = ones.cuda()
+
+            i = i*ones
+
+        inputs = [F.max_pool1d(i, i.size(2)).squeeze(2) for i in inputs]
+
+        # print(inputs[0].shape)
+        concated = torch.cat(inputs, 1)
+        concated = self.dropout(concated)
+        return concated
+  
+    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
+                a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask):     
+        
+        encode_xq = self.encode(q_input_ids, q_attention_mask)
+        encode_xa = self.encode(a_input_ids, a_attention_mask)
+
+
+        x = torch.cat((encode_xq, encode_xa), 1)
+
+        x = self.linear1(x)
+        x = self.relu(x)
+        x = self.layer_norm1(x)
+        x = self.dropout(x)
+
+        x = self.linear2(x)
+        x = self.relu(x)
+        x = self.layer_norm2(x)
+        x = self.dropout(x)
+
+        x = self.linear3(x)
+        
+        return x
 
 
 # --------------------------------------

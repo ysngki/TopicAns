@@ -15,7 +15,7 @@ import sys
 from tqdm import tqdm
 import re
 
-from TBA_model_lib import BasicConfig, BasicModel, InputMemorySelfAttConfig, \
+from TBA_model_lib import BasicConfig, BasicModel, DeepAnsModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig, BasicTopicModel, BasicTopicConfig, BasicDeformer, BasicDeformerConfig
 from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig, QATopicModel, QATopicConfig, QATopicMemoryModel
 from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset, VaeSignleTextDataset, TBATopicClassifyDataset, QATopicClassifyDataset
@@ -1336,7 +1336,7 @@ class TrainWholeModel:
 		# add model
 		if self.model_class == "CrossBERT":
 			return self.__train_step_for_cross
-		elif self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt',
+		elif self.model_class in ['BasicModel', 'DeepAnsModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt',
 								  'OneSupremeMemory', 'BasicDeformer']:
 			return self.__train_step_for_bi
 		elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
@@ -1370,7 +1370,7 @@ class TrainWholeModel:
 			for index, batch in enumerate(classify_dataloader):
 				# 读取数据
 				# add model
-				if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory', 'BasicDeformer']:
+				if self.model_class in ['BasicModel', 'DeepAnsModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory', 'BasicDeformer']:
 					logits = self.__val_step_for_bi(batch)
 				elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 					logits = self.__val_step_for_qa_input(batch)
@@ -1998,7 +1998,9 @@ class TrainWholeModel:
 		# add model
 		if self.model_class == 'BasicModel':
 			model = BasicModel(config=self.config)
-		if self.model_class == 'BasicDeformer':
+		elif self.model_class ==  'DeepAnsModel':
+			model = DeepAnsModel(config=self.config)	
+		elif self.model_class == 'BasicDeformer':
 			model = BasicDeformer(config=self.config)
 		elif self.model_class == 'BasicTopicModel':
 			model = BasicTopicModel(config=self.config)
@@ -2157,6 +2159,10 @@ class TrainWholeModel:
 										sentence_embedding_len=sentence_embedding_len,
 										composition=self.composition,
 										topic_num=args.latent_dim)
+		elif self.model_class == 'DeepAnsModel':
+			config = BasicConfig(len(self.tokenizer),
+								 pretrained_bert_path=args.pretrained_bert_path,
+								 num_labels=args.label_num)
 		elif self.model_class == 'InputMemorySelfAtt':
 			config = InputMemorySelfAttConfig(len(self.tokenizer),
 											  pretrained_bert_path=args.pretrained_bert_path,
@@ -2243,6 +2249,17 @@ class TrainWholeModel:
                 {'params': model.bert_model.parameters(), 'lr': 5e-5},
                 {'params': model.classifier.parameters(), 'lr': 1e-4},
             ]
+		elif self.model_class == 'DeepAnsModel':
+			parameters_dict_list = [
+				# 这几个一样
+				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				{'params': model.convs.parameters(), 'lr': 5e-5},
+				{'params': model.linear1.parameters(), 'lr': 5e-5},
+				{'params': model.linear2.parameters(), 'lr': 5e-5},
+				{'params': model.linear3.parameters(), 'lr': 5e-5},
+				{'params': model.layer_norm1.parameters(), 'lr': 5e-5},
+				{'params': model.layer_norm2.parameters(), 'lr': 5e-5},
+			]
 		elif self.model_class == 'QATopicModel':
 			parameters_dict_list = [
 				# 这几个一样
@@ -2723,7 +2740,7 @@ class TrainWholeModel:
 								  int((split_index + 1) * len(data) / split_num)]
 
 		# add model
-		if self.model_class in ['BasicModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory']:
+		if self.model_class in ['BasicModel', 'DeepAnsModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory']:
 			now_dataset = TBAClassifyDataset(data=now_data_block,
 											 tokenizer=self.tokenizer,
 											 text_max_len=self.text_max_len - self.memory_num)

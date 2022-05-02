@@ -36,7 +36,7 @@ def read_arguments():
 
 	# must set
 	# add model
-	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel',
+	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel', 'DeepAnsModel',
 							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory', 'QATopicModel', 'QATopicMemoryModel'])
 
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
