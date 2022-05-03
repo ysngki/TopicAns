@@ -156,8 +156,10 @@ class TrainWholeModel:
 			self.model = self.__create_model()
 			
 			# 读取事先训练好的
-			if self.model_class in ['BasicTopicModel', 'QATopicModel', 'QATopicMemoryModel', 'QAOnlyMemoryModel']:
+			if self.model_class in ['BasicTopicModel', 'QATopicModel']:
 				self.model.vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim) + "_" + str(self.idf_min))['vae'])
+			if self.model_class in ['QATopicMemoryModel', 'QAOnlyMemoryModel']:
+				self.model.load_vae("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim) + "_" + str(self.idf_min))
 	
 			# 读取预训练好的memory，适用于需要memory的模型，如 QAmemory
 			if self.load_memory_flag:

@@ -363,6 +363,9 @@ class QATopicMemoryModel(nn.Module):
         # 这个embedding的grad会被计入bert model里，很好
         self.embeddings = self.bert_model.get_input_embeddings()
 
+        # topic memory
+        self.topic_word_matrix = None
+
         # memory transformation
         self.memory_layer = nn.Sequential(
             nn.Linear(config.voc_size, 2 * config.word_embedding_len),
@@ -386,6 +389,15 @@ class QATopicMemoryModel(nn.Module):
         self.relu = torch.nn.ReLU(inplace=True)
         self.softmax = torch.nn.Softmax(dim=-2)
         self.composition = config.composition
+
+    def load_vae(self, vae_path):
+        self.vae.load_state_dict(torch.load(vae_path)['vae'])
+
+        with torch.no_grad():
+            idxes = torch.eye(self.config.topic_num)
+            word_dist = self.vae.decode(idxes)
+            word_dist = torch.softmax(word_dist,dim=1)
+            self.topic_word_matrix = word_dist
 
     # use topic memory to enrich 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
@@ -552,6 +564,8 @@ class QAOnlyMemoryModel(nn.Module):
         # 这个embedding的grad会被计入bert model里，很好
         self.embeddings = self.bert_model.get_input_embeddings()
 
+        self.topic_word_matrix = None
+        
         # memory transformation
         self.memory_layer = nn.Sequential(
             nn.Linear(config.voc_size, 2 * config.word_embedding_len),
@@ -575,6 +589,15 @@ class QAOnlyMemoryModel(nn.Module):
         self.relu = torch.nn.ReLU(inplace=True)
         self.softmax = torch.nn.Softmax(dim=-2)
         self.composition = config.composition
+
+    def load_vae(self, vae_path):
+        self.vae.load_state_dict(torch.load(vae_path)['vae'])
+
+        with torch.no_grad():
+            idxes = torch.eye(self.config.topic_num)
+            word_dist = self.vae.decode(idxes)
+            word_dist = torch.softmax(word_dist,dim=1)
+            self.topic_word_matrix = word_dist
 
     # use topic memory to enrich 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
