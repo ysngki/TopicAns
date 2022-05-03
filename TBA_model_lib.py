@@ -1,4 +1,4 @@
-from transformers import BertConfig, AutoModel
+from transformers import BertConfig, AutoModel, AutoConfig
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -1085,19 +1085,19 @@ class BasicDeformer(nn.Module):
         self.sentence_embedding_len = config.sentence_embedding_len
 
         # 这个学习率不一样
-        this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
+        this_bert_config = AutoConfig.from_pretrained(config.pretrained_bert_path)
         this_bert_config.num_labels = self.num_labels
 
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path, config=this_bert_config)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
-        self.embeddings = self.bert_model.bert.embeddings
+        self.embeddings = self.bert_model.embeddings
 
-        whole_encoder = self.bert_model.bert.encoder
+        whole_encoder = self.bert_model.encoder
 
         self.lower_encoder = whole_encoder.layer[:this_bert_config.num_hidden_layers - self.config.top_layer_num]
         self.upper_encoder = whole_encoder.layer[this_bert_config.num_hidden_layers - self.config.top_layer_num:]
         # take cls in and out a new vector
-        self.pooler_layer = self.bert_model.bert.pooler
+        self.pooler_layer = self.bert_model.pooler
 
         # take a vector in and out a logits
         self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
@@ -1170,7 +1170,7 @@ class BasicDeformer(nn.Module):
                                                          token_type_id=q_token_type_ids)
 
         # encoding b
-        b_token_type_ids = b_token_type_ids + 1
+        # b_token_type_ids = b_token_type_ids + 1
 
         b_lower_encoded_embeddings = self.lower_encoding(input_ids=b_input_ids,
                                                          attention_mask=b_attention_mask,
