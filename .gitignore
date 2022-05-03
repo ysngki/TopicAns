@@ -12,3 +12,4 @@ ask_ubuntu/
 /tokenizer/
 /logs/
 /__pycache__/
+/huggingface/
