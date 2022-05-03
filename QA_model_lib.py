@@ -1,5 +1,5 @@
 import imp
-from transformers import AutoModel, BertForSequenceClassification, BertConfig
+from transformers import AutoModel, BertForSequenceClassification, BertConfig, AutoConfig
 from transformers.models.bert.my_modeling_bert import MyBertModel, DecoderLayerChunk
 import torch
 import torch.nn as nn
@@ -742,6 +742,145 @@ class QAOnlyMemoryModel(nn.Module):
         # logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
 
         return logits, vae_loss
+
+
+class QAOnlyHopMemoryModel(nn.Module):
+    def __init__(self, config: QATopicConfig):
+
+        super(QAOnlyHopMemoryModel, self).__init__()
+
+        self.vae = VAE(config.voc_size, n_topic=config.topic_num)
+        self.output_embedding_len = config.sentence_embedding_len
+
+        self.config = config
+
+        # 这个学习率不一样
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        # 这个embedding的grad会被计入bert model里，很好
+        self.embeddings = self.bert_model.get_input_embeddings()
+
+        # memory transformation
+        self.memory_layer = nn.Sequential(
+            nn.Linear(config.voc_size, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, config.word_embedding_len),
+        )
+        self.memory_LayerNorm = nn.LayerNorm(config.word_embedding_len)
+
+        # 注意力模型
+        self.query_layer = nn.Sequential(
+            nn.Linear(config.topic_num, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, config.word_embedding_len),
+        )
+        self.LayerNorm = nn.LayerNorm(config.word_embedding_len)
+
+        # 这些的学习率一样
+        # self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+        self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.softmax = torch.nn.Softmax(dim=-2)
+        self.composition = config.composition
+
+        # 这个学习率不一样
+        self.whole_encoder = self.bert_model.encoder.layer
+
+    # encode a text using lower layers
+    def get_rep_by_pooler(self, input_ids, attention_mask, token_type_id, **kwargs):
+        input_ids, attention_mask, token_type_id = clean_input_ids(input_ids, attention_mask, token_type_id)
+        
+        # get memory
+        idxes = torch.eye(self.config.topic_num).to(device)
+
+        word_dist = self.vae.decode(idxes)
+        word_dist = torch.softmax(word_dist,dim=1)
+        
+        # print(word_dist.shape)
+
+        topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
+
+        # 获得隐藏层输出, (batch, sequence, embedding)
+        embeddings = self.embeddings(input_ids=input_ids)
+        hidden_states = embeddings
+
+        device = input_ids.device
+
+        for layer_module in self.whole_encoder:
+            # append memory for this layer
+            final_embeddings = None
+            final_attention_mask = None
+
+            # concatenate memory
+            # input_ids (batch, sequence)
+            memory_len_one_tensor = torch.tensor([1] * self.config.topic_num, requires_grad=False, device=device)
+
+            for index, batch_attention_mask in enumerate(attention_mask):
+                input_embeddings = hidden_states[index][batch_attention_mask == 1]
+                pad_embeddings = hidden_states[index][batch_attention_mask == 0]
+
+                whole_embeddings = torch.cat((input_embeddings, topic_memory, pad_embeddings), dim=0)
+
+                # 处理attention_mask
+                whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
+                                                batch_attention_mask[batch_attention_mask == 0]), dim=-1)
+
+                whole_embeddings = whole_embeddings.unsqueeze(0)
+                whole_attention_mask = whole_attention_mask.unsqueeze(0)
+
+                if final_embeddings is None:
+                    final_embeddings = whole_embeddings
+                    final_attention_mask = whole_attention_mask
+                else:
+                    final_embeddings = torch.cat((final_embeddings, whole_embeddings), dim=0)
+                    final_attention_mask = torch.cat((final_attention_mask, whole_attention_mask), dim=0)
+                    
+                extended_attention_mask = self.bert_model.get_extended_attention_mask(final_attention_mask, final_attention_mask.shape, device)
+
+                layer_outputs = layer_module(
+                    final_embeddings,
+                    extended_attention_mask
+                )
+                hidden_states = layer_outputs[0]
+                
+        return hidden_states
+
+    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
+                a_input_ids, a_token_type_ids, a_attention_mask,
+                b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
+
+        # 先编码question
+        q_input_ids, q_attention_mask, q_token_type_ids = clean_input_ids(q_input_ids, q_attention_mask, q_token_type_ids)
+        b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask, b_token_type_ids)
+
+        # encoding a
+        t_lower_encoded_embeddings = self.lower_encoding(input_ids=q_input_ids,
+                                                         attention_mask=q_attention_mask,
+                                                         token_type_id=q_token_type_ids)
+
+        # encoding b
+        b_token_type_ids = b_token_type_ids + 1
+
+        b_lower_encoded_embeddings = self.lower_encoding(input_ids=b_input_ids,
+                                                         attention_mask=b_attention_mask,
+                                                         token_type_id=b_token_type_ids)
+
+        # encoding together
+        joint_embeddings = self.joint_encoding(a_embeddings=t_lower_encoded_embeddings,
+                                               b_embeddings=b_lower_encoded_embeddings,
+                                               a_attention_mask=q_attention_mask,
+                                               b_attention_mask=b_attention_mask)
+
+        q_embeddings = self.pooler_layer(joint_embeddings)
+
+        # 编码answer
+        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
+
+        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
+
+        return logits
 
 
 # --------------------------------------
