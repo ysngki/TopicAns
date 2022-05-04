@@ -2282,7 +2282,7 @@ class TrainWholeModel:
 				# 这几个一样
 				{'params': model.query_layer.parameters(), 'lr': 1e-4},
 				{'params': model.memory_layer.parameters(), 'lr': 1e-4},
-				{'params': model.vae.parameters(), 'lr': 1e-4},
+				# {'params': model.vae.parameters(), 'lr': 1e-4},
 				{'params': model.LayerNorm.parameters(), 'lr': 1e-4},
 				{'params': model.memory_LayerNorm.parameters(), 'lr': 1e-4},
 				# 这个不设定
