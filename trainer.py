@@ -375,6 +375,10 @@ class TrainWholeModel:
 
 				this_best_r_1 = self.do_val()
 
+				print("#"*15 + " do test see see " + "#"*15)
+				self.do_test()
+				print("#"*15 + " do test see end " + "#"*15)
+				
 				postfix = ""
 				if not final_stage_flag:
 					postfix = "_middle"
