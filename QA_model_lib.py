@@ -400,22 +400,13 @@ class QATopicMemoryModel(nn.Module):
             self.topic_word_matrix = word_dist
 
     # use topic memory to enrich 
-    def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
+    def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask, topic_vector):
+        top_num = 10
+        # top_num = self.config.topic_num
+        
         # print(input_ids.shape)
-
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         device = input_ids.device
-
-        # ----------------------通过memory来丰富信息---------------------
-        # get topic memory
-        idxes = torch.eye(self.config.topic_num).to(device)
-
-        word_dist = self.vae.decode(idxes)
-        word_dist = torch.softmax(word_dist,dim=1)
-        
-        # print(word_dist.shape)
-
-        topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
 
         # 获得隐藏层输出, (batch, sequence, embedding)
         temp_embeddings = self.embeddings(input_ids)
@@ -426,10 +417,25 @@ class QATopicMemoryModel(nn.Module):
 
         # concatenate memory
         # input_ids (batch, sequence)
-        memory_len_one_tensor = torch.tensor([1] * self.config.topic_num, requires_grad=False, device=device)
+        memory_len_one_tensor = torch.tensor([1] * top_num, requires_grad=False, device=device)
         one_tensor = torch.tensor([1], requires_grad=False, device=device)
 
         for index, batch_attention_mask in enumerate(attention_mask):
+             # ----------------------通过memory来丰富信息---------------------
+            # get topic memory
+            _, top_indices = topic_vector[index].topk(top_num)
+            
+            idxes = torch.eye(self.config.topic_num).to(device)
+            idxes = torch.index_select(idxes, 0, top_indices)
+
+            word_dist = self.vae.decode(idxes)
+            word_dist = torch.softmax(word_dist,dim=1)
+            
+            # print(word_dist.shape)
+
+            topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
+            # -----------------------------------------
+
             input_embeddings = temp_embeddings[index][batch_attention_mask == 1]
             pad_embeddings = temp_embeddings[index][batch_attention_mask == 0]
 
@@ -440,7 +446,7 @@ class QATopicMemoryModel(nn.Module):
                                               batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
             # 处理token_type_id
-            remain_token_type_ids_len = batch_attention_mask.shape[0] + self.config.topic_num - input_embeddings.shape[0]
+            remain_token_type_ids_len = batch_attention_mask.shape[0] + top_num - input_embeddings.shape[0]
             whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
                                               one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
 
@@ -531,9 +537,9 @@ class QATopicMemoryModel(nn.Module):
         # a_embeddings = self.get_rep_by_topic_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
         #                                                 attention_mask=a_attention_mask, topic_vector=a_mu)
 
-        q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask)
+        q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask, topic_vector=q_mu)
 
-        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
+        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask, topic_vector=a_mu)
 
         # 计算得到分类概率
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings, q_topic=q_mu, a_topic=a_mu)
