@@ -401,8 +401,8 @@ class QATopicMemoryModel(nn.Module):
 
     # use topic memory to enrich 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask, topic_vector):
-        top_num = 10
-        # top_num = self.config.topic_num
+        # top_num = 10
+        top_num = self.config.topic_num
         
         # print(input_ids.shape)
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
