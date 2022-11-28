@@ -2134,7 +2134,7 @@ class TrainWholeModel:
 										 '/data/yuanhang/pretrained_model/prajjwal1/bert-medium']:
 			word_embedding_len = 512
 			sentence_embedding_len = 512
-		elif args.pretrained_bert_path in ['bert-base-uncased', '/data/yuanhang/pretrained_model/bert-base-uncased', 'huggingface/CodeBERTa-small-v1']:
+		elif args.pretrained_bert_path in ['bert-base-uncased', '/data/yuanhang/pretrained_model/bert-base-uncased', 'huggingface/CodeBERTa-small-v1', 'google/bert_uncased_L-6_H-768_A-12']:
 			word_embedding_len = 768
 			sentence_embedding_len = 768
 		elif args.pretrained_bert_path == 'google/bert_uncased_L-2_H-128_A-2':
