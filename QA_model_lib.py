@@ -7,6 +7,7 @@ import torch.utils.data
 import numpy as np
 import torch.nn.functional
 from vae import VAE
+import torch.nn.functional as F
 
 
 # model list
@@ -198,7 +199,8 @@ class QAModel(nn.Module):
 # --------------------------------------
 class QATopicConfig:
     def __init__(self, tokenizer_len, voc_size, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
-                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler', topic_num=50):
+                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler', topic_num=50, 
+                 cnn_output_dim=128, kernel_sizes=(3, 4, 5)):
 
         self.tokenizer_len = tokenizer_len
         self.voc_size = voc_size
@@ -208,6 +210,8 @@ class QATopicConfig:
         self.sentence_embedding_len = sentence_embedding_len
         self.composition = composition
         self.topic_num = topic_num
+        self.cnn_output_dim = cnn_output_dim
+        self.kernel_sizes = kernel_sizes
 
     def __str__(self):
         print("*"*20 + "config" + "*"*20)
@@ -536,6 +540,193 @@ class QATopicMemoryModel(nn.Module):
 
         # a_embeddings = self.get_rep_by_topic_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
         #                                                 attention_mask=a_attention_mask, topic_vector=a_mu)
+
+        q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask, topic_vector=q_mu)
+
+        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask, topic_vector=a_mu)
+
+        # 计算得到分类概率
+        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings, q_topic=q_mu, a_topic=a_mu)
+
+        # only memory
+        # logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
+
+        return logits, vae_loss
+
+
+# --------------------------------------
+# fen ge xian
+# --------------------------------------
+class QACNNTopicMemoryModel(nn.Module):
+    def __init__(self, config: QATopicConfig):
+
+        super(QACNNTopicMemoryModel, self).__init__()
+
+        self.vae = VAE(config.voc_size, n_topic=config.topic_num)
+        self.output_embedding_len = config.sentence_embedding_len
+
+        self.config = config
+
+        # pretrained encoder
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        # 这个embedding的grad会被计入bert model里，很好
+        self.embeddings = self.bert_model.get_input_embeddings()
+        self.bert_model = None
+
+        # topic memory
+        self.topic_word_matrix = None
+
+        # memory transformation: convert topic-word distribution to memory
+        self.memory_layer = nn.Sequential(
+            nn.Linear(config.voc_size, 2 * config.word_embedding_len),
+            nn.ReLU(),
+            nn.Linear(2 * config.word_embedding_len, config.word_embedding_len),
+        )
+        self.memory_LayerNorm = nn.LayerNorm(config.word_embedding_len)
+        
+        # CNN module
+        self.convs = nn.ModuleList([nn.Conv2d(1, self.config.cnn_output_dim, (K, self.config.word_embedding_len)) for K in self.config.kernel_sizes])
+        self.linear1 = torch.nn.Linear(self.config.cnn_output_dim*len(self.config.kernel_sizes), config.sentence_embedding_len*2, bias=True)
+        self.layer_norm1 = torch.nn.LayerNorm(config.sentence_embedding_len*2)
+        self.linear2 = torch.nn.Linear(config.sentence_embedding_len*2, config.sentence_embedding_len, bias=True)
+        self.layer_norm2 = torch.nn.LayerNorm(config.sentence_embedding_len)
+        
+        # classifier
+        self.classifier = QATopicClassifier(input_len=config.sentence_embedding_len, topic_num=config.topic_num, num_labels=config.num_labels)
+
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.softmax = torch.nn.Softmax(dim=-2)
+        self.composition = config.composition
+
+        self.dropout = nn.Dropout(0.2)
+
+    def load_vae(self, vae_path):
+        self.vae.load_state_dict(torch.load(vae_path)['vae'])
+
+        with torch.no_grad():
+            idxes = torch.eye(self.config.topic_num)
+            word_dist = self.vae.decode(idxes)
+            word_dist = torch.softmax(word_dist,dim=1)
+            self.topic_word_matrix = word_dist
+
+    # use topic memory to enrich 
+    def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask, topic_vector):
+        # top_num = 10
+        top_num = self.config.topic_num
+        
+        # print(input_ids.shape)
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+        device = input_ids.device
+
+        # 获得隐藏层输出, (batch, sequence, embedding)
+        temp_embeddings = self.embeddings(input_ids)
+
+        final_embeddings = None
+        final_attention_mask = None
+
+        # concatenate memory
+        # input_ids (batch, sequence)
+        memory_len_one_tensor = torch.tensor([1] * top_num, requires_grad=False, device=device)
+
+        for index, batch_attention_mask in enumerate(attention_mask):
+            # ----------------------通过memory来丰富信息---------------------
+            # get topic memory
+            _, top_indices = topic_vector[index].topk(top_num)
+            
+            idxes = torch.eye(self.config.topic_num).to(device)
+            idxes = torch.index_select(idxes, 0, top_indices)
+
+            word_dist = self.vae.decode(idxes)
+            word_dist = torch.softmax(word_dist,dim=1)
+            
+            # print(word_dist.shape)
+
+            topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
+            # -----------------------------------------
+
+            input_embeddings = temp_embeddings[index][batch_attention_mask == 1]
+            pad_embeddings = temp_embeddings[index][batch_attention_mask == 0]
+
+            whole_embeddings = torch.cat((input_embeddings, topic_memory, pad_embeddings), dim=0)
+
+            # 处理attention_mask
+            whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
+                                              batch_attention_mask[batch_attention_mask == 0]), dim=-1)
+
+            whole_embeddings = whole_embeddings.unsqueeze(0)
+            whole_attention_mask = whole_attention_mask.unsqueeze(0)
+
+            if final_embeddings is None:
+                final_embeddings = whole_embeddings
+                final_attention_mask = whole_attention_mask
+            else:
+                final_embeddings = torch.cat((final_embeddings, whole_embeddings), dim=0)
+                final_attention_mask = torch.cat((final_attention_mask, whole_attention_mask), dim=0)
+
+        inputs = [F.relu(conv(final_embeddings)).squeeze(3) for conv in self.convs] 
+        
+        # remove padding here!!!!
+        non_padding_len = (final_attention_mask == 1).sum(-1)
+
+        # i = [batch size, out channel, seq_len - kernel_size + 1]
+        final_output = []
+        for i in inputs:
+            new_l = non_padding_len.unsqueeze(-1).unsqueeze(-1).expand_as(i).cuda()
+
+            temp = torch.arange(0, i.shape[-1]).cuda()
+            new_temp = temp.unsqueeze(0).unsqueeze(0).expand_as(i).cuda()
+
+            mask = (new_temp >= new_l)
+            
+            ones = torch.ones_like(i)
+            ones[mask] = 0.0
+            ones = ones.cuda()
+
+            new_i = i*ones
+            final_output.append(new_i)
+
+        max_output = [F.max_pool1d(i, i.size(2)).squeeze(2) for i in final_output]
+
+        concated = torch.cat(max_output, 1)
+        concated = self.dropout(concated)
+
+        x = self.linear1(concated)
+        x = self.relu(x)
+        x = self.layer_norm1(x)
+        x = self.dropout(x)
+
+        x = self.linear2(x)
+        x = self.relu(x)
+        x = self.layer_norm2(x)
+        x = self.dropout(x)
+
+        return x
+
+
+    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
+                a_input_ids, a_token_type_ids, a_attention_mask, q_bow, a_bow, word_idf=None):
+        q_reconst, q_mu, q_log_var = self.vae(q_bow, lambda x: torch.softmax(x, dim=1))
+        a_reconst, a_mu, a_log_var = self.vae(a_bow, lambda x: torch.softmax(x, dim=1))
+
+        logsoftmax = torch.log_softmax(q_reconst, dim=1)
+        if word_idf is None:
+            q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax)
+        else:
+            q_rec_loss = -1.0 * torch.mean(q_bow * logsoftmax *  word_idf)
+
+        q_kl_div = -0.5 * torch.mean(1 + q_log_var - q_mu.pow(2) - q_log_var.exp())
+        
+        logsoftmax = torch.log_softmax(a_reconst, dim=1)
+        if word_idf is None:
+            a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax)
+        else:
+            a_rec_loss = -1.0 * torch.mean(a_bow * logsoftmax * word_idf)
+
+        a_kl_div = -0.5 * torch.mean(1 + a_log_var - a_mu.pow(2) - a_log_var.exp())
+
+        vae_loss = q_rec_loss + a_rec_loss + q_kl_div  + a_kl_div
 
         q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask, topic_vector=q_mu)
 
