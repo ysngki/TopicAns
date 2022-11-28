@@ -665,7 +665,7 @@ class QACNNTopicMemoryModel(nn.Module):
                 final_embeddings = torch.cat((final_embeddings, whole_embeddings), dim=0)
                 final_attention_mask = torch.cat((final_attention_mask, whole_attention_mask), dim=0)
 
-        inputs = [F.relu(conv(final_embeddings)).squeeze(3) for conv in self.convs] 
+        inputs = [F.relu(conv(final_embeddings.unsqueeze(1))).squeeze(3) for conv in self.convs] 
         
         # remove padding here!!!!
         non_padding_len = (final_attention_mask == 1).sum(-1)
