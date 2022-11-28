@@ -2322,6 +2322,7 @@ class TrainWholeModel:
 				{'params': model.embeddings.parameters(), 'lr': self.bert_lr},
 				# 这几个一样
 				{'params': model.memory_layer.parameters(), 'lr': 1e-4},
+				{'params': model.embedding_scale_layer.parameters(), 'lr': 1e-4},
 				{'params': model.convs.parameters(), 'lr': 1e-4},
 				{'params': model.linear1.parameters(), 'lr': 1e-4},
 				{'params': model.linear2.parameters(), 'lr': 1e-4},

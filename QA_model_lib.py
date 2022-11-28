@@ -574,20 +574,23 @@ class QACNNTopicMemoryModel(nn.Module):
         # 这个embedding的grad会被计入bert model里，很好
         self.embeddings = self.bert_model.get_input_embeddings()
         self.bert_model = None
+        new_embedding_size = 100
 
         # topic memory
         self.topic_word_matrix = None
 
         # memory transformation: convert topic-word distribution to memory
         self.memory_layer = nn.Sequential(
-            nn.Linear(config.voc_size, 2 * config.word_embedding_len),
+            nn.Linear(config.voc_size, 2 * new_embedding_size),
             nn.ReLU(),
-            nn.Linear(2 * config.word_embedding_len, config.word_embedding_len),
+            nn.Linear(2 * new_embedding_size, new_embedding_size),
         )
-        self.memory_LayerNorm = nn.LayerNorm(config.word_embedding_len)
+        self.memory_LayerNorm = nn.LayerNorm(new_embedding_size)
         
         # CNN module
-        self.convs = nn.ModuleList([nn.Conv2d(1, self.config.cnn_output_dim, (K, self.config.word_embedding_len)) for K in self.config.kernel_sizes])
+        self.embedding_scale_layer = torch.nn.Linear(self.config.word_embedding_len, new_embedding_size, bias=True)
+
+        self.convs = nn.ModuleList([nn.Conv2d(1, self.config.cnn_output_dim, (K, new_embedding_size)) for K in self.config.kernel_sizes])
         self.linear1 = torch.nn.Linear(self.config.cnn_output_dim*len(self.config.kernel_sizes), config.sentence_embedding_len*2, bias=True)
         self.layer_norm1 = torch.nn.LayerNorm(config.sentence_embedding_len*2)
         self.linear2 = torch.nn.Linear(config.sentence_embedding_len*2, config.sentence_embedding_len, bias=True)
@@ -621,7 +624,7 @@ class QACNNTopicMemoryModel(nn.Module):
         device = input_ids.device
 
         # 获得隐藏层输出, (batch, sequence, embedding)
-        temp_embeddings = self.embeddings(input_ids)
+        temp_embeddings = self.embedding_scale_layer(self.embeddings(input_ids))
 
         final_embeddings = None
         final_attention_mask = None
