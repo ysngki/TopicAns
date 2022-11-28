@@ -155,7 +155,7 @@ class TrainWholeModel:
 			# 创建模型，根据 model_class 的选择
 			self.model = self.__create_model()
 			
-			# 读取事先训练好的
+			# 读取事先训练好的topic model
 			if self.model_class in ['BasicTopicModel', 'QATopicModel']:
 				self.model.vae.load_state_dict(torch.load("./model/vae/" + self.dataset_name + "_" + str(self.latent_dim) + "_" + str(self.idf_min))['vae'])
 			if self.model_class in ['QATopicMemoryModel', 'QAOnlyMemoryModel']:
@@ -177,7 +177,7 @@ class TrainWholeModel:
 
 			self.__model_to_device()
 
-			# 读取事先训练好的
+			# 打印topic model的词分布
 			if self.model_class in ['BasicTopicModel', 'QATopicModel', 'QATopicMemoryModel', 'QAOnlyMemoryModel']:
 				topic_words = self.model.vae.show_topic_words(dictionary=self.dictionary, device=self.device)
 				for t in topic_words:
@@ -463,7 +463,7 @@ class TrainWholeModel:
 		
 		GOOD_SYMBOLS_RE = re.compile('[^0-9a-z #+_]')
 
-		# 进行文本处理，获得all_bodies和all_answers
+		# 进行文本处理，获得all_bodies(question的title和body拼在一起)和all_answers
 		if os.path.exists("./" + self.dataset_name + "/vae_docs.dict"):
 			vae_docs = torch.load("./" + self.dataset_name + "/vae_docs.dict")
 			all_bodies = vae_docs['all_bodies']

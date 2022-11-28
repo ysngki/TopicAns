@@ -229,7 +229,7 @@ class QATopicModel(nn.Module):
         self.vae = VAE(config.voc_size, n_topic=config.topic_num)
         self.output_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
+        # pretrained encoder
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
@@ -240,7 +240,7 @@ class QATopicModel(nn.Module):
         # self.query_for_question = nn.Parameter(torch.randn(config.word_embedding_len))
         # self.query_for_answer = nn.Parameter(torch.randn(config.word_embedding_len))
 
-        # 注意力模型
+        # scale topic distribution z to word embeddings
         self.query_layer = nn.Sequential(
             nn.Linear(config.topic_num, 2 * config.word_embedding_len),
             nn.ReLU(),
@@ -248,7 +248,7 @@ class QATopicModel(nn.Module):
         )
         self.LayerNorm = nn.LayerNorm(config.word_embedding_len)
 
-        # 这些的学习率一样
+        # classifier
         # self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
         self.classifier = QATopicClassifier(input_len=config.sentence_embedding_len, topic_num=config.topic_num, num_labels=config.num_labels)
 
@@ -356,7 +356,7 @@ class QATopicMemoryModel(nn.Module):
 
         self.config = config
 
-        # 这个学习率不一样
+        # pretrained encoder
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
@@ -366,7 +366,7 @@ class QATopicMemoryModel(nn.Module):
         # topic memory
         self.topic_word_matrix = None
 
-        # memory transformation
+        # memory transformation: convert topic-word distribution to memory
         self.memory_layer = nn.Sequential(
             nn.Linear(config.voc_size, 2 * config.word_embedding_len),
             nn.ReLU(),
@@ -382,7 +382,7 @@ class QATopicMemoryModel(nn.Module):
         )
         self.LayerNorm = nn.LayerNorm(config.word_embedding_len)
 
-        # 这些的学习率一样
+        # classifier
         # self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
         self.classifier = QATopicClassifier(input_len=config.sentence_embedding_len, topic_num=config.topic_num, num_labels=config.num_labels)
 

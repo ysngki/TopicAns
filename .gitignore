@@ -14,3 +14,4 @@ ask_ubuntu/
 /logs/
 /__pycache__/
 /huggingface/
+my_figure/
