@@ -1510,11 +1510,15 @@ class TrainWholeModel:
 		PAIR_STEP = 2000
 
 		# 统计长度和准确率相关
-		len_dis = []
-		acc_dis = []
+		a_len_dis = []
+		a_acc_dis = []
+		q_len_dis = []
+		q_acc_dis = []
 		for _ in range(16):
-			len_dis.append(0)
-			acc_dis.append(0)
+			q_len_dis.append(0)
+			q_acc_dis.append(0)
+			a_len_dis.append(0)
+			a_acc_dis.append(0)
 
 		while now_pair_index < len(ranking_qa_pairs):
 			# 获得memory合并的字符串
@@ -1607,10 +1611,13 @@ class TrainWholeModel:
 				question_length = q_attention_mask.sum(-1).view(-1, self.ranking_candidate_num)[:, 0]
 				answer_length = torch.mean(a_attention_mask.sum(-1).view(-1, self.ranking_candidate_num).type(torch.FloatTensor), dim=-1)
 				
-				considered_length = answer_length
+				a_considered_length = answer_length
+				q_considered_length = question_length
 
-				for l in considered_length:
-					len_dis[int((l.item()-1)//32)] += 1
+				for l in a_considered_length:
+					a_len_dis[int((l.item()-1)//32)] += 1
+				for l in q_considered_length:
+					q_len_dis[int((l.item()-1)//32)] += 1
 
 				with torch.no_grad():
 					logits = self.model(
@@ -1637,7 +1644,8 @@ class TrainWholeModel:
 				
 				for index, r in enumerate(model_ranking[-real_step:]):
 					if r == 1:
-						acc_dis[int((considered_length[index].item()-1)//32)] += 1
+						a_acc_dis[int((a_considered_length[index].item()-1)//32)] += 1
+						q_acc_dis[int((q_considered_length[index].item()-1)//32)] += 1
 
 			now_pair_index += PAIR_STEP
 
@@ -1662,12 +1670,13 @@ class TrainWholeModel:
 													k, self.hits_count(model_ranking, k)))
 		
 		print()
-		# print("Len dis:\t", len_dis)
-		# print("Acc dis:\t", acc_dis)
-		for index, a in enumerate(acc_dis):
-			# acc_dis[index] = a/len_dis[index]
-			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/(len_dis[index]+1)}")
 
+		for index, a in enumerate(a_acc_dis):
+			print(f"answer {index*32 + 32}, \t{a_len_dis[index]}, \t{a_acc_dis[index]}, \t{a/(a_len_dis[index]+1)}")
+		print()
+		for index, q in enumerate(q_acc_dis):
+			print(f"question {index*32 + 32}, \t{q_len_dis[index]}, \t{q_acc_dis[index]}, \t{q/(q_len_dis[index]+1)}")
+   
 		# print("Acc dis:\t", acc_dis)
 		print("---------------------- end ranking ------------------------")
 		self.model.train()
@@ -1695,11 +1704,15 @@ class TrainWholeModel:
 		PAIR_STEP = 2000
 
 		# 统计长度和准确率相关
-		len_dis = []
-		acc_dis = []
+		a_len_dis = []
+		q_len_dis = []
+		a_acc_dis = []
+		q_acc_dis = []
 		for _ in range(16):
-			len_dis.append(0)
-			acc_dis.append(0)
+			a_len_dis.append(0)
+			a_acc_dis.append(0)
+			q_acc_dis.append(0)
+			q_len_dis.append(0)
 
 		while now_pair_index < len(ranking_qa_pairs):
 			# 取一定数量的数据
@@ -1812,11 +1825,15 @@ class TrainWholeModel:
 				question_length = q_attention_mask.sum(-1).view(-1, self.ranking_candidate_num)[:, 0]
 				answer_length = torch.mean(a_attention_mask.sum(-1).view(-1, self.ranking_candidate_num).type(torch.FloatTensor), dim=-1)
 				
-				considered_length = answer_length
+				a_considered_length = answer_length
+				q_considered_length = question_length
 
-				for l in considered_length:
-					len_dis[int((l.item()-1)//32)] += 1
+				for l in a_considered_length:
+					a_len_dis[int((l.item()-1)//32)] += 1
 
+				for l in q_considered_length:
+					q_len_dis[int((l.item()-1)//32)] += 1
+     
 				with torch.no_grad():
 					logits, _ = self.model(
 						q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
@@ -1842,7 +1859,8 @@ class TrainWholeModel:
 				
 				for index, r in enumerate(model_ranking[-real_step:]):
 					if r == 1:
-						acc_dis[int((considered_length[index].item()-1)//32)] += 1
+						a_acc_dis[int((a_considered_length[index].item()-1)//32)] += 1
+						q_acc_dis[int((q_considered_length[index].item()-1)//32)] += 1
 
 			now_pair_index += PAIR_STEP
 
@@ -1867,13 +1885,12 @@ class TrainWholeModel:
 													k, self.hits_count(model_ranking, k)))
 				
 		print()
-		# print("Len dis:\t", len_dis)
-		# print("Acc dis:\t", acc_dis)
-		for index, a in enumerate(acc_dis):
-			# acc_dis[index] = a/len_dis[index]
-			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/(len_dis[index]+1)}")
 
-		# print("Acc dis:\t", acc_dis)
+		for index, a in enumerate(a_acc_dis):
+			print(f"answer {index*32 + 32}, \t{a_len_dis[index]}, \t{a_acc_dis[index]}, \t{a/(a_len_dis[index]+1)}")
+		print()
+		for index, q in enumerate(q_acc_dis):
+			print(f"question {index*32 + 32}, \t{q_len_dis[index]}, \t{q_acc_dis[index]}, \t{q/(q_len_dis[index]+1)}")
 		print("---------------------- end ranking ------------------------")
 		self.model.train()
 
