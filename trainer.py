@@ -17,7 +17,7 @@ import re
 
 from TBA_model_lib import BasicConfig, BasicModel, DeepAnsModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig, BasicTopicModel, BasicTopicConfig, BasicDeformer, BasicDeformerConfig
-from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig, QATopicModel, QATopicConfig, QATopicMemoryModel, QAOnlyMemoryModel, QACNNTopicMemoryModel
+from QA_model_lib import QAModel, QAModelConfig, QACNNModel, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig, QATopicModel, QATopicConfig, QATopicMemoryModel, QAOnlyMemoryModel, QACNNTopicMemoryModel, QATopicCNNConfig
 from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset, VaeSignleTextDataset, TBATopicClassifyDataset, QATopicClassifyDataset
 from vae import VAE, WAE
 from gensim.corpora import Dictionary
@@ -1020,7 +1020,7 @@ class TrainWholeModel:
 		begin_index = 0
 		end_index = len(evaluation_title) // 2
 
-		if self.model_class in ['QAModel']:
+		if self.model_class in ['QAModel', 'QACNNModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -1066,7 +1066,7 @@ class TrainWholeModel:
 		begin_index = len(evaluation_title) // 2
 		end_index = len(evaluation_title)
 
-		if self.model_class in ['QAModel']:
+		if self.model_class in ['QAModel', 'QACNNModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -1124,7 +1124,7 @@ class TrainWholeModel:
 		begin_index = len(evaluation_title) // 2
 		end_index = len(evaluation_title)
 
-		if self.model_class in ['QAModel']:
+		if self.model_class in ['QAModel', 'QACNNModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -1345,7 +1345,7 @@ class TrainWholeModel:
 		elif self.model_class in ['BasicModel', 'DeepAnsModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt',
 								  'OneSupremeMemory', 'BasicDeformer']:
 			return self.__train_step_for_bi
-		elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
+		elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder', 'QACNNModel']:
 			return self.__train_step_for_qa_input 
 		elif self.model_class in ['QATopicModel', 'QATopicMemoryModel', 'QAOnlyMemoryModel', 'QACNNTopicMemoryModel']:
 			return self.__train_step_for_qa_topic_input
@@ -1354,6 +1354,7 @@ class TrainWholeModel:
 
 	# classify
 	def classify_validate_model(self, dataloader):
+		raise Exception("this function is aborted!!!!")
 		self.model.eval()
 
 		label_target_num = [0, 0, 0, 0]
@@ -1378,7 +1379,7 @@ class TrainWholeModel:
 				# add model
 				if self.model_class in ['BasicModel', 'DeepAnsModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory', 'BasicDeformer']:
 					logits = self.__val_step_for_bi(batch)
-				elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
+				elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder', 'QACNNModel']:
 					logits = self.__val_step_for_qa_input(batch)
 				elif self.model_class in ['CrossBERT']:
 					logits = self.__val_step_for_cross(batch)
@@ -2033,6 +2034,8 @@ class TrainWholeModel:
 			model = PureMemorySelfAtt(config=self.config)
 		elif self.model_class in ['QAMemory', 'QAModel']:
 			model = QAModel(config=self.config)
+		elif self.model_class in ['QACNNModel']:
+			model = QACNNModel(config=self.config)
 		elif self.model_class in ['QATopicModel']:
 			model = QATopicModel(config=self.config)
 		elif self.model_class in ['QAOnlyMemoryModel']:
@@ -2222,9 +2225,9 @@ class TrainWholeModel:
 										 sentence_embedding_len=sentence_embedding_len,
 										 composition=self.composition,
 										 topic_num=self.latent_dim)
-		elif self.model_class in ['QACNNTopicMemoryModel']:
-			config = QATopicConfig(len(self.tokenizer),
-									len(self.dictionary),
+		elif self.model_class in ['QACNNTopicMemoryModel', 'QACNNModel']:
+			config = QATopicCNNConfig(len(self.tokenizer),
+										0 if self.dictionary is None else len(self.dictionary),
 										 pretrained_bert_path=args.pretrained_bert_path,
 										 num_labels=args.label_num,
 										 word_embedding_len=word_embedding_len,
@@ -2346,6 +2349,22 @@ class TrainWholeModel:
 				# {'params': model.vae.parameters(), 'lr': 1e-4},
 				# 这几个一样
 				{'params': model.memory_LayerNorm.parameters(), 'lr': 1e-4},
+				{'params': model.layer_norm1.parameters(), 'lr': 1e-4},
+				{'params': model.layer_norm2.parameters(), 'lr': 1e-4},
+				# 这个不设定
+				{'params': model.classifier.parameters(), 'lr': 1e-4}
+			]
+		elif self.model_class == "QACNNModel":
+			parameters_dict_list = [
+				# 这几个一样
+				{'params': model.embeddings.parameters(), 'lr': self.bert_lr},
+				# 这几个一样
+				{'params': model.embedding_scale_layer.parameters(), 'lr': 1e-4},
+				{'params': model.convs.parameters(), 'lr': 1e-4},
+				{'params': model.linear1.parameters(), 'lr': 1e-4},
+				{'params': model.linear2.parameters(), 'lr': 1e-4},
+				# {'params': model.vae.parameters(), 'lr': 1e-4},
+				# 这几个一样
 				{'params': model.layer_norm1.parameters(), 'lr': 1e-4},
 				{'params': model.layer_norm2.parameters(), 'lr': 1e-4},
 				# 这个不设定
@@ -2838,7 +2857,7 @@ class TrainWholeModel:
 			now_dataset = QAMemClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len, memory_num=self.memory_num)
-		elif self.model_class in ['QAModel', 'ADecoder']:
+		elif self.model_class in ['QAModel', 'ADecoder', 'QACNNModel']:
 			now_dataset = QAClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len)

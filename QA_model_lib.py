@@ -557,8 +557,36 @@ class QATopicMemoryModel(nn.Module):
 # --------------------------------------
 # fen ge xian
 # --------------------------------------
+class QATopicCNNConfig:
+    def __init__(self, tokenizer_len, voc_size, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
+                 word_embedding_len=512, sentence_embedding_len=512, composition='pooler', topic_num=50, 
+                 cnn_output_dim=128, kernel_sizes=(3, 4, 5)):
+
+        self.tokenizer_len = tokenizer_len
+        self.voc_size = voc_size
+        self.pretrained_bert_path = pretrained_bert_path
+        self.num_labels = num_labels
+        self.word_embedding_len = word_embedding_len
+        self.sentence_embedding_len = sentence_embedding_len
+        self.composition = composition
+        self.topic_num = topic_num
+        self.cnn_output_dim = cnn_output_dim
+        self.kernel_sizes = kernel_sizes
+
+    def __str__(self):
+        print("*"*20 + "config" + "*"*20)
+        print("tokenizer_len:", self.tokenizer_len)
+        print("voc_size:", self.tokenizvoc_sizeer_len)
+        print("pretrained_bert_path:", self.pretrained_bert_path)
+        print("num_labels:", self.num_labels)
+        print("word_embedding_len:", self.word_embedding_len)
+        print("sentence_embedding_len:", self.sentence_embedding_len)
+        print("composition:", self.composition)
+        print("topic_num:", self.topic_num)
+
+
 class QACNNTopicMemoryModel(nn.Module):
-    def __init__(self, config: QATopicConfig):
+    def __init__(self, config: QATopicCNNConfig):
 
         super(QACNNTopicMemoryModel, self).__init__()
 
@@ -742,6 +770,104 @@ class QACNNTopicMemoryModel(nn.Module):
         # logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
 
         return logits, vae_loss
+
+
+class QACNNModel(nn.Module):
+    def __init__(self, config: QATopicCNNConfig):
+
+        super(QACNNModel, self).__init__()
+
+        self.output_embedding_len = config.sentence_embedding_len
+
+        self.config = config
+
+        # pretrained encoder
+        self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
+        self.bert_model.resize_token_embeddings(config.tokenizer_len)
+
+        # 这个embedding的grad会被计入bert model里，很好
+        self.embeddings = self.bert_model.get_input_embeddings()
+        self.bert_model = None
+        new_embedding_size = 100
+
+        # topic memory
+        self.topic_word_matrix = None
+        
+        # CNN module
+        self.embedding_scale_layer = torch.nn.Linear(self.config.word_embedding_len, new_embedding_size, bias=True)
+
+        self.convs = nn.ModuleList([nn.Conv2d(1, self.config.cnn_output_dim, (K, new_embedding_size)) for K in self.config.kernel_sizes])
+        self.linear1 = torch.nn.Linear(self.config.cnn_output_dim*len(self.config.kernel_sizes), config.sentence_embedding_len*2, bias=True)
+        self.layer_norm1 = torch.nn.LayerNorm(config.sentence_embedding_len*2)
+        self.linear2 = torch.nn.Linear(config.sentence_embedding_len*2, config.sentence_embedding_len, bias=True)
+        self.layer_norm2 = torch.nn.LayerNorm(config.sentence_embedding_len)
+        
+        # classifier
+        self.classifier = self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.softmax = torch.nn.Softmax(dim=-2)
+        self.composition = config.composition
+
+        self.dropout = nn.Dropout(0.2)
+
+    # use topic memory to enrich 
+    def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
+        input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
+
+        # 获得隐藏层输出, (batch, sequence, embedding)
+        final_embeddings = self.embedding_scale_layer(self.embeddings(input_ids))
+
+        inputs = [F.relu(conv(final_embeddings.unsqueeze(1))).squeeze(3) for conv in self.convs] 
+        
+        # remove padding here!!!!
+        non_padding_len = (attention_mask == 1).sum(-1)
+
+        # i = [batch size, out channel, seq_len - kernel_size + 1]
+        final_output = []
+        for i in inputs:
+            new_l = non_padding_len.unsqueeze(-1).unsqueeze(-1).expand_as(i).cuda()
+
+            temp = torch.arange(0, i.shape[-1]).cuda()
+            new_temp = temp.unsqueeze(0).unsqueeze(0).expand_as(i).cuda()
+
+            mask = (new_temp >= new_l)
+            
+            ones = torch.ones_like(i)
+            ones[mask] = 0.0
+            ones = ones.cuda()
+
+            new_i = i*ones
+            final_output.append(new_i)
+
+        max_output = [F.max_pool1d(i, i.size(2)).squeeze(2) for i in final_output]
+
+        concated = torch.cat(max_output, 1)
+        concated = self.dropout(concated)
+
+        x = self.linear1(concated)
+        x = self.relu(x)
+        x = self.layer_norm1(x)
+        x = self.dropout(x)
+
+        x = self.linear2(x)
+        x = self.relu(x)
+        x = self.layer_norm2(x)
+        x = self.dropout(x)
+
+        return x
+
+
+    def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
+                a_input_ids, a_token_type_ids, a_attention_mask):
+        q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask)
+
+        a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
+
+        # 计算得到分类概率
+        logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
+
+        return logits
 
 
 # --------------------------------------
