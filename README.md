@@ -1,5 +1,4 @@
-# TaskSpecificMemory
-Modift memory mechanism to faciliate text match for techncal Q&amp;A
+# Utilize TopicModel to faciliate Answer recommendation on Technical QA sites
 
 ## run
 use multiple gpus
