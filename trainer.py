@@ -1,4 +1,5 @@
 # %%
+import time
 import datasets
 from regex import D
 from torch.utils.data import DataLoader
@@ -17,7 +18,7 @@ import re
 
 from TBA_model_lib import BasicConfig, BasicModel, DeepAnsModel, InputMemorySelfAttConfig, \
 	InputMemorySelfAtt, PureMemorySelfAttConfig, PureMemorySelfAtt, OneSupremeMemory, OneSupremeMemoryConfig, BasicTopicModel, BasicTopicConfig, BasicDeformer, BasicDeformerConfig
-from QA_model_lib import QAModel, QAModelConfig, QACNNModel, CrossBERT, CrossBERTConfig, ADecoder, ADecoderConfig, QATopicModel, QATopicConfig, QATopicMemoryModel, QAOnlyMemoryModel, QACNNTopicMemoryModel, QATopicCNNConfig
+from QA_model_lib import QAModel, QAModelConfig, CrossBERT, CrossBERTConfig, ADecoderConfig, QATopicModel, QATopicConfig, QATopicMemoryModel, QAOnlyMemoryModel, QACNNTopicMemoryModel
 from my_dataset import TBAClassifyDataset, MLMDataset, QAMemClassifyDataset, QAClassifyDataset, CrossClassifyDataset, VaeSignleTextDataset, TBATopicClassifyDataset, QATopicClassifyDataset
 from vae import VAE, WAE
 from gensim.corpora import Dictionary
@@ -255,7 +256,10 @@ class TrainWholeModel:
 					if self.model_class in ['ADecoder', 'CrossBERT']:
 						raise Exception("Validation is not supported for this model class yet!")
 					else:
-						this_best_performance = self.do_val()
+						if self.args.measure_time:
+							self.measure_time()
+						else:
+							this_best_performance = self.do_val()
 
 					if this_best_performance > previous_best_r_1:
 						previous_best_r_1 = this_best_performance
@@ -1020,7 +1024,7 @@ class TrainWholeModel:
 		begin_index = 0
 		end_index = len(evaluation_title) // 2
 
-		if self.model_class in ['QAModel', 'QACNNModel']:
+		if self.model_class in ['QAModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -1048,6 +1052,248 @@ class TrainWholeModel:
 			# pass data into ranking method
 			return self.ranking(evaluation_qa_pairs)
 
+ 
+	# val use first 50% of previous test data
+	def measure_time(self):
+		print("--------------------- begin validation -----------------------")
+		# 稍加处理一下数据，把数据都存在元祖里
+		data_from_path = "./" + self.dataset_name + "/eva.dataset"
+		evaluation_data = datasets.load_from_disk(data_from_path)
+
+		# 汇总下数据
+		evaluation_title = evaluation_data['title']
+		evaluation_body = evaluation_data['body']
+		evaluation_answers = evaluation_data['answers']
+
+		concatenated_question = []
+		for t, b in zip(evaluation_title, evaluation_body):
+			concatenated_question.append(t + " " + b)
+			break
+	
+		# 只用一条
+		first_data = []
+		first_data.append((concatenated_question[0], evaluation_answers[0]))
+		
+
+		print("--------------------- begin ranking -----------------------")
+		self.model.eval()
+
+		questions = []
+		answers = []
+
+		for data in first_data:
+			temp_question: str = data[0]
+			candidate_answers: list = data[1]
+
+			for t_a in candidate_answers[1:self.ranking_candidate_num]:
+				questions.append(temp_question)
+				answers.append(t_a)
+
+			# 把最佳答案塞到最后
+			questions.append(temp_question)
+			answers.append(candidate_answers[0])	
+   
+		###############################################################################
+		# encode answer
+		###############################################################################
+
+		######################################
+		# important hyper-parameters
+		candidate_num = 1000
+
+		# do retrieval_times batch, each batch has 64 questions:
+		retrieval_times = 200
+		batch_size = 64
+		######################################
+
+		if self.model_class in ['QATopicModel']:
+			# 获得词袋
+			a_bows = []
+			voc_size = len(self.dictionary)
+
+			for a in answers:
+				new_a = ''.join([i for i in a if not i.isdigit()])
+				split_a = new_a.split()
+				a_bow = self.dictionary.doc2bow(split_a)
+				a_bows.append(a_bow)
+
+			tensor_a_bows = torch.zeros((len(a_bows), voc_size))
+			for index in range(len(a_bows)):
+				item = list(zip(*a_bows[index])) 
+				if len(item) == 0:
+					continue 
+				tensor_a_bows[index][list(item[0])] = torch.tensor(list(item[1])).float()
+
+			a_bows = tensor_a_bows.to(self.device)
+
+		# tokenize
+		max_len = 512
+
+		encoded_a = self.tokenizer(
+			answers, padding=True, verbose=False, add_special_tokens=True,
+			truncation=True, max_length=max_len, return_tensors='pt')
+
+		# encode
+		a_input_ids = encoded_a['input_ids'].to(self.device)
+
+		a_token_type_ids = torch.zeros_like(a_input_ids, device=self.device)
+
+		a_attention_mask = encoded_a['attention_mask'].to(self.device)
+
+		
+		first_a_mu = None
+		if self.model_class in ['QATopicModel']:
+			a_mu = self.model.vae(a_bows, lambda x: torch.softmax(x, dim=1))
+			a_embeddings = self.model.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask, topic_vector=a_mu)
+			
+			first_a_embedding = a_embeddings[0].to("cpu")
+			first_a_mu = a_mu[0].to("cpu")
+		else:
+			a_embeddings = self.model.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
+												  attention_mask=a_attention_mask)
+			first_a_embedding = a_embeddings[0].to("cpu")
+
+		fake_candidate_embeddings = first_a_embedding.unsqueeze(0).repeat(batch_size * candidate_num, 1) # (batch_size * candidate_num, embedding_num)
+  
+		if first_a_mu:
+			fake_candidate_mu = first_a_mu.unsqueeze(0).repeat(batch_size * candidate_num, 1) # (batch_size * candidate_num, latent_dim)
+		###############################################################################
+		# retreval
+		###############################################################################
+		torch.cuda.empty_cache()
+		gc.collect()
+
+		# create fake data
+		first_question = questions[0]
+		all_questions = [first_question] * batch_size
+
+		if self.model_class in ['QATopicModel']:
+			q_bows = []
+		
+			for d in all_questions:
+				new_d = ''.join([i for i in d if not i.isdigit()])
+				split_d = new_d.split()
+				d_bow = self.dictionary.doc2bow(split_d)
+				q_bows.append(d_bow)
+
+			tensor_q_bows = torch.zeros((len(q_bows), voc_size))
+			for index in range(len(q_bows)):
+				item = list(zip(*q_bows[index]))
+				if len(item) == 0:
+					continue 
+				tensor_q_bows[index][list(item[0])] = torch.tensor(list(item[1])).float()
+			
+			q_bows = tensor_q_bows
+   
+		begin_time = time.time()
+   
+		for _ in range(retrieval_times):
+			this_batch_time = time.time()
+			all_load = 0.0
+			all_gpu = 0.0
+			
+			# tokenize
+			encoded_q = self.tokenizer(
+				all_questions, padding=True, verbose=False, add_special_tokens=True,
+				truncation=True, max_length=max_len, return_tensors='pt')
+
+			# 开始按照更小的批次进行训练，也就是每次计算step*candidate_answer_num条数据
+			processed_query_count = 0
+
+			query_block_size = batch_size + 1
+
+			while processed_query_count < len(all_questions):
+				q_input_ids = encoded_q['input_ids'][
+								processed_query_count:processed_query_count + query_block_size].to(self.device)
+
+				q_token_type_ids = torch.zeros_like(q_input_ids, device=self.device)
+
+				q_attention_mask = encoded_q['attention_mask'][
+									processed_query_count:processed_query_count + query_block_size].to(self.device)
+
+				if self.model_class in ['QATopicModel']:
+					q_bow = q_bows[processed_query_count:processed_query_count + query_block_size].to(self.device)
+
+				processed_query_count += query_block_size
+
+				# encode
+				if self.model_class in ['QATopicModel']:
+					q_mu = self.model.vae(q_bow, lambda x: torch.softmax(x, dim=1))
+					q_embeddings = self.model.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask, topic_vector=q_mu)
+
+					q_mu = q_mu.repeat(candidate_num, 1)
+				else:
+					q_embeddings = self.model.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
+														attention_mask=q_attention_mask)
+				
+				q_embeddings = q_embeddings.repeat(candidate_num, 1)
+    
+
+				# calculate similarity
+				# fake_candidate_embeddings.to(self.device)
+
+				elapse_time = time.time() - this_batch_time
+				all_load += elapse_time
+				loaded_time = time.time()
+    
+				with torch.no_grad():
+					if self.model_class in ['QATopicModel']:
+						# fake_candidate_mu.to(self.device)
+      
+						logits = self.model.classifier(q_embedding=q_embeddings, a_embedding=fake_candidate_embeddings.to(self.device), q_topic=q_mu, a_topic=fake_candidate_mu.to(self.device))
+					else:
+						# print(q_embeddings.device, fake_candidate_embeddings.device)
+						
+						logits = self.model.classifier(q_embedding=q_embeddings, a_embedding=fake_candidate_embeddings.to(self.device))
+
+					logits = logits.view(-1, candidate_num, 4)
+					logits = nn.functional.softmax(logits, dim=-1)
+
+					elapse_time = time.time() - loaded_time
+					all_gpu += elapse_time
+					
+					elapse_time = time.time() - this_batch_time
+					print(f"This batch time takes", self.get_elapse_time(elapse_time))
+                    
+					# sorted_index_score = []
+					# for q_index, q_item in enumerate(logits):
+					# 	temp_index_score = []
+					# 	for inner_index, inner_item in enumerate(q_item):
+					# 		score = inner_item[0] * (-2) + inner_item[1] * (-1) + inner_item[2] * 1 + inner_item[3] * 2
+					# 		temp_index_score.append((inner_index, score.item()))
+
+					# 	stl = sorted(temp_index_score, key=lambda x: x[1], reverse=True)
+					# 	sorted_index_score.append(stl)
+
+					# model_ranking += [([y[0] for y in x].index(self.ranking_candidate_num - 1) + 1) for x in
+					# 					sorted_index_score]
+			
+
+		elapse_time = time.time() - begin_time
+		print(f"Model is {self.model_class}, Candidate num {candidate_num}, Real scene testing takes", self.get_elapse_time(elapse_time))
+		print(f"Avg per question times:", self.get_elapse_time(elapse_time/(retrieval_times * batch_size)))
+  
+		print()
+
+		print("---------------------- end ranking ------------------------")
+		self.model.train()
+		exit()
+
+
+	def get_elapse_time(self, elapse_time):
+		# elapse_time = time.time() - t0
+		if elapse_time > 3600:
+			hour = int(elapse_time // 3600)
+			minute = int((elapse_time % 3600) // 60)
+			second = int((elapse_time % 60) // 60)
+			return "{}h{}m{}s".format(hour, minute, second)
+		elif elapse_time > 60:
+			minute = int((elapse_time % 3600) // 60)
+			second = int((elapse_time % 60) // 60)
+			return "{}m{}s".format(minute, second)
+		else:
+			return "{}s".format(elapse_time)
+
 	# val use last 50% of previous test data
 	def do_test(self):
 		print("--------------------- begin testing -----------------------")
@@ -1066,7 +1312,7 @@ class TrainWholeModel:
 		begin_index = len(evaluation_title) // 2
 		end_index = len(evaluation_title)
 
-		if self.model_class in ['QAModel', 'QACNNModel']:
+		if self.model_class in ['QAModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -1124,7 +1370,7 @@ class TrainWholeModel:
 		begin_index = len(evaluation_title) // 2
 		end_index = len(evaluation_title)
 
-		if self.model_class in ['QAModel', 'QACNNModel']:
+		if self.model_class in ['QAModel']:
 			concatenated_question = []
 			for t, b in zip(evaluation_title, evaluation_body):
 				concatenated_question.append(t + " " + b)
@@ -1345,7 +1591,7 @@ class TrainWholeModel:
 		elif self.model_class in ['BasicModel', 'DeepAnsModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt',
 								  'OneSupremeMemory', 'BasicDeformer']:
 			return self.__train_step_for_bi
-		elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder', 'QACNNModel']:
+		elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 			return self.__train_step_for_qa_input 
 		elif self.model_class in ['QATopicModel', 'QATopicMemoryModel', 'QAOnlyMemoryModel', 'QACNNTopicMemoryModel']:
 			return self.__train_step_for_qa_topic_input
@@ -1354,7 +1600,6 @@ class TrainWholeModel:
 
 	# classify
 	def classify_validate_model(self, dataloader):
-		raise Exception("this function is aborted!!!!")
 		self.model.eval()
 
 		label_target_num = [0, 0, 0, 0]
@@ -1379,7 +1624,7 @@ class TrainWholeModel:
 				# add model
 				if self.model_class in ['BasicModel', 'DeepAnsModel', 'InputMemorySelfAtt', 'PureMemorySelfAtt', 'OneSupremeMemory', 'BasicDeformer']:
 					logits = self.__val_step_for_bi(batch)
-				elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder', 'QACNNModel']:
+				elif self.model_class in ['QAMemory', 'QAModel', 'ADecoder']:
 					logits = self.__val_step_for_qa_input(batch)
 				elif self.model_class in ['CrossBERT']:
 					logits = self.__val_step_for_cross(batch)
@@ -1511,15 +1756,11 @@ class TrainWholeModel:
 		PAIR_STEP = 2000
 
 		# 统计长度和准确率相关
-		a_len_dis = []
-		a_acc_dis = []
-		q_len_dis = []
-		q_acc_dis = []
+		len_dis = []
+		acc_dis = []
 		for _ in range(16):
-			q_len_dis.append(0)
-			q_acc_dis.append(0)
-			a_len_dis.append(0)
-			a_acc_dis.append(0)
+			len_dis.append(0)
+			acc_dis.append(0)
 
 		while now_pair_index < len(ranking_qa_pairs):
 			# 获得memory合并的字符串
@@ -1612,13 +1853,10 @@ class TrainWholeModel:
 				question_length = q_attention_mask.sum(-1).view(-1, self.ranking_candidate_num)[:, 0]
 				answer_length = torch.mean(a_attention_mask.sum(-1).view(-1, self.ranking_candidate_num).type(torch.FloatTensor), dim=-1)
 				
-				a_considered_length = answer_length
-				q_considered_length = question_length
+				considered_length = answer_length
 
-				for l in a_considered_length:
-					a_len_dis[int((l.item()-1)//32)] += 1
-				for l in q_considered_length:
-					q_len_dis[int((l.item()-1)//32)] += 1
+				for l in considered_length:
+					len_dis[int((l.item()-1)//32)] += 1
 
 				with torch.no_grad():
 					logits = self.model(
@@ -1645,8 +1883,7 @@ class TrainWholeModel:
 				
 				for index, r in enumerate(model_ranking[-real_step:]):
 					if r == 1:
-						a_acc_dis[int((a_considered_length[index].item()-1)//32)] += 1
-						q_acc_dis[int((q_considered_length[index].item()-1)//32)] += 1
+						acc_dis[int((considered_length[index].item()-1)//32)] += 1
 
 			now_pair_index += PAIR_STEP
 
@@ -1671,13 +1908,12 @@ class TrainWholeModel:
 													k, self.hits_count(model_ranking, k)))
 		
 		print()
+		# print("Len dis:\t", len_dis)
+		# print("Acc dis:\t", acc_dis)
+		for index, a in enumerate(acc_dis):
+			# acc_dis[index] = a/len_dis[index]
+			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/(len_dis[index]+1)}")
 
-		for index, a in enumerate(a_acc_dis):
-			print(f"answer {index*32 + 32}, \t{a_len_dis[index]}, \t{a_acc_dis[index]}, \t{a/(a_len_dis[index]+1)}")
-		print()
-		for index, q in enumerate(q_acc_dis):
-			print(f"question {index*32 + 32}, \t{q_len_dis[index]}, \t{q_acc_dis[index]}, \t{q/(q_len_dis[index]+1)}")
-   
 		# print("Acc dis:\t", acc_dis)
 		print("---------------------- end ranking ------------------------")
 		self.model.train()
@@ -1705,15 +1941,11 @@ class TrainWholeModel:
 		PAIR_STEP = 2000
 
 		# 统计长度和准确率相关
-		a_len_dis = []
-		q_len_dis = []
-		a_acc_dis = []
-		q_acc_dis = []
+		len_dis = []
+		acc_dis = []
 		for _ in range(16):
-			a_len_dis.append(0)
-			a_acc_dis.append(0)
-			q_acc_dis.append(0)
-			q_len_dis.append(0)
+			len_dis.append(0)
+			acc_dis.append(0)
 
 		while now_pair_index < len(ranking_qa_pairs):
 			# 取一定数量的数据
@@ -1826,15 +2058,11 @@ class TrainWholeModel:
 				question_length = q_attention_mask.sum(-1).view(-1, self.ranking_candidate_num)[:, 0]
 				answer_length = torch.mean(a_attention_mask.sum(-1).view(-1, self.ranking_candidate_num).type(torch.FloatTensor), dim=-1)
 				
-				a_considered_length = answer_length
-				q_considered_length = question_length
+				considered_length = answer_length
 
-				for l in a_considered_length:
-					a_len_dis[int((l.item()-1)//32)] += 1
+				for l in considered_length:
+					len_dis[int((l.item()-1)//32)] += 1
 
-				for l in q_considered_length:
-					q_len_dis[int((l.item()-1)//32)] += 1
-     
 				with torch.no_grad():
 					logits, _ = self.model(
 						q_input_ids=q_input_ids, q_token_type_ids=q_token_type_ids,
@@ -1860,8 +2088,7 @@ class TrainWholeModel:
 				
 				for index, r in enumerate(model_ranking[-real_step:]):
 					if r == 1:
-						a_acc_dis[int((a_considered_length[index].item()-1)//32)] += 1
-						q_acc_dis[int((q_considered_length[index].item()-1)//32)] += 1
+						acc_dis[int((considered_length[index].item()-1)//32)] += 1
 
 			now_pair_index += PAIR_STEP
 
@@ -1886,12 +2113,13 @@ class TrainWholeModel:
 													k, self.hits_count(model_ranking, k)))
 				
 		print()
+		# print("Len dis:\t", len_dis)
+		# print("Acc dis:\t", acc_dis)
+		for index, a in enumerate(acc_dis):
+			# acc_dis[index] = a/len_dis[index]
+			print(f"{index*32 + 32}, \t{len_dis[index]}, \t{acc_dis[index]}, \t{a/(len_dis[index]+1)}")
 
-		for index, a in enumerate(a_acc_dis):
-			print(f"answer {index*32 + 32}, \t{a_len_dis[index]}, \t{a_acc_dis[index]}, \t{a/(a_len_dis[index]+1)}")
-		print()
-		for index, q in enumerate(q_acc_dis):
-			print(f"question {index*32 + 32}, \t{q_len_dis[index]}, \t{q_acc_dis[index]}, \t{q/(q_len_dis[index]+1)}")
+		# print("Acc dis:\t", acc_dis)
 		print("---------------------- end ranking ------------------------")
 		self.model.train()
 
@@ -2034,8 +2262,6 @@ class TrainWholeModel:
 			model = PureMemorySelfAtt(config=self.config)
 		elif self.model_class in ['QAMemory', 'QAModel']:
 			model = QAModel(config=self.config)
-		elif self.model_class in ['QACNNModel']:
-			model = QACNNModel(config=self.config)
 		elif self.model_class in ['QATopicModel']:
 			model = QATopicModel(config=self.config)
 		elif self.model_class in ['QAOnlyMemoryModel']:
@@ -2156,7 +2382,7 @@ class TrainWholeModel:
 										 '/data/yuanhang/pretrained_model/prajjwal1/bert-medium']:
 			word_embedding_len = 512
 			sentence_embedding_len = 512
-		elif args.pretrained_bert_path in ['bert-base-uncased', '/data/yuanhang/pretrained_model/bert-base-uncased', 'huggingface/CodeBERTa-small-v1', 'google/bert_uncased_L-6_H-768_A-12']:
+		elif args.pretrained_bert_path in ['bert-base-uncased', '/data/yuanhang/pretrained_model/bert-base-uncased', 'huggingface/CodeBERTa-small-v1', 'google/bert_uncased_L-6_H-768_A-12', 'jeniya/BERTOverflow', 'huggingface/jeniya/BERTOverflow']:
 			word_embedding_len = 768
 			sentence_embedding_len = 768
 		elif args.pretrained_bert_path == 'google/bert_uncased_L-2_H-128_A-2':
@@ -2225,9 +2451,9 @@ class TrainWholeModel:
 										 sentence_embedding_len=sentence_embedding_len,
 										 composition=self.composition,
 										 topic_num=self.latent_dim)
-		elif self.model_class in ['QACNNTopicMemoryModel', 'QACNNModel']:
-			config = QATopicCNNConfig(len(self.tokenizer),
-										0 if self.dictionary is None else len(self.dictionary),
+		elif self.model_class in ['QACNNTopicMemoryModel']:
+			config = QATopicConfig(len(self.tokenizer),
+									len(self.dictionary),
 										 pretrained_bert_path=args.pretrained_bert_path,
 										 num_labels=args.label_num,
 										 word_embedding_len=word_embedding_len,
@@ -2284,10 +2510,10 @@ class TrainWholeModel:
 			]
 		elif self.model_class == "BasicDeformer":
 			parameters_dict_list = [
-                # 这几个一样
-                {'params': model.bert_model.parameters(), 'lr': 5e-5},
-                {'params': model.classifier.parameters(), 'lr': 1e-4},
-            ]
+				# 这几个一样
+				{'params': model.bert_model.parameters(), 'lr': 5e-5},
+				{'params': model.classifier.parameters(), 'lr': 1e-4},
+			]
 		elif self.model_class == 'DeepAnsModel':
 			parameters_dict_list = [
 				# 这几个一样
@@ -2349,22 +2575,6 @@ class TrainWholeModel:
 				# {'params': model.vae.parameters(), 'lr': 1e-4},
 				# 这几个一样
 				{'params': model.memory_LayerNorm.parameters(), 'lr': 1e-4},
-				{'params': model.layer_norm1.parameters(), 'lr': 1e-4},
-				{'params': model.layer_norm2.parameters(), 'lr': 1e-4},
-				# 这个不设定
-				{'params': model.classifier.parameters(), 'lr': 1e-4}
-			]
-		elif self.model_class == "QACNNModel":
-			parameters_dict_list = [
-				# 这几个一样
-				{'params': model.embeddings.parameters(), 'lr': self.bert_lr},
-				# 这几个一样
-				{'params': model.embedding_scale_layer.parameters(), 'lr': 1e-4},
-				{'params': model.convs.parameters(), 'lr': 1e-4},
-				{'params': model.linear1.parameters(), 'lr': 1e-4},
-				{'params': model.linear2.parameters(), 'lr': 1e-4},
-				# {'params': model.vae.parameters(), 'lr': 1e-4},
-				# 这几个一样
 				{'params': model.layer_norm1.parameters(), 'lr': 1e-4},
 				{'params': model.layer_norm2.parameters(), 'lr': 1e-4},
 				# 这个不设定
@@ -2857,7 +3067,7 @@ class TrainWholeModel:
 			now_dataset = QAMemClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len, memory_num=self.memory_num)
-		elif self.model_class in ['QAModel', 'ADecoder', 'QACNNModel']:
+		elif self.model_class in ['QAModel', 'ADecoder']:
 			now_dataset = QAClassifyDataset(data=now_data_block,
 											tokenizer=self.tokenizer,
 											text_max_len=self.text_max_len)

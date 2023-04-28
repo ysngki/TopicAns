@@ -37,8 +37,7 @@ def read_arguments():
 	# must set
 	# add model
 	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel', 'DeepAnsModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory', 'QACNNModel',
-          						'QATopicModel', 'QATopicMemoryModel', 'QAOnlyMemoryModel', 'BasicDeformer', 'QACNNTopicMemoryModel'])
+							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory', 'QATopicModel', 'QATopicMemoryModel', 'QAOnlyMemoryModel', 'BasicDeformer', 'QACNNTopicMemoryModel'])
 
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
 	parser.add_argument("--memory_num", "-m", default=0, type=int)
@@ -65,6 +64,7 @@ def read_arguments():
 
 	# related to train
 	parser.add_argument("--no_train", action="store_true", default=False)
+	parser.add_argument("--measure_time", action="store_true", default=False)
 	parser.add_argument("--restore", action="store_true", default=False, help="use restore and only_final together to control which model to read!")
 
 	parser.add_argument("--no_initial_test", action="store_true", default=False)
