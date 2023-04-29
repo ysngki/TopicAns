@@ -37,7 +37,8 @@ def read_arguments():
 	# must set
 	# add model
 	parser.add_argument("--model_class", required=True, type=str, choices=['OneSupremeMemory', 'PureMemory', 'BasicModel', 'DeepAnsModel',
-							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory', 'QATopicModel', 'QATopicMemoryModel', 'QAOnlyMemoryModel', 'BasicDeformer', 'QACNNTopicMemoryModel'])
+							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'QAModel', 'CrossBERT', 'ADecoder', 'OneSupremeMemory',
+          						'QATopicModel', 'QATopicMemoryModel', 'QAOnlyMemoryModel', 'BasicDeformer', 'QACNNTopicMemoryModel'])
 
 	parser.add_argument("--dataset_name", "-d", required=True, type=str)
 	parser.add_argument("--memory_num", "-m", default=0, type=int)
@@ -82,7 +83,7 @@ def read_arguments():
 	parser.add_argument("--only_final", action="store_true", default=False,
 						help="using two stage setting but only train last stage")
 
-	# 设置并行需要改的
+	# related to parallel
 	parser.add_argument('--local_rank', type=int, default=0, help='node rank for distributed training')
 	parser.add_argument("--data_parallel", action="store_true", default=False)
 	parser.add_argument("--data_distribute", action="store_true", default=False)
@@ -91,7 +92,7 @@ def read_arguments():
 	parser.add_argument("--seed", "-s", default=42, type=int)
 	parser.add_argument("--text_max_len", default=512, type=int)
 	parser.add_argument("--ranking_candidate_num", default=5, type=int)
-	parser.add_argument("--label_num", default=4, type=int)  # !!!
+	parser.add_argument("--label_num", default=4, type=int)
 	parser.add_argument("--num_train_epochs", "-e",type=int, default=50)
 
 	parser.add_argument("--latent_dim", default=50, type=int)
@@ -111,24 +112,24 @@ def read_arguments():
 if __name__ == '__main__':
 	my_args = read_arguments()
 
-	# 创建路径
+	# Create path
 	create_dir(my_args)
 
-	# 设置随机种子
+	# Set random seeds
 	set_seed(my_args.seed)
 
-	# 创建训练类
+	# Creating training classes
 	my_train_model = TrainWholeModel(my_args)
 
-	# 设置训练参数
+	# Set training parameters
 	my_train_two_stage_flag = False
 	
-	# 两阶段默认设定
+	# Two-stage training default setting
 	if my_args.model_class in ['OneSupremeMemory', 'PureMemory', 'VaeAttention', 'VaeAttentionPlus',
 							   'InputMemorySelfAtt', 'PureMemorySelfAtt', 'QAMemory', 'ADecoder', 'OneSupremeMemory']:
 		my_train_two_stage_flag = True
 
-	# 用参数覆盖二阶段默认设定
+	# Override setting for Two-stage training
 	if my_args.one_stage and my_args.two_stage:
 		raise Exception("One or Two Stage?")
 
@@ -143,9 +144,9 @@ if __name__ == '__main__':
 		print("*"*20 + " Train [ONE] Stage!" + "*"*20)
 
 	if my_args.distill:
-		raise Exception("Distillation is not supported yes!")
+		raise Exception("Distillation is not supported yet!")
 
-	# 通过mlm训练memory
+	# training memory
 	if my_args.mlm:
 		raise Exception("This is prohibited!")
 		my_train_model.train_memory_by_mlm(memory_save_name=my_args.memory_save_prefix + "_" +
@@ -157,7 +158,7 @@ if __name__ == '__main__':
 	if my_args.do_test:
 		my_train_model.only_do_test()
 
-	# 如果读取memory，或者不训练mlm，就要train
+	# run without training mlm
 	if not my_args.no_train:
 		my_train_model.train(train_two_stage_flag=my_train_two_stage_flag, only_final=my_args.only_final)
 

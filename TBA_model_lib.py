@@ -1,18 +1,18 @@
-from transformers import BertConfig, AutoModel, AutoConfig
 import torch
 import torch.nn as nn
 import torch.utils.data
-import numpy as np
 import torch.nn.functional
 import torch.nn.functional as F
-from attention_module import attend
-from pprint import pprint
+import numpy as np
+
 from vae import VAE
+from attention_module import attend
 from QA_model_lib import QAClassifier
+from transformers import BertConfig, AutoModel, AutoConfig
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class InputMemorySelfAttConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -44,18 +44,18 @@ class InputMemorySelfAtt(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
+        # num_label is also considered part of memory
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
         self.memory_num = config.memory_num
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
 
-        # 记忆力模块
+        # Memory Module
         self.memory_for_answer = nn.Parameter(torch.randn(config.memory_num, config.word_embedding_len))
         self.memory_for_question = nn.Parameter(torch.randn(config.memory_num, config.word_embedding_len))
 
@@ -85,7 +85,7 @@ class InputMemorySelfAtt(nn.Module):
 
         last_hidden_state = out['last_hidden_state']
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention----------------------------------------
         # (batch, sequence, output_embedding_len)
         value = self.value_layer(last_hidden_state)
 
@@ -93,7 +93,7 @@ class InputMemorySelfAtt(nn.Module):
         weight = self.self_attention_weight_layer(last_hidden_state)
         weight = weight.squeeze(-1)
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = attention_mask.type(dtype=torch.float)
@@ -105,7 +105,7 @@ class InputMemorySelfAtt(nn.Module):
         # (batch, 1, sequence)
         final_weight = final_weight.unsqueeze(1)
 
-        # 求和
+        # Summation
         # (batch, 1, output_embedding_len)
         embedding = final_weight.bmm(value)
         embedding = embedding.squeeze(1)
@@ -117,13 +117,13 @@ class InputMemorySelfAtt(nn.Module):
     def get_rep_by_self_att(self, input_ids, token_type_ids, attention_mask, is_question):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
-        # ----------------------通过memory来丰富信息---------------------
-        # 要确认训练时它有没有被修改
+        # ----------------------Enriching information through memory---------------------
+        # To confirm that it has not been modified during training
         memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
                                              device=input_ids.device)
         one_tensor = torch.tensor([1], requires_grad=False, device=input_ids.device)
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         temp_embeddings = self.embeddings(input_ids)
 
         final_embeddings = None
@@ -140,11 +140,11 @@ class InputMemorySelfAtt(nn.Module):
             else:
                 whole_embeddings = torch.cat((input_embeddings, self.memory_for_answer, pad_embeddings), dim=0)
 
-            # 处理attention_mask
+            # process attention_mask
             whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
                                               batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
-            # 处理token_type_id
+            # process token_type_id
             remain_token_type_ids_len = batch_attention_mask.shape[0] + self.memory_num - input_embeddings.shape[0]
             whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
                                               one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
@@ -167,7 +167,7 @@ class InputMemorySelfAtt(nn.Module):
 
         last_hidden_state = out['last_hidden_state']
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention----------------------------------------
         # (batch, sequence, output_embedding_len)
         value = self.value_layer(last_hidden_state)
 
@@ -175,7 +175,7 @@ class InputMemorySelfAtt(nn.Module):
         weight = self.self_attention_weight_layer(last_hidden_state)
         weight = weight.squeeze(-1)
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = final_token_type_ids.type(dtype=torch.float)
@@ -187,7 +187,7 @@ class InputMemorySelfAtt(nn.Module):
         # (batch, 1, sequence)
         final_weight = final_weight.unsqueeze(1)
 
-        # 求和
+        # Summation
         # (batch, 1, output_embedding_len)
         embedding = final_weight.bmm(value)
         embedding = embedding.squeeze(1)
@@ -199,13 +199,13 @@ class InputMemorySelfAtt(nn.Module):
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask, is_question):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
-        # ----------------------通过memory来丰富信息---------------------
-        # 要确认训练时它有没有被修改
+        # ----------------------Enriching information through memory---------------------
+        # To confirm that it has not been modified during training
         memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
                                              device=input_ids.device)
         one_tensor = torch.tensor([1], requires_grad=False, device=input_ids.device)
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         temp_embeddings = self.embeddings(input_ids)
 
         final_embeddings = None
@@ -222,11 +222,11 @@ class InputMemorySelfAtt(nn.Module):
             else:
                 whole_embeddings = torch.cat((input_embeddings, self.memory_for_answer, pad_embeddings), dim=0)
 
-            # 处理attention_mask
+            # process attention_mask
             whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
                                               batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
-            # 处理token_type_id
+            # process token_type_id
             remain_token_type_ids_len = batch_attention_mask.shape[0] + self.memory_num - input_embeddings.shape[0]
             whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
                                               one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
@@ -255,13 +255,13 @@ class InputMemorySelfAtt(nn.Module):
     def get_rep_by_avg(self, input_ids, token_type_ids, attention_mask, is_question):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
-        # ----------------------通过memory来丰富信息---------------------
-        # 要确认训练时它有没有被修改
+        # ----------------------Enriching information through memory---------------------
+        # To confirm that it has not been modified during training
         memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
                                              device=input_ids.device)
         one_tensor = torch.tensor([1], requires_grad=False, device=input_ids.device)
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         temp_embeddings = self.embeddings(input_ids)
 
         final_embeddings = None
@@ -278,11 +278,11 @@ class InputMemorySelfAtt(nn.Module):
             else:
                 whole_embeddings = torch.cat((input_embeddings, self.memory_for_answer, pad_embeddings), dim=0)
 
-            # 处理attention_mask
+            # process attention_mask
             whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
                                               batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
-            # 处理token_type_id
+            # process token_type_id
             remain_token_type_ids_len = batch_attention_mask.shape[0] + self.memory_num - input_embeddings.shape[0]
             whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
                                               one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
@@ -334,19 +334,6 @@ class InputMemorySelfAtt(nn.Module):
 
         # get average embedding
         representations = last_hidden_state.sum(dim=1)
-
-        # actually exist sentence which is empty
-        # if (sequence_len.squeeze(-1) == 0).sum() > 0:
-        #     temp_sequence_len = sequence_len.squeeze(-1)
-        #     for index, length in enumerate(temp_sequence_len):
-        #         if length == 0:
-        #             print(f"Is question:{is_question}")
-        #             print(token_type_ids[index])
-        #             print(input_ids[index])
-        #             print(attention_mask[index])
-        #
-        #     raise Exception("Existing sequence with length 0!!")
-
         representations = representations / sequence_len
 
         return representations
@@ -354,16 +341,6 @@ class InputMemorySelfAtt(nn.Module):
     def forward(self, q_input_ids, q_token_type_ids, q_attention_mask,
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
-        # 获得表示，普普通通, no memory
-        # q_embeddings = self.get_rep_by_self_att_basic(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                               attention_mask=q_attention_mask)
-        #
-        # b_embeddings = self.get_rep_by_self_att_basic(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-        #                                               attention_mask=b_attention_mask)
-        #
-        # a_embeddings = self.get_rep_by_self_att_basic(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                               attention_mask=a_attention_mask)
-
         if self.config.composition == 'avg':
             q_embeddings = self.get_rep_by_avg(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
                                                attention_mask=q_attention_mask, is_question=True)
@@ -394,17 +371,13 @@ class InputMemorySelfAtt(nn.Module):
         else:
             raise Exception(f"Composition {self.config.composition} is not supported!!")
 
-        # return torch.zeros((q_input_ids.shape[0], 4), device=q_input_ids.device, requires_grad=True)
-
-        # # 根据输入，进行思考, 思考的结果要选择性遗忘
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
                                  b_embedding=b_embeddings)
-
         return logits
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class PureMemorySelfAttConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -436,38 +409,15 @@ class PureMemorySelfAtt(nn.Module):
 
         self.output_embedding_len = config.sentence_embedding_len
 
-        # 毕竟num_label也算是memory的一部分
+        # num_label is also considered part of memory
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
 
-        # 记忆力模块
+        # Memory Module
         self.hop_num = config.hop_num
-
-        # self.query_for_answer = nn.Parameter(torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
-        #
-        # self.memory_for_answer = nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
-        #
-        # self.query_for_question = nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
-        #
-        # self.memory_for_question = nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
-
-        # self.queries_for_answer = nn.ParameterList([nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
-
-        # self.memories_for_answer = nn.ParameterList([nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
-
-        # self.queries_for_question = nn.ParameterList([nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
-
-        # self.memories_for_question = nn.ParameterList([nn.Parameter(
-        #     torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0')) for _ in range(self.hop_num)])
 
         # try to fix bug : hop_num > 2, but I dont think it is a good idea
         self.queries_for_answer = nn.Parameter(
@@ -482,7 +432,7 @@ class PureMemorySelfAtt(nn.Module):
         self.memories_for_question = nn.Parameter(
             torch.randn(config.memory_num, config.word_embedding_len, device='cuda:0'))
 
-        # 注意力模型
+        # Attentional Model
         self.key_layer = nn.Sequential(
             nn.Linear(config.word_embedding_len, 2*config.word_embedding_len),
             nn.ReLU(),
@@ -509,7 +459,6 @@ class PureMemorySelfAtt(nn.Module):
         self.relu = torch.nn.ReLU(inplace=True)
         self.softmax = torch.nn.Softmax(dim=-2)
 
-        # self.LayerNorm = nn.LayerNorm(config.sentence_embedding_len, eps=1e-05) # add yyh, comment hw
 
     def get_rep_by_self_att(self, input_ids, token_type_ids, attention_mask, is_question):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
@@ -519,28 +468,22 @@ class PureMemorySelfAtt(nn.Module):
         last_hidden_state = out['last_hidden_state']
 
         for i in range(self.hop_num):
-            # 根据记忆丰富一下信息，之后可以考虑把latent一起传进去
+            # Enrich the information according to memory, and later consider passing in the latent together
             if is_question:
-                # contexts = self.queries_for_answer[i].repeat(last_hidden_state.shape[0], 1, 1)
-                # values = self.memories_for_answer[i].repeat(last_hidden_state.shape[0], 1, 1)
                 contexts = self.queries_for_answer.repeat(last_hidden_state.shape[0], 1, 1)
                 values = self.memories_for_answer.repeat(last_hidden_state.shape[0], 1, 1)
 
                 enrich_info = attend(query=last_hidden_state, context=contexts, value=values)
             else:
-                # contexts = self.queries_for_question[i].repeat(last_hidden_state.shape[0], 1, 1)
-                # values = self.memories_for_question[i].repeat(last_hidden_state.shape[0], 1, 1)
                 contexts = self.queries_for_question.repeat(last_hidden_state.shape[0], 1, 1)
                 values = self.memories_for_question.repeat(last_hidden_state.shape[0], 1, 1)
 
                 enrich_info = attend(query=last_hidden_state, context=contexts, value=values)
 
-            # 这一步也有点草率
-            # last_hidden_state = self.LayerNorm(enrich_info + last_hidden_state) # add yyh, comment
-            last_hidden_state = enrich_info + last_hidden_state # comment yyh
+            last_hidden_state = enrich_info + last_hidden_state
             last_hidden_state = self.value_layer(last_hidden_state)
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention----------------------------------------
         # (batch, sequence, output_embedding_len)
         # value = self.value_layer(last_hidden_state)
         value = last_hidden_state
@@ -549,7 +492,7 @@ class PureMemorySelfAtt(nn.Module):
         weight = self.self_attention_weight_layer(value)
         weight = weight.squeeze(-1)
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = attention_mask.type(dtype=torch.float)
@@ -561,7 +504,7 @@ class PureMemorySelfAtt(nn.Module):
         # (batch, 1, sequence)
         final_weight = final_weight.unsqueeze(1)
 
-        # 求和
+        # Summation
         # (batch, 1, output_embedding_len)
         embedding = final_weight.bmm(value)
         embedding = embedding.squeeze(1)
@@ -570,23 +513,23 @@ class PureMemorySelfAtt(nn.Module):
 
         return final_embedding
 
-    # add hw
+
     def get_rep_by_multi_attention(self, input_ids, token_type_ids, attention_mask):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
-        # 这里 out 的三个参数不同
+        # Here the three parameters of out are different
         out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
                               attention_mask=attention_mask)
 
-        # 以下部分 Basic 和 OneSupreme 完全一样
+        # The following sections of Basic are exactly the same as OneSupreme
 
         last_hidden_state = out['last_hidden_state']
 
         # (batch, sequence, output_embedding_len)
         value = self.value_layer(last_hidden_state)
 
-        # 开始根据主题分布，进行信息压缩
-        # 创作出mask
+        # Start compressing information according to topic distribution
+        # Create the mask
         with torch.no_grad():
             mask = attention_mask.type(dtype=torch.float)
             mask[mask == 0] = -np.inf
@@ -600,7 +543,7 @@ class PureMemorySelfAtt(nn.Module):
         mask_weight = mask + weight
         final_weight = self.softmax(mask_weight)
 
-        # 求和
+        # Summation
         embedding = torch.mul(final_weight, value)
 
         final_embedding = self.relu(embedding.sum(dim=-2))
@@ -620,7 +563,7 @@ class PureMemorySelfAtt(nn.Module):
         weight = self.self_attention_weight_layer(last_hidden_state)
         weight = weight.squeeze(-1)
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = attention_mask.type(dtype=torch.float)
@@ -632,7 +575,7 @@ class PureMemorySelfAtt(nn.Module):
         # (batch, 1, sequence)
         final_weight = final_weight.unsqueeze(1)
 
-        # 求和
+        # Summation
         # (batch, 1, output_embedding_len)
         embedding = final_weight.bmm(value)
         embedding = embedding.squeeze(1)
@@ -645,7 +588,7 @@ class PureMemorySelfAtt(nn.Module):
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
 
-        # 获得表示
+        # Obtain representation
         q_embeddings = self.get_rep_by_self_att(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
                                                 attention_mask=q_attention_mask, is_question=True)
 
@@ -655,34 +598,13 @@ class PureMemorySelfAtt(nn.Module):
         a_embeddings = self.get_rep_by_self_att(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
                                                 attention_mask=a_attention_mask, is_question=False)
 
-        # q_embeddings = self.get_rep_simply(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                         attention_mask=q_attention_mask)
-
-        # b_embeddings = self.get_rep_simply(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-        #                                         attention_mask=b_attention_mask)
-
-        # a_embeddings = self.get_rep_simply(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                         attention_mask=a_attention_mask)
-
-        # 获得表示
-        # q_embeddings = self.get_rep_by_multi_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                                attention_mask=q_attention_mask)
-
-        # a_embeddings = self.get_rep_by_multi_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                                attention_mask=a_attention_mask)
-
-        # b_embeddings = self.get_rep_by_multi_attention(input_ids=b_input_ids, token_type_ids=b_token_type_ids,
-        #                                                attention_mask=b_attention_mask)
-
-        # 根据输入，进行思考, 思考的结果要选择性遗忘
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
                                  b_embedding=b_embeddings)
-
         return logits
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class BasicConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -712,15 +634,15 @@ class BasicModel(nn.Module):
 
         self.output_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 用来计算self-attention
+        # Used to calculate self-attention
         self.query_for_question = nn.Parameter(torch.randn(config.word_embedding_len))
         self.query_for_answer = nn.Parameter(torch.randn(config.word_embedding_len))
 
-        # 注意力模型
+        # Attentional Model
         self.key_layer = nn.Sequential(
             nn.Linear(config.word_embedding_len, 2*config.word_embedding_len),
             nn.ReLU(),
@@ -735,7 +657,7 @@ class BasicModel(nn.Module):
             nn.Tanh()
         )
 
-        # 这些的学习率一样
+        # The same learning rate for these
         self.classifier = BodyClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
 
         self.relu = torch.nn.ReLU(inplace=True)
@@ -743,7 +665,7 @@ class BasicModel(nn.Module):
         self.composition = config.composition
 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
-        # 获得隐藏层输出
+        # Get hidden layer output
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
                               attention_mask=attention_mask)
@@ -758,7 +680,7 @@ class BasicModel(nn.Module):
 
         last_hidden_state = out['last_hidden_state']
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention----------------------------------------
         # (batch, sequence, word_embedding_len)
         key = self.key_layer(last_hidden_state)
 
@@ -777,7 +699,7 @@ class BasicModel(nn.Module):
         # (batch, 1, sequence)
         weight = query.bmm(key.transpose(1, 2))
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = attention_mask.type(dtype=torch.float)
@@ -790,7 +712,7 @@ class BasicModel(nn.Module):
         # (batch, 1, sequence)
         final_weight = nn.functional.softmax(mask_weight, dim=-1)
 
-        # 求和
+        # Summation
         # (batch, 1, sentence_embedding_len)
         embedding = final_weight.bmm(value)
         final_embedding = embedding.squeeze(1)
@@ -807,8 +729,8 @@ class BasicModel(nn.Module):
         # (batch, sequence, output_embedding_len)
         value = self.value_layer(last_hidden_state)
 
-        # 开始根据主题分布，进行信息压缩
-        # 创作出mask
+        # Start compressing information according to topic distribution
+        # Create the mask
         with torch.no_grad():
             mask = attention_mask.type(dtype=torch.float)
             mask[mask == 0] = -np.inf
@@ -822,7 +744,7 @@ class BasicModel(nn.Module):
         mask_weight = mask + weight
         final_weight = self.softmax(mask_weight)
 
-        # 求和
+        # Summation
         embedding = torch.mul(final_weight, value)
 
         final_embedding = self.relu(embedding.sum(dim=-2))
@@ -834,7 +756,7 @@ class BasicModel(nn.Module):
                 b_input_ids, b_token_type_ids, b_attention_mask):
 
         if self.composition == 'pooler':
-            # 获得表示
+            # Obtain representation
             q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
                                                   attention_mask=q_attention_mask)
 
@@ -864,7 +786,7 @@ class BasicModel(nn.Module):
         else:
             raise Exception("This composition is not supported! Please use \'pooler\' or \'self\'or \'multi\'")
 
-        # 计算得到分类概率
+        # Calculate the classification probability
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
                                  b_embedding=b_embeddings)
 
@@ -872,7 +794,7 @@ class BasicModel(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class BasicTopicConfig:
     def __init__(self, tokenizer_len, voc_size, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -907,15 +829,15 @@ class BasicTopicModel(nn.Module):
         self.vae = VAE(config.voc_size, n_topic=config.topic_num)
         self.output_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 用来计算self-attention
+        # Used to calculate self-attention
         # self.query_for_question = nn.Parameter(torch.randn(config.word_embedding_len))
         # self.query_for_answer = nn.Parameter(torch.randn(config.word_embedding_len))
 
-        # 注意力模型
+        # Attentional Model
         self.key_layer = nn.Sequential(
             nn.Linear(config.word_embedding_len, 2*config.word_embedding_len),
             nn.ReLU(),
@@ -937,7 +859,7 @@ class BasicTopicModel(nn.Module):
         )
         self.LayerNorm = nn.LayerNorm(config.word_embedding_len, eps=config.layer_norm_eps)
 
-        # 这些的学习率一样
+        # The same learning rate for these
         self.classifier = BodyClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
 
         self.relu = torch.nn.ReLU(inplace=True)
@@ -952,7 +874,7 @@ class BasicTopicModel(nn.Module):
 
         last_hidden_state = out['last_hidden_state']
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention----------------------------------------
         # (batch size, topic num) -> (batch size, word_embedding_len)
         query = self.query_layer(topic_vector)
         query = self.LayerNorm(query)
@@ -962,7 +884,7 @@ class BasicTopicModel(nn.Module):
         # (batch, 1, sequence)
         weight = query.bmm(last_hidden_state.transpose(1, 2))
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = attention_mask.type(dtype=torch.float)
@@ -975,7 +897,7 @@ class BasicTopicModel(nn.Module):
         # (batch, 1, sequence)
         final_weight = nn.functional.softmax(mask_weight, dim=-1)
 
-        # 求和
+        # Summation
         # (batch, 1, sentence_embedding_len)
         embedding = final_weight.bmm(last_hidden_state)
         final_embedding = embedding.squeeze(1)
@@ -992,8 +914,8 @@ class BasicTopicModel(nn.Module):
         # (batch, sequence, output_embedding_len)
         value = self.value_layer(last_hidden_state)
 
-        # 开始根据主题分布，进行信息压缩
-        # 创作出mask
+        # Start compressing information according to topic distribution
+        # Create the mask
         with torch.no_grad():
             mask = attention_mask.type(dtype=torch.float)
             mask[mask == 0] = -np.inf
@@ -1007,7 +929,7 @@ class BasicTopicModel(nn.Module):
         mask_weight = mask + weight
         final_weight = self.softmax(mask_weight)
 
-        # 求和
+        # Summation
         embedding = torch.mul(final_weight, value)
 
         final_embedding = self.relu(embedding.sum(dim=-2))
@@ -1042,7 +964,7 @@ class BasicTopicModel(nn.Module):
         else:
             raise Exception("This composition is not supported! Please use \'pooler\' or \'self\'or \'multi\'")
 
-        # 计算得到分类概率
+        # Calculate the classification probability
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
                                  b_embedding=b_embeddings)
 
@@ -1050,7 +972,7 @@ class BasicTopicModel(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class BasicDeformerConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -1080,11 +1002,11 @@ class BasicDeformer(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
+        # num_label is also considered part of memory
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
+        # This learning rate is different
         this_bert_config = AutoConfig.from_pretrained(config.pretrained_bert_path)
         this_bert_config.num_labels = self.num_labels
 
@@ -1103,7 +1025,7 @@ class BasicDeformer(nn.Module):
         self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
-        # 获得隐藏层输出
+        # Get hidden layer output
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         out = self.bert_model(input_ids=input_ids, token_type_ids=token_type_ids,
                               attention_mask=attention_mask)
@@ -1160,7 +1082,7 @@ class BasicDeformer(nn.Module):
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
 
-        # 先编码question
+        # encoding question
         q_input_ids, q_attention_mask, q_token_type_ids = clean_input_ids(q_input_ids, q_attention_mask, q_token_type_ids)
         b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask, b_token_type_ids)
 
@@ -1184,7 +1106,7 @@ class BasicDeformer(nn.Module):
 
         q_embeddings = self.pooler_layer(joint_embeddings)
 
-        # 编码answer
+        # encoding answer
         a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
 
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
@@ -1193,7 +1115,7 @@ class BasicDeformer(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class DeepAnsConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4):
@@ -1215,11 +1137,11 @@ class DeepAnsModel(nn.Module):
 
         # self.output_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
         self.convs = nn.ModuleList([nn.Conv2d(1, kernel_dim, (K, embedding_dim)) for K in kernel_sizes])
         
@@ -1303,7 +1225,7 @@ class DeepAnsModel(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class OneSupremeMemoryConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -1333,18 +1255,18 @@ class OneSupremeMemory(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
+        # num_label is also considered part of memory
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
         self.memory_num = config.memory_num
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
 
-        # 记忆力模块
+        # Memory Module
         self.memory_for_answer = nn.Parameter(torch.randn(config.memory_num, config.word_embedding_len))
         self.memory_for_question = nn.Parameter(torch.randn(config.memory_num, config.word_embedding_len))
 
@@ -1370,12 +1292,12 @@ class OneSupremeMemory(nn.Module):
     def get_rep_multi_att(self, input_ids, token_type_ids, attention_mask, is_question):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
-        # 要确认训练时它有没有被修改
+        # To confirm that it has not been modified during training
         memory_len_one_tensor = torch.tensor([1] * self.config.memory_num, requires_grad=False,
                                             device=input_ids.device)
         one_tensor = torch.tensor([1], requires_grad=False, device=input_ids.device)
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         temp_embeddings = self.embeddings(input_ids)
 
         final_embeddings = None
@@ -1392,11 +1314,11 @@ class OneSupremeMemory(nn.Module):
             else:
                 whole_embeddings = torch.cat((input_embeddings, self.memory_for_answer, pad_embeddings), dim=0)
 
-            # 处理attention_mask
+            # process attention_mask
             whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
                                               batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
-            # 处理token_type_id
+            # process token_type_id
             remain_token_type_ids_len = batch_attention_mask.shape[0] + self.memory_num - input_embeddings.shape[0]
             whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
                                               one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
@@ -1422,8 +1344,8 @@ class OneSupremeMemory(nn.Module):
         # (batch, sequence, output_embedding_len)
         value = self.value_layer(last_hidden_state)
 
-        # 开始根据主题分布，进行信息压缩
-        # 创作出mask
+        # Start compressing information according to topic distribution
+        # Create the mask
         with torch.no_grad():
             mask = final_token_type_ids.type(dtype=torch.float).clone().detach()
             mask[mask == 1] = -np.inf
@@ -1437,7 +1359,7 @@ class OneSupremeMemory(nn.Module):
         mask_weight = mask + weight
         final_weight = self.softmax(mask_weight)
 
-        # 求和
+        # Summation
         embedding = torch.mul(final_weight, value)
 
         final_embedding = self.relu(embedding.sum(dim=-2))
@@ -1448,7 +1370,7 @@ class OneSupremeMemory(nn.Module):
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask):
 
-        # 获得表示
+        # Obtain representation
         q_embeddings = self.get_rep_multi_att(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
                                               attention_mask=q_attention_mask, is_question=True)
 
@@ -1458,10 +1380,8 @@ class OneSupremeMemory(nn.Module):
         a_embeddings = self.get_rep_multi_att(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
                                               attention_mask=a_attention_mask, is_question=False)
 
-        # 根据输入，进行思考, 思考的结果要选择性遗忘
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings,
                                  b_embedding=b_embeddings)
-
         return logits
 
 

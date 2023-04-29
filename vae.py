@@ -41,11 +41,6 @@ class VAE(nn.Module):
         mu, log_var = self.fc_mu(hid), self.fc_logvar(hid)
         return mu, log_var
 
-    def inference(self,x):
-        mu, log_var = self.encode(x)
-        theta = torch.softmax(x,dim=1)
-        return theta
-    
     def reparameterize(self, mu, log_var):
         std = torch.exp(log_var/2)
         eps = torch.randn_like(std)
@@ -93,14 +88,6 @@ class VAE(nn.Module):
 
         x_reconst = self.decode(theta)
         return x_reconst, mu, log_var
-
-# if __name__ == '__main__':
-#     model = VAE(encode_dims=[1024,512,256,20],decode_dims=[20,128,768,1024])
-#     model = model.cuda()
-#     inpt = torch.randn(234,1024).cuda()
-#     out,mu,log_var = model(inpt)
-#     print(out.shape)
-#     print(mu.shape)
 
 # WAE model
 class WAE(nn.Module):
@@ -238,7 +225,6 @@ class WAE(nn.Module):
             xy = torch.matmul(qx, qy.t())
 
             def diffusion_kernel(a, tmpt, dim):
-                # return (4 * np.pi * tmpt)**(-dim / 2) * nd.exp(- nd.square(nd.arccos(a)) / tmpt)
                 return torch.exp(-torch.acos(a).pow(2)) / tmpt
 
             off_diag = 1 - torch.eye(n).to(device)

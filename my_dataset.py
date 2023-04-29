@@ -5,14 +5,14 @@ import re
 
 class TBAClassifyDataset(torch.torch.utils.data.Dataset):
 	def __init__(self, data, tokenizer, text_max_len, deformer=False):
-		# 读取一块数据
+		# Read data
 		self.dataset = data
 
-		# 保存传入的参数
+		# Save parameters
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
 
-		# 读取数据到内存
+		# Read data into memory
 		all_titles = data['title']
 		all_bodies = data['body']
 		all_answers = data['answers']
@@ -49,7 +49,7 @@ class TBAClassifyDataset(torch.torch.utils.data.Dataset):
 
 		self.all_labels = all_labels
 
-	def __len__(self):  # 返回整个数据集的大小
+	def __len__(self):
 		return len(self.encoded_title['input_ids'])
 
 	def __getitem__(self, index):
@@ -71,15 +71,13 @@ class TBATopicClassifyDataset(torch.torch.utils.data.Dataset):
 	def __init__(self, data, tokenizer, text_max_len, dictionary):
 		self.dictionary = dictionary
 		self.voc_size = len(self.dictionary)
-
-		# 读取一块数据
 		self.dataset = data
 
-		# 保存传入的参数
+		# Save parameters
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
 
-		# 读取数据到内存
+		# Read data into memory
 		all_titles = data['title']
 		all_bodies = data['body']
 		all_answers = data['answers']
@@ -124,18 +122,18 @@ class TBATopicClassifyDataset(torch.torch.utils.data.Dataset):
 
 		self.all_labels = all_labels
 
-	def __len__(self):  # 返回整个数据集的大小
+	def __len__(self): 
 		return len(self.encoded_title['input_ids'])
 
 	def __getitem__(self, index):
 
 		this_q_bow = torch.zeros(self.voc_size)
-		# bow = [[token_id1,token_id2,...],[freq1,freq2,...]]
+		# bow = [[token_id1,token_id2,...], [freq1,freq2,...]]
 		item = list(zip(*self.q_bows[index])) 
 		this_q_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 
 		this_a_bow = torch.zeros(self.voc_size)
-		# bow = [[token_id1,token_id2,...],[freq1,freq2,...]]
+		# bow = [[token_id1,token_id2,...], [freq1,freq2,...]]
 		item = list(zip(*self.a_bows[index])) 
 		this_a_bow[list(item[0])] = torch.tensor(list(item[1])).float()
 		
@@ -157,19 +155,18 @@ class TBATopicClassifyDataset(torch.torch.utils.data.Dataset):
 
 class MLMDataset(torch.torch.utils.data.Dataset):
 	def __init__(self, data, tokenizer, text_max_len, memory_num, memory_start_index, ratio=1):
-		# 读取一块数据
 		self.dataset = data
 
-		# 保存传入的参数
+		# Save parameters
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
 
-		# 获得memory合并的字符串
+		# Get the memory merged string
 		memory_sequence = " "
 		for i in range(memory_num):
 			memory_sequence += '<MEM' + str(i) + '>' + " "
 
-		# 读取数据到内存
+		# Read data into memory
 		all_titles = data['title']
 		all_bodies = data['body']
 		all_answers = data['answers']
@@ -202,13 +199,7 @@ class MLMDataset(torch.torch.utils.data.Dataset):
 
 		self.all_special_tokens_mask[self.all_input_ids >= memory_start_index] = 1
 
-		# print("\ntext:\t", self.tokenizer.decode(self.all_input_ids[10]))
-		# print("input_ids:\t", self.all_input_ids[10])
-		# print("attention_mask:\t", self.all_attention_mask[10])
-		# print("token_type_id:\t", self.all_token_type_ids[10])
-		# print("special_tokens_mask:\t", self.all_special_tokens_mask[10])
-
-	def __len__(self):  # 返回整个数据集的大小
+	def __len__(self):
 		return len(self.all_input_ids)
 
 	def __getitem__(self, index):
@@ -222,11 +213,11 @@ class MLMDataset(torch.torch.utils.data.Dataset):
 
 class QAMemClassifyDataset(torch.torch.utils.data.Dataset):
 	def __init__(self, data, tokenizer, text_max_len, memory_num):
-		# 保存传入的参数
+		# Save parameters
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
 
-		# 获得memory合并的字符串
+		# Get the memory merged string
 		q_memory_sequence = " "
 		for i in range(memory_num):
 			q_memory_sequence += '<QMEM' + str(i) + '>' + " "
@@ -235,7 +226,7 @@ class QAMemClassifyDataset(torch.torch.utils.data.Dataset):
 		for i in range(memory_num):
 			a_memory_sequence += '<AMEM' + str(i) + '>' + " "
 
-		# 读取数据到内存
+		# Read data into memory
 		all_titles = data['title']
 		all_bodies = data['body']
 		all_answers = data['answers']
@@ -262,7 +253,7 @@ class QAMemClassifyDataset(torch.torch.utils.data.Dataset):
 
 		self.all_labels = all_labels
 
-	def __len__(self):  # 返回整个数据集的大小
+	def __len__(self):
 		return len(self.encoded_questions['input_ids'])
 
 	def __getitem__(self, index):
@@ -279,11 +270,11 @@ class QAMemClassifyDataset(torch.torch.utils.data.Dataset):
 
 class QAClassifyDataset(torch.torch.utils.data.Dataset):
 	def __init__(self, data, tokenizer, text_max_len):
-		# 保存传入的参数
+		# Get the memory merged string
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
 
-		# 读取数据到内存
+		# Read data into memory
 		all_titles = data['title']
 		all_bodies = data['body']
 		all_answers = data['answers']
@@ -319,7 +310,7 @@ class QAClassifyDataset(torch.torch.utils.data.Dataset):
 			
 		self.all_labels = all_labels
 
-	def __len__(self):  # 返回整个数据集的大小
+	def __len__(self):
 		return len(self.encoded_questions['input_ids'])
 
 	def __getitem__(self, index):
@@ -336,11 +327,11 @@ class QAClassifyDataset(torch.torch.utils.data.Dataset):
 
 class CrossClassifyDataset(torch.torch.utils.data.Dataset):
 	def __init__(self, data, tokenizer, text_max_len):
-		# 保存传入的参数
+		# Get the memory merged string
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
 
-		# 读取数据到内存
+		# Read data into memory
 		all_titles = data['title']
 		all_bodies = data['body']
 		all_answers = data['answers']
@@ -363,7 +354,7 @@ class CrossClassifyDataset(torch.torch.utils.data.Dataset):
 
 		self.all_labels = all_labels
 
-	def __len__(self):  # 返回整个数据集的大小
+	def __len__(self): 
 		return len(self.encoded_texts['input_ids'])
 
 	def __getitem__(self, index):
@@ -381,13 +372,13 @@ class VaeSignleTextDataset(torch.torch.utils.data.Dataset):
 		self.bows = bows
 		self.voc_size = voc_size
 
-	def __len__(self):  # 返回整个数据集的大小
+	def __len__(self):
 		return len(self.bows)
 
 	def __getitem__(self, index):
 		this_bow = torch.zeros(self.voc_size)
 
-		# bow = [[token_id1,token_id2,...],[freq1,freq2,...]]
+		# bow = [[token_id1,token_id2,...], [freq1,freq2,...]]
 		item = list(zip(*self.bows[index])) 
 
 		this_bow[list(item[0])] = torch.tensor(list(item[1])).float()
@@ -404,16 +395,16 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		self.dictionary = dictionary
 		self.voc_size = len(self.dictionary)
 
-		# 读取一块数据
+		# Read data
 		self.dataset = data
 
 		self.GOOD_SYMBOLS_RE = re.compile('[^0-9a-z #+_]')
 
-		# 保存传入的参数
+		# Get the memory merged string
 		self.tokenizer = tokenizer
 		self.text_max_len = text_max_len
 
-		# 读取数据到内存
+		# Read data into memory
 		all_titles = data['title']
 		all_bodies = data['body']
 		all_answers = data['answers']
@@ -469,13 +460,13 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 
 		return new_text
    
-	def __len__(self):  # 返回整个数据集的大小
+	def __len__(self): 
 		return len(self.encoded_questions['input_ids'])
 
 	def __getitem__(self, index):
 
 		this_q_bow = torch.zeros(self.voc_size)
-		# bow = [[token_id1,token_id2,...],[freq1,freq2,...]]
+		# bow = [[token_id1,token_id2,...], [freq1,freq2,...]]
 		item = list(zip(*self.q_bows[index])) 
 		if len(item) != 0:
 			this_q_bow[list(item[0])] = torch.tensor(list(item[1])).float()
@@ -485,7 +476,7 @@ class QATopicClassifyDataset(torch.torch.utils.data.Dataset):
 		this_q_bow[this_q_bow > max_num] = max_num
 
 		this_a_bow = torch.zeros(self.voc_size)
-		# bow = [[token_id1,token_id2,...],[freq1,freq2,...]]
+		# bow = [[token_id1,token_id2,...], [freq1,freq2,...]]
 		item = list(zip(*self.a_bows[index])) 
 		if len(item) != 0:
 			this_a_bow[list(item[0])] = torch.tensor(list(item[1])).float()

@@ -1,12 +1,13 @@
-import imp
-from transformers import AutoModel, BertForSequenceClassification, BertConfig, AutoConfig
 import torch
 import torch.nn as nn
+import torch.nn.functional
+import torch.nn.functional as F
 import torch.utils.data
 import numpy as np
-import torch.nn.functional
+
 from vae import VAE
-import torch.nn.functional as F
+from transformers import AutoModel, BertForSequenceClassification, BertConfig
+from transformers.models.bert.my_modeling_bert import MyBertModel, DecoderLayerChunk
 
 
 # model list
@@ -19,7 +20,7 @@ import torch.nn.functional as F
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 # No matter whether use memory mechanism, all models whose input consists of Q and A can use this class
 class QAModelConfig:
@@ -50,11 +51,11 @@ class QAModel(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
+        # num_label is also considered part of memory
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
         self.embeddings = self.bert_model.get_input_embeddings()
@@ -86,7 +87,7 @@ class QAModel(nn.Module):
 
         last_hidden_state = out['last_hidden_state']
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention----------------------------------------
         # (batch, sequence, output_embedding_len)
         value = self.value_layer(last_hidden_state)
 
@@ -94,7 +95,7 @@ class QAModel(nn.Module):
         weight = self.self_attention_weight_layer(last_hidden_state)
         weight = weight.squeeze(-1)
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = token_type_ids.type(dtype=torch.float)
@@ -106,7 +107,7 @@ class QAModel(nn.Module):
         # (batch, 1, sequence)
         final_weight = final_weight.unsqueeze(1)
 
-        # 求和
+        # Summation
         # (batch, 1, output_embedding_len)
         embedding = final_weight.bmm(value)
         embedding = embedding.squeeze(1)
@@ -186,15 +187,12 @@ class QAModel(nn.Module):
         else:
             raise Exception(f"Composition {self.config.composition} is not supported!!")
 
-        # # 根据输入，进行思考, 思考的结果要选择性遗忘
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
-
-
         return logits
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class QATopicConfig:
     def __init__(self, tokenizer_len, voc_size, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -236,7 +234,7 @@ class QATopicModel(nn.Module):
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
         
         # 用来计算self-attention
@@ -277,7 +275,7 @@ class QATopicModel(nn.Module):
 
         last_hidden_state = out['last_hidden_state']
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention ----------------------------------------
         # (batch size, topic num) -> (batch size, word_embedding_len)
         query = self.query_layer(topic_vector)
         query = self.LayerNorm(query)
@@ -287,7 +285,7 @@ class QATopicModel(nn.Module):
         # (batch, 1, sequence)
         weight = query.bmm(last_hidden_state.transpose(1, 2))
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = attention_mask.type(dtype=torch.float)
@@ -300,7 +298,7 @@ class QATopicModel(nn.Module):
         # (batch, 1, sequence)
         final_weight = nn.functional.softmax(mask_weight, dim=-1)
 
-        # 求和
+        # Summation
         # (batch, 1, sentence_embedding_len)
         embedding = final_weight.bmm(last_hidden_state)
         final_embedding = embedding.squeeze(1)
@@ -330,24 +328,18 @@ class QATopicModel(nn.Module):
 
         vae_loss = q_rec_loss + a_rec_loss + q_kl_div  + a_kl_div
 
-        # q_embeddings = self.get_rep_by_topic_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                                 attention_mask=q_attention_mask, topic_vector=q_mu)
-
-        # a_embeddings = self.get_rep_by_topic_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                                 attention_mask=a_attention_mask, topic_vector=a_mu)
-
         q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask)
 
         a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
 
-        # 计算得到分类概率
+        # Calculate the classification probability
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings, q_topic=q_mu, a_topic=a_mu)
 
         return logits, vae_loss
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class QATopicMemoryModel(nn.Module):
     def __init__(self, config: QATopicConfig):
@@ -363,7 +355,7 @@ class QATopicMemoryModel(nn.Module):
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
 
         # topic memory
@@ -377,7 +369,7 @@ class QATopicMemoryModel(nn.Module):
         )
         self.memory_LayerNorm = nn.LayerNorm(config.word_embedding_len)
 
-        # 注意力模型
+        # Attentional Model
         self.query_layer = nn.Sequential(
             nn.Linear(config.topic_num, 2 * config.word_embedding_len),
             nn.ReLU(),
@@ -404,14 +396,13 @@ class QATopicMemoryModel(nn.Module):
 
     # use topic memory to enrich 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask, topic_vector):
-        # top_num = 10
         top_num = self.config.topic_num
         
         # print(input_ids.shape)
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         device = input_ids.device
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         temp_embeddings = self.embeddings(input_ids)
 
         final_embeddings = None
@@ -424,7 +415,7 @@ class QATopicMemoryModel(nn.Module):
         one_tensor = torch.tensor([1], requires_grad=False, device=device)
 
         for index, batch_attention_mask in enumerate(attention_mask):
-             # ----------------------通过memory来丰富信息---------------------
+             # ----------------------Enriching information through memory---------------------
             # get topic memory
             _, top_indices = topic_vector[index].topk(top_num)
             
@@ -433,8 +424,6 @@ class QATopicMemoryModel(nn.Module):
 
             word_dist = self.vae.decode(idxes)
             word_dist = torch.softmax(word_dist,dim=1)
-            
-            # print(word_dist.shape)
 
             topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
             # -----------------------------------------
@@ -444,11 +433,11 @@ class QATopicMemoryModel(nn.Module):
 
             whole_embeddings = torch.cat((input_embeddings, topic_memory, pad_embeddings), dim=0)
 
-            # 处理attention_mask
+            # Process attention_mask
             whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
                                               batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
-            # 处理token_type_id
+            # Process token_type_id
             remain_token_type_ids_len = batch_attention_mask.shape[0] + top_num - input_embeddings.shape[0]
             whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
                                               one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
@@ -481,7 +470,7 @@ class QATopicMemoryModel(nn.Module):
 
         last_hidden_state = out['last_hidden_state']
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention ----------------------------------------
         # (batch size, topic num) -> (batch size, word_embedding_len)
         query = self.query_layer(topic_vector)
         query = self.LayerNorm(query)
@@ -491,7 +480,7 @@ class QATopicMemoryModel(nn.Module):
         # (batch, 1, sequence)
         weight = query.bmm(last_hidden_state.transpose(1, 2))
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = attention_mask.type(dtype=torch.float)
@@ -504,7 +493,7 @@ class QATopicMemoryModel(nn.Module):
         # (batch, 1, sequence)
         final_weight = nn.functional.softmax(mask_weight, dim=-1)
 
-        # 求和
+        # Summation
         # (batch, 1, sentence_embedding_len)
         embedding = final_weight.bmm(last_hidden_state)
         final_embedding = embedding.squeeze(1)
@@ -534,17 +523,11 @@ class QATopicMemoryModel(nn.Module):
 
         vae_loss = q_rec_loss + a_rec_loss + q_kl_div  + a_kl_div
 
-        # q_embeddings = self.get_rep_by_topic_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                                 attention_mask=q_attention_mask, topic_vector=q_mu)
-
-        # a_embeddings = self.get_rep_by_topic_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                                 attention_mask=a_attention_mask, topic_vector=a_mu)
-
         q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask, topic_vector=q_mu)
 
         a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask, topic_vector=a_mu)
 
-        # 计算得到分类概率
+        # Calculate the classification probability
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings, q_topic=q_mu, a_topic=a_mu)
 
         # only memory
@@ -554,7 +537,7 @@ class QATopicMemoryModel(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class QATopicCNNConfig:
     def __init__(self, tokenizer_len, voc_size, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -598,7 +581,7 @@ class QACNNTopicMemoryModel(nn.Module):
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
         self.bert_model = None
         new_embedding_size = 100
@@ -650,7 +633,7 @@ class QACNNTopicMemoryModel(nn.Module):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         device = input_ids.device
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         temp_embeddings = self.embedding_scale_layer(self.embeddings(input_ids))
 
         final_embeddings = None
@@ -661,7 +644,7 @@ class QACNNTopicMemoryModel(nn.Module):
         memory_len_one_tensor = torch.tensor([1] * top_num, requires_grad=False, device=device)
 
         for index, batch_attention_mask in enumerate(attention_mask):
-            # ----------------------通过memory来丰富信息---------------------
+            # ----------------------Enriching information through memory---------------------
             # get topic memory
             _, top_indices = topic_vector[index].topk(top_num)
             
@@ -670,8 +653,6 @@ class QACNNTopicMemoryModel(nn.Module):
 
             word_dist = self.vae.decode(idxes)
             word_dist = torch.softmax(word_dist,dim=1)
-            
-            # print(word_dist.shape)
 
             topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
             # -----------------------------------------
@@ -681,7 +662,7 @@ class QACNNTopicMemoryModel(nn.Module):
 
             whole_embeddings = torch.cat((input_embeddings, topic_memory, pad_embeddings), dim=0)
 
-            # 处理attention_mask
+            # Process attention_mask
             whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
                                               batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
@@ -762,7 +743,7 @@ class QACNNTopicMemoryModel(nn.Module):
 
         a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask, topic_vector=a_mu)
 
-        # 计算得到分类概率
+        # Calculate the classification probability
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings, q_topic=q_mu, a_topic=a_mu)
 
         # only memory
@@ -784,7 +765,7 @@ class QACNNModel(nn.Module):
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
         self.bert_model = None
         new_embedding_size = 100
@@ -814,7 +795,7 @@ class QACNNModel(nn.Module):
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         final_embeddings = self.embedding_scale_layer(self.embeddings(input_ids))
 
         inputs = [F.relu(conv(final_embeddings.unsqueeze(1))).squeeze(3) for conv in self.convs] 
@@ -863,14 +844,14 @@ class QACNNModel(nn.Module):
 
         a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
 
-        # 计算得到分类概率
+        # Calculate the classification probability
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
 
         return logits
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class QAOnlyMemoryModel(nn.Module):
     def __init__(self, config: QATopicConfig):
@@ -882,11 +863,11 @@ class QAOnlyMemoryModel(nn.Module):
 
         self.config = config
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
 
         self.topic_word_matrix = None
@@ -899,7 +880,7 @@ class QAOnlyMemoryModel(nn.Module):
         )
         self.memory_LayerNorm = nn.LayerNorm(config.word_embedding_len)
 
-        # 注意力模型
+        # Attentional Model
         self.query_layer = nn.Sequential(
             nn.Linear(config.topic_num, 2 * config.word_embedding_len),
             nn.ReLU(),
@@ -907,8 +888,7 @@ class QAOnlyMemoryModel(nn.Module):
         )
         self.LayerNorm = nn.LayerNorm(config.word_embedding_len)
 
-        # 这些的学习率一样
-        # self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
+        # The same learning rate for those
         self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
 
         self.relu = torch.nn.ReLU(inplace=True)
@@ -926,23 +906,19 @@ class QAOnlyMemoryModel(nn.Module):
 
     # use topic memory to enrich 
     def get_rep_by_pooler(self, input_ids, token_type_ids, attention_mask):
-        # print(input_ids.shape)
-
         input_ids, attention_mask, token_type_ids = clean_input_ids(input_ids, attention_mask, token_type_ids)
         device = input_ids.device
 
-        # ----------------------通过memory来丰富信息---------------------
+        # ----------------------Enriching information through memory---------------------
         # get topic memory
         idxes = torch.eye(self.config.topic_num).to(device)
 
         word_dist = self.vae.decode(idxes)
         word_dist = torch.softmax(word_dist,dim=1)
-        
-        # print(word_dist.shape)
 
         topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         temp_embeddings = self.embeddings(input_ids)
 
         final_embeddings = None
@@ -960,11 +936,11 @@ class QAOnlyMemoryModel(nn.Module):
 
             whole_embeddings = torch.cat((input_embeddings, topic_memory, pad_embeddings), dim=0)
 
-            # 处理attention_mask
+            # Process attention_mask
             whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
                                               batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
-            # 处理token_type_id
+            # Process token_type_id
             remain_token_type_ids_len = batch_attention_mask.shape[0] + self.config.topic_num - input_embeddings.shape[0]
             whole_token_type_ids = torch.cat((token_type_ids[index][batch_attention_mask == 1],
                                               one_tensor.repeat(remain_token_type_ids_len)), dim=-1)
@@ -997,7 +973,7 @@ class QAOnlyMemoryModel(nn.Module):
 
         last_hidden_state = out['last_hidden_state']
 
-        # 接下来通过attention汇总信息----------------------------------------
+        # Next, summarize the information by attention ----------------------------------------
         # (batch size, topic num) -> (batch size, word_embedding_len)
         query = self.query_layer(topic_vector)
         query = self.LayerNorm(query)
@@ -1007,7 +983,7 @@ class QAOnlyMemoryModel(nn.Module):
         # (batch, 1, sequence)
         weight = query.bmm(last_hidden_state.transpose(1, 2))
 
-        # 创作出score mask
+        # Create a score mask
         with torch.no_grad():
             # (batch, sequence)
             mask = attention_mask.type(dtype=torch.float)
@@ -1020,7 +996,7 @@ class QAOnlyMemoryModel(nn.Module):
         # (batch, 1, sequence)
         final_weight = nn.functional.softmax(mask_weight, dim=-1)
 
-        # 求和
+        # Summation
         # (batch, 1, sentence_embedding_len)
         embedding = final_weight.bmm(last_hidden_state)
         final_embedding = embedding.squeeze(1)
@@ -1050,17 +1026,11 @@ class QAOnlyMemoryModel(nn.Module):
 
         vae_loss = q_rec_loss + a_rec_loss + q_kl_div  + a_kl_div
 
-        # q_embeddings = self.get_rep_by_topic_attention(input_ids=q_input_ids, token_type_ids=q_token_type_ids,
-        #                                                 attention_mask=q_attention_mask, topic_vector=q_mu)
-
-        # a_embeddings = self.get_rep_by_topic_attention(input_ids=a_input_ids, token_type_ids=a_token_type_ids,
-        #                                                 attention_mask=a_attention_mask, topic_vector=a_mu)
-
         q_embeddings = self.get_rep_by_pooler(input_ids=q_input_ids, token_type_ids=q_token_type_ids, attention_mask=q_attention_mask)
 
         a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
 
-        # 计算得到分类概率
+        # Calculate the classification probability
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
 
         # only memory
@@ -1079,11 +1049,11 @@ class QAOnlyHopMemoryModel(nn.Module):
 
         self.config = config
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.bert_model = AutoModel.from_pretrained(config.pretrained_bert_path)
         self.bert_model.resize_token_embeddings(config.tokenizer_len)
 
-        # 这个embedding的grad会被计入bert model里，很好
+        # This embedding grad will be counted in the bert model
         self.embeddings = self.bert_model.get_input_embeddings()
 
         # memory transformation
@@ -1094,7 +1064,7 @@ class QAOnlyHopMemoryModel(nn.Module):
         )
         self.memory_LayerNorm = nn.LayerNorm(config.word_embedding_len)
 
-        # 注意力模型
+        # Attentional Model
         self.query_layer = nn.Sequential(
             nn.Linear(config.topic_num, 2 * config.word_embedding_len),
             nn.ReLU(),
@@ -1102,7 +1072,7 @@ class QAOnlyHopMemoryModel(nn.Module):
         )
         self.LayerNorm = nn.LayerNorm(config.word_embedding_len)
 
-        # 这些的学习率一样
+        # The same learning rate for those
         # self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
         self.classifier = QAClassifier(input_len=config.sentence_embedding_len, num_labels=config.num_labels)
 
@@ -1110,7 +1080,7 @@ class QAOnlyHopMemoryModel(nn.Module):
         self.softmax = torch.nn.Softmax(dim=-2)
         self.composition = config.composition
 
-        # 这个学习率不一样
+        # This learning rate is different
         self.whole_encoder = self.bert_model.encoder.layer
 
     # encode a text using lower layers
@@ -1127,7 +1097,7 @@ class QAOnlyHopMemoryModel(nn.Module):
 
         topic_memory = self.memory_LayerNorm(self.memory_layer(word_dist))
 
-        # 获得隐藏层输出, (batch, sequence, embedding)
+        # Get hidden layer output, (batch, sequence, embedding)
         embeddings = self.embeddings(input_ids=input_ids)
         hidden_states = embeddings
 
@@ -1148,7 +1118,7 @@ class QAOnlyHopMemoryModel(nn.Module):
 
                 whole_embeddings = torch.cat((input_embeddings, topic_memory, pad_embeddings), dim=0)
 
-                # 处理attention_mask
+                # Process attention_mask
                 whole_attention_mask = torch.cat((batch_attention_mask[batch_attention_mask == 1], memory_len_one_tensor,
                                                 batch_attention_mask[batch_attention_mask == 0]), dim=-1)
 
@@ -1176,7 +1146,7 @@ class QAOnlyHopMemoryModel(nn.Module):
                 a_input_ids, a_token_type_ids, a_attention_mask,
                 b_input_ids, b_token_type_ids, b_attention_mask, **kwargs):
 
-        # 先编码question
+        # encoding the question first
         q_input_ids, q_attention_mask, q_token_type_ids = clean_input_ids(q_input_ids, q_attention_mask, q_token_type_ids)
         b_input_ids, b_attention_mask, b_token_type_ids = clean_input_ids(b_input_ids, b_attention_mask, b_token_type_ids)
 
@@ -1200,7 +1170,7 @@ class QAOnlyHopMemoryModel(nn.Module):
 
         q_embeddings = self.pooler_layer(joint_embeddings)
 
-        # 编码answer
+        # encoding answer
         a_embeddings = self.get_rep_by_pooler(input_ids=a_input_ids, token_type_ids=a_token_type_ids, attention_mask=a_attention_mask)
 
         logits = self.classifier(q_embedding=q_embeddings, a_embedding=a_embeddings)
@@ -1209,7 +1179,7 @@ class QAOnlyHopMemoryModel(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class CrossBERTConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -1239,11 +1209,11 @@ class CrossBERT(nn.Module):
 
         self.config = config
 
-        # 毕竟num_label也算是memory的一部分
+        # num_label is also considered part of memory
         self.num_labels = config.num_labels
         self.sentence_embedding_len = config.sentence_embedding_len
 
-        # 这个学习率不一样
+        # This learning rate is different
         this_bert_config = BertConfig.from_pretrained(config.pretrained_bert_path)
         this_bert_config.num_labels = self.num_labels
 
@@ -1261,7 +1231,7 @@ class CrossBERT(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 class ADecoderConfig:
     def __init__(self, tokenizer_len, pretrained_bert_path='prajjwal1/bert-small', num_labels=4,
@@ -1286,7 +1256,7 @@ class ADecoderConfig:
         print("answer_context_num:", self.answer_context_num)
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
 # according to Multihop Attention Networks for Question Answer Matching
 class LinearSelfAttentionLayer(nn.Module):
@@ -1315,9 +1285,9 @@ class LinearSelfAttentionLayer(nn.Module):
 
 
 # --------------------------------------
-# fen ge xian
+# Model Class
 # --------------------------------------
-# 一个分类器，2个input len的向量作为输入
+# A classifier with 2 vectors of input len as input
 class QAClassifier(nn.Module):
     def __init__(self, input_len, keep_prob=0.9, num_labels=4):
         super(QAClassifier, self).__init__()
