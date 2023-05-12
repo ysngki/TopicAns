@@ -34,7 +34,7 @@ def calculate_icc(data):
     return ICC, F, p_value
 
 # Read data from a CSV file
-data = pd.read_csv('user_icc3.csv', header=None).values
+data = pd.read_csv('resovled_questions_result.csv', header=None).values
 print(data)
 
 # Calculate ICC
