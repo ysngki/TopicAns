@@ -13,7 +13,9 @@ pip install -r requirements.txt
 
 ## Dataset Construction and Pre-process
 
-We will upload our datasets soon. Following is how we get them:
+Our datasets are released at https://drive.google.com/drive/folders/1Pf8zyJGdufi_14qeAigPI1yyOkiL881J?usp=share_link.
+
+Following is how we get them:
 
 1. Download `stackoverflow.com-Posts.7z` from https://archive.org/details/stackexchange
 
